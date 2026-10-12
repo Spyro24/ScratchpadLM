@@ -187,6 +187,14 @@
 - [ ] `MODELS.md` — adding custom specialized models
 - [ ] `API.md` — Python API, HTTP API
 
+### 15. Build & Distribution
+- [ ] `main.py` — proper entry point with CLI args (train, generate, serve, model mgmt)
+- [ ] `build.sh` — build script for optional C extensions
+- [ ] C source for performance-critical modules (tokenizer BPE, matrix ops, quantize/dequantize)
+- [ ] `setup.py` / `pyproject.toml` for pip installable package
+- [ ] Optional C extension: `tinylm._c` with `bpe_train`, `matvec_dot`, `quantize`, `dequantize`
+- [ ] Fallback to pure Python when C not available
+
 ---
 
 ## Constraints (hard)

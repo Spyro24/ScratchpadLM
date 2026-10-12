@@ -11,6 +11,7 @@
 | `tokenizer.py` | Byte-level BPE tokenizer | `BPETokenizer`, `extend()`, `train()`, `encode()`, `decode()`, `save()`, `load()` |
 | `ai.py` | Autograd, model, training, generation, 4-bit I/O | `Value`, `TinyLM`, `train()`, `train_parallel()`, `generate()`, `save_model()`, `load_model()`, `sync_vocab()` |
 | `config.py` | Config system (YAML/JSON, validation, defaults) | `Config`, `load_yaml()`, `model_config()`, `training_config()`, `merge_configs()` |
+| `registry.py` | Model/Task registries, Tokenizer singleton | `ModelRegistry`, `TaskRegistry`, `TokenizerManager`, `TaskTemplate` |
 | `ui.py` | Tkinter GUI (input, train/generate buttons, history) | `App`, background thread via `queue.Queue` |
 | `main.py` | Legacy demo script (n-gram model) | `tokenize()`, `train()`, `generate()` |
 | `AGENTS.md` | Agent guidance (this project's rules) | — |
@@ -25,11 +26,17 @@
 ui.py
   ├─ tokenizer.py (BPETokenizer)
   ├─ ai.py (TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel)
-  └─ config.py (Config)  ← NEW, not yet integrated
+  ├─ config.py (Config)
+  └─ registry.py (TokenizerManager, MODEL_REGISTRY, TASK_REGISTRY)
 
 ai.py
   ├─ tokenizer.py (BPETokenizer)  ← only in __main__ demo
   └─ config.py (Config)  ← NEW, not yet integrated
+
+registry.py
+  ├─ tokenizer.py (BPETokenizer)
+  ├─ ai.py (TinyLM)  ← only in __main__ demo
+  └─ config.py (Config)  ← for future config-driven registration
 
 tokenizer.py
   └─ (stdlib only: re, collections, multiprocessing)
@@ -72,6 +79,27 @@ config.py
 - Loads YAML/JSON, merges with `DEFAULTS`, validates against `SCHEMA`
 - `Config.from_file(path)`, `Config.from_dict(data)`
 - Helpers: `model_config()`, `training_config()`, `generation_config()`, `tokenizer_config()`, `merge_configs()`
+
+### `ModelRegistry` (registry.py)
+- `register(name, factory, **metadata)` — register model factory
+- `get(name) → factory`, `create(name, *args, **kwargs) → model`
+- `list() → List[str]`, `metadata(name) → Dict`, `has(name) → bool`, `remove(name) → bool`
+- Global instance: `MODEL_REGISTRY`
+
+### `TaskRegistry` (registry.py)
+- `register(TaskTemplate)` — register task template
+- `get(name) → TaskTemplate`, `list() → List[str]`, `has(name)`, `remove(name)`
+- Global instance: `TASK_REGISTRY`
+
+### `TaskTemplate` (registry.py)
+- Dataclass: `name`, `model_name`, `prompt_template`, `output_parser`, `description`, `parameters`
+
+### `TokenizerManager` (registry.py)
+- Singleton: `TokenizerManager()` always returns same instance
+- `tokenizer` property → shared `BPETokenizer`
+- `load(path)`, `save(path)`, `extend(text, vocab_size, min_frequency)`, `train(text, vocab_size, ...)`
+- `encode(text)`, `decode(ids)`, `vocab_size`, `vocab`, `merges`
+- Global instance: `TOKENIZER_MANAGER`
 
 ---
 
@@ -223,4 +251,22 @@ train(model, ids, steps=cfg["training"]["steps"], lr=cfg["training"]["lr"], ...)
 # Save/load model
 save_model(model, "my_model.tlm")
 model = load_model("my_model.tlm")
+
+# Model registry
+from registry import register_model, create_model, list_models, MODEL_REGISTRY
+register_model("my-model", lambda: TinyLM(vocab_size=1000, ctx=50, emb=64, hidden=128),
+               description="My model", param_count=75000)
+model = create_model("my-model")
+
+# Task registry
+from registry import register_task, get_task, TaskTemplate
+register_task(TaskTemplate(name="summarize", model_name="tiny-prose",
+                           prompt_template="Summarize: {text}"))
+task = get_task("summarize")
+
+# Shared tokenizer
+from registry import TOKENIZER_MANAGER, get_tokenizer
+TOKENIZER_MANAGER.load("bpe_merges.txt")
+tok = get_tokenizer()
+ids = tok.encode("hello")
 ```

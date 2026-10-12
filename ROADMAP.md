@@ -12,9 +12,9 @@
 
 ### 0. Foundations (prerequisites)
 - [x] **Config system**: `Config` class (YAML/JSON → dict, validation, defaults)
-- [ ] **Model registry**: `ModelRegistry` — `register(name, factory)`, `get(name)`, `list()`
-- [ ] **Task registry**: `TaskRegistry` — `register(name, model_name, template)`, `get(name)`
-- [ ] **Shared tokenizer singleton**: `TokenizerManager` — single `BPETokenizer` instance, `extend()`, `save()`, `load()`
+- [x] **Model registry**: `ModelRegistry` — `register(name, factory)`, `get(name)`, `list()`
+- [x] **Task registry**: `TaskRegistry` — `register(name, model_name, template)`, `get(name)`
+- [x] **Shared tokenizer singleton**: `TokenizerManager` — single `BPETokenizer` instance, `extend()`, `save()`, `load()`
 - [ ] **4-bit quantized save/load per model**: `save_model(model, path)`, `load_model(path)` — works for any architecture
 - [ ] **Parameter counter**: `count_params(model)` — enforces ≤100K / 300K limits at init
 

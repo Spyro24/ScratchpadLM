@@ -5,15 +5,14 @@ After reading this document, read **STRUCTURE.md** for codebase overview, then *
 
 ---
 
-## Project Overview
-
-**TinyLM** — A small pure-Python language model with no third-party dependencies.
+## File Overview
 
 | Component | File | Description |
 |-----------|------|-------------|
 | Tokenizer | `tokenizer.py` | Byte-level BPE. `extend()` adds tokens without changing existing IDs. |
 | Model & Autograd | `ai.py` | `Value` (autograd), `TinyLM`, training (SGD + sampled softmax), generation, 4-bit save/load. |
 | Config | `config.py` | YAML/JSON config with validation, defaults, merging. Stdlib only. |
+| Registries | `registry.py` | `ModelRegistry`, `TaskRegistry`, `TokenizerManager` (singleton). |
 | UI | `ui.py` | Tkinter app: input box, steps field, Train/Generate buttons, history. |
 | Legacy Demo | `main.py` | N-gram model demo (not used by main app). |
 
@@ -132,6 +131,52 @@ model = load_model("tinyLM")  # Rebuilds TinyLM, dequantizes into Value.data
 2. Ensure `params` property returns flat list of `Value` in consistent order
 3. Add `save_model`/`load_model` support (or extend existing)
 4. Register in `ModelRegistry` (roadmap task)
+
+### Register a Model
+```python
+from registry import register_model, create_model, list_models
+from ai import TinyLM
+
+register_model("my-model",
+    lambda: TinyLM(vocab_size=1000, ctx=50, emb=64, hidden=128),
+    description="Custom model", param_count=75000, domain="custom")
+
+model = create_model("my-model")  # Creates new instance
+print(list_models())  # ['my-model', ...]
+```
+
+### Register a Task
+```python
+from registry import register_task, get_task, list_tasks, TaskTemplate
+
+register_task(TaskTemplate(
+    name="summarize",
+    model_name="tiny-prose",
+    prompt_template="Summarize: {text}",
+    description="Text summarization",
+    output_parser=lambda x: x.strip()
+))
+
+task = get_task("summarize")
+prompt = task.prompt_template.format(text="Long article...")
+```
+
+### Use Shared Tokenizer
+```python
+from registry import TOKENIZER_MANAGER, get_tokenizer
+
+# Load existing
+TOKENIZER_MANAGER.load("bpe_merges.txt")
+
+# Or get directly
+tok = get_tokenizer()
+ids = tok.encode("hello world")
+text = tok.decode(ids)
+
+# Extend vocab (affects all models using shared tokenizer)
+TOKENIZER_MANAGER.extend(new_text, vocab_size=2000)
+TOKENIZER_MANAGER.save("bpe_merges.txt")
+```
 
 ### Extend Tokenizer Safely
 ```python

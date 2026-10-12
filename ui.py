@@ -2,16 +2,29 @@ import os
 import queue
 import threading
 import tkinter as tk
-from tkinter import scrolledtext, messagebox, ttk
+from tkinter import scrolledtext, messagebox, ttk, filedialog
+import json
 
 from tokenizer import BPETokenizer
 from ai import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params
-from registry import MODEL_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
+from registry import MODEL_REGISTRY, TASK_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
+from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, MODEL_CATALOG
+from config import Config
 
 MODEL_PATH = "tinyLM"
 TOKENIZER_PATH = "bpe_merges.txt"
-VOCAB_SIZE = 1000
-CTX, EMB, HIDDEN = 50, 50, 50
+CONFIG_PATH = "config.yaml"
+
+# Load configuration
+try:
+    cfg = Config.from_file(CONFIG_PATH)
+except Exception:
+    cfg = Config.from_dict({})  # Use defaults
+
+VOCAB_SIZE = cfg["model"]["vocab_size"]
+CTX = cfg["model"]["ctx"]
+EMB = cfg["model"]["emb"]
+HIDDEN = cfg["model"]["hidden"]
 
 # Available models from registry (updated dynamically)
 def get_available_models():
@@ -40,6 +53,7 @@ class App:
 
         self.queue = queue.Queue()
         self.busy = False
+        self.cfg = cfg  # Store config reference
 
         # Use shared tokenizer manager
         self.tok = TOKENIZER_MANAGER.tokenizer
@@ -159,7 +173,7 @@ class App:
 
         tk.Label(train_controls, text="Steps:").grid(row=0, column=0, padx=(0, 5))
         self.steps_var = tk.Entry(train_controls, width=10)
-        self.steps_var.insert(0, "100")
+        self.steps_var.insert(0, str(self.cfg["training"]["steps"]))
         self.steps_var.grid(row=0, column=1, sticky="w", padx=(0, 10))
 
         self.train_btn = tk.Button(train_controls, text="Train on Data", width=15, command=self.on_train)
@@ -210,12 +224,12 @@ class App:
 
         tk.Label(gen_settings, text="Tokens:").grid(row=0, column=0, padx=(0, 5))
         self.n_tokens_var = tk.Entry(gen_settings, width=8)
-        self.n_tokens_var.insert(0, "60")
+        self.n_tokens_var.insert(0, str(self.cfg["generation"]["n_tokens"]))
         self.n_tokens_var.grid(row=0, column=1, padx=(0, 15))
 
         tk.Label(gen_settings, text="Temp:").grid(row=0, column=2, padx=(0, 5))
         self.temp_var = tk.Entry(gen_settings, width=8)
-        self.temp_var.insert(0, "0.8")
+        self.temp_var.insert(0, str(self.cfg["generation"]["temperature"]))
         self.temp_var.grid(row=0, column=3, padx=(0, 15))
 
         self.clear_btn = tk.Button(gen_settings, text="Clear History", command=self.on_clear_history)
@@ -371,7 +385,11 @@ class App:
         self._run_in_background("Training", self._train_job, prompt, steps)
 
     def _train_job(self, prompt, steps):
-        self.tok.extend(prompt, vocab_size=VOCAB_SIZE, min_frequency=2)
+        # Use config for tokenizer and training settings
+        tokenizer_cfg = self.cfg["tokenizer"]
+        training_cfg = self.cfg["training"]
+        
+        self.tok.extend(prompt, vocab_size=tokenizer_cfg["vocab_size"], min_frequency=tokenizer_cfg["min_frequency"])
         self.tok.save(TOKENIZER_PATH)
         sync_vocab(self.model, len(self.tok.vocab))
 
@@ -380,7 +398,9 @@ class App:
             raise ValueError(
                 f"The input has {len(ids)} tokens, but training needs more than {self.model.ctx}."
             )
-        train_parallel(self.model, ids, steps=steps)
+        train_parallel(self.model, ids, steps=steps, lr=training_cfg["lr"], 
+                       batch_size=training_cfg["batch_size"], n_negatives=training_cfg["n_negatives"],
+                       workers=training_cfg["workers"])
         return prompt, steps
 
     def on_send_prompt(self):

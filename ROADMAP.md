@@ -20,6 +20,7 @@
 - [x] **Shared tokenizer singleton**: `TokenizerManager` — single `BPETokenizer` instance, `extend()`, `save()`, `load()`
 - [x] **4-bit quantized save/load per model**: `save_model(model, path)`, `load_model(path)` — works for any architecture
 - [x] **Parameter counter**: `count_params(model)` — enforces ≤100K / 300K limits at init
+- [x] **Wire Config into ui.py**: Replace hardcoded `VOCAB_SIZE, CTX, EMB, HIDDEN` with `Config`
 
 ### 0a. Control UI (HIGH PRIORITY)
 - [x] **Prompt interface**: Text input box for prompting the AI, send button, conversation history

@@ -1,4 +1,7 @@
-# TinyLM Task List
+# ScratchpadLM Task List
+
+> **Project name**: ScratchpadLM (public-facing)  
+> **Internal package**: `tinylm` / `TinyLM` (unchanged)
 
 ## Done
 - [x] Fused `matvec_dot` — single autograd node per layer

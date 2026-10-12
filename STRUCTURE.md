@@ -1,5 +1,8 @@
-# TinyLM Codebase Structure
+# ScratchpadLM Codebase Structure
 
+> **Project name**: ScratchpadLM (public-facing)  
+> **Internal package**: `tinylm` / `TinyLM` (unchanged)
+>
 > Quick reference for AI agents. Read this instead of reading all source files.
 
 ---

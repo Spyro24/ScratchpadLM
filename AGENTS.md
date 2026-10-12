@@ -1,7 +1,8 @@
 # AGENTS.md
 
-Guidance for AI coding agents working in this project.
+Guidance for AI coding agents working in **ScratchpadLM** (internal package: `tinylm` / `TinyLM`).
 After reading this document, read **STRUCTURE.md** for codebase overview, then **ROADMAP.md**, select a task, do the task, check if something can be added to the roadmap, mark it as finished, and make a git commit.
+Do only one task
 
 ---
 

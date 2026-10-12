@@ -18,6 +18,16 @@
 - [ ] **4-bit quantized save/load per model**: `save_model(model, path)`, `load_model(path)` — works for any architecture
 - [ ] **Parameter counter**: `count_params(model)` — enforces ≤100K / 300K limits at init
 
+### 0a. Control UI
+- [ ] **Control panel**: Tkinter-based dashboard with model status, training controls, generation settings
+- [ ] **Model selector**: dropdown to switch between registered models (router + specialized)
+- [ ] **Training monitor**: live loss chart, step counter, learning rate display
+- [ ] **Generation controls**: temperature, top-k, top-p, repetition penalty sliders
+- [ ] **Tokenizer manager**: view vocab size, learned patterns, extend vocab button
+- [ ] **Config editor**: YAML editor with validation, save/load presets
+- [ ] **Log viewer**: scrollable training/generation logs with filtering
+- [ ] **Model inspector**: parameter count, memory usage, architecture summary
+
 ### 0b. Dynamic Model Management (runtime)
 - [ ] **ModelSpec**: dataclass `{name, path, domain_keywords, param_count, config, created_at, metrics}`
 - [ ] **ModelCatalog**: persistent registry (JSON file) — `add(spec)`, `remove(name)`, `get(name)`, `list()`, `find_by_domain(keywords)`

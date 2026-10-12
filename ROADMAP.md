@@ -35,7 +35,7 @@
 - [ ] **Tokenizer manager**: view vocab size, learned patterns, extend vocab button
 - [ ] **Config editor**: YAML editor with validation, save/load presets
 - [ ] **Log viewer**: scrollable training/generation logs with filtering
-- [ ] **Model inspector**: parameter count, memory usage, architecture summary
+- [x] **Model inspector**: parameter count, memory usage, architecture summary
 
 ### 0b. Dynamic Model Management (runtime)
 - [x] **ModelSpec**: dataclass `{name, path, domain_keywords, param_count, config, created_at, metrics}`

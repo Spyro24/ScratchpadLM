@@ -24,7 +24,7 @@
 
 ### 0a. Control UI (HIGH PRIORITY)
 - [x] **Prompt interface**: Text input box for prompting the AI, send button, conversation history
-- [ ] **Tabbed UI layout**: Reorganize UI into tabs — **Chat** (prompt + history), **Training** (data input + controls + monitor), **Model Info** (inspector + tensor details), **Admin** (model list, create/delete, catalog mgmt), **Settings** (generation params, training config, tokenizer config)
+- [x] **Tabbed UI layout**: Reorganize UI into tabs — **Chat** (prompt + history), **Training** (data input + controls + monitor), **Model Info** (inspector + tensor details), **Admin** (model list, create/delete, catalog mgmt), **Settings** (generation params, training config, tokenizer config)
 - [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
 - [ ] **Training data provider**: User provides training data directly — file upload, text paste, URL fetch, folder watch, data preview, auto domain detection, train/val split
 - [ ] **Auto model naming**: System generates model name from training data domain — shows preview `tiny-{detected_domain}` before creation

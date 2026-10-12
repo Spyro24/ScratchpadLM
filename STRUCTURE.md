@@ -16,7 +16,7 @@
 | `config.py` | Config system (YAML/JSON, validation, defaults) | `Config`, `load_yaml()`, `model_config()`, `training_config()`, `merge_configs()` |
 | `registry.py` | Model/Task registries, Tokenizer singleton | `ModelRegistry`, `TaskRegistry`, `TokenizerManager`, `TaskTemplate` |
 | `model_mgmt.py` | Dynamic model management | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`, `MODEL_CATALOG` |
-| `ui.py` | Tkinter GUI (input, train/generate buttons, history) | `App`, background thread via `queue.Queue` |
+| `ui.py` | Tkinter GUI with Prompt Interface (training data area, conversation history, prompt input with send button, generation settings) | `App`, background thread via `queue.Queue`, `_append_history()` with role-based styling |
 | `main.py` | Legacy demo script (n-gram model) | `tokenize()`, `train()`, `generate()` |
 | `AGENTS.md` | Agent guidance (this project's rules) | — |
 | `ROADMAP.md` | Task list with checkboxes | — |
@@ -109,6 +109,13 @@ config.py
 - `load(path)`, `save(path)`, `extend(text, vocab_size, min_frequency)`, `train(text, vocab_size, ...)`
 - `encode(text)`, `decode(ids)`, `vocab_size`, `vocab`, `merges`
 - Global instance: `TOKENIZER_MANAGER`
+
+### `App` (ui.py)
+- **Layout**: Three LabelFrames — Training Data (ScrolledText + steps entry + Train button), Conversation (styled ScrolledText with tags), Prompt (Entry + Send button + n_tokens/temperature entries + Clear button)
+- **Threading**: `_run_in_background(label, func, *args)` → daemon thread → `queue.Queue` → `root.after(100, _poll_queue)`
+- **History**: `_append_history(role, text)` with tags: "user" (blue bold), "assistant" (green bold), "system" (gray italic), "error" (red bold)
+- **Vocab display**: Live label showing current tokenizer vocab size
+- **Generation settings**: Configurable n_tokens (default 60) and temperature (default 0.8)
 
 ### Serialization & Model Introspection (ai.py)
 - `save_model(model, path)` — saves any model with `get_config()` and `get_tensors()` to 4-bit binary
@@ -213,6 +220,8 @@ load_model(path) → TinyLM
 - **Background**: `threading.Thread` → `queue.Queue` → `root.after(100, _poll_queue)`
 - `_run_in_background(label, func, *args)` runs `func` in thread, puts `("ok"/"error", label, result)` on queue
 - `_poll_queue` dispatches to `_handle_result` on main thread
+- **UI Layout**: Three sections — Training Data (LabelFrame with ScrolledText + controls), Conversation (LabelFrame with styled ScrolledText), Prompt (LabelFrame with Entry + Send button + generation settings)
+- **History styling**: Tags for "user" (blue bold), "assistant" (green bold), "system" (gray italic), "error" (red bold)
 
 ---
 

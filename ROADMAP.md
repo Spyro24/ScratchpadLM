@@ -22,7 +22,7 @@
 - [x] **Parameter counter**: `count_params(model)` — enforces ≤100K / 300K limits at init
 
 ### 0a. Control UI (HIGH PRIORITY)
-- [ ] **Prompt interface**: Text input box for prompting the AI, send button, conversation history
+- [x] **Prompt interface**: Text input box for prompting the AI, send button, conversation history
 - [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
 - [ ] **Training data provider**: User provides training data directly — file upload, text paste, URL fetch, folder watch, data preview, auto domain detection, train/val split
 - [ ] **Auto model naming**: System generates model name from training data domain — shows preview `tiny-{detected_domain}` before creation

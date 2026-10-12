@@ -115,6 +115,62 @@ class ModelCatalog:
         self._save()
         return True
 
+    def discover_models(self, models_dir: str = "models") -> List[ModelSpec]:
+        """Scan models directory for .tlm files and register any not in catalog.
+
+        Args:
+            models_dir: Directory containing model files
+
+        Returns:
+            List of newly discovered ModelSpecs
+        """
+        models_path = Path(models_dir)
+        if not models_path.exists():
+            return []
+
+        from ai import load_model, count_params
+
+        discovered = []
+        for model_file in models_path.glob("*.tlm"):
+            name = model_file.stem
+            if name in self._specs:
+                continue  # Already in catalog
+
+            try:
+                # Load model to get config and count params
+                model = load_model(str(model_file))
+                config = model.get_config()
+                param_count = count_params(model)
+
+                # Infer domain keywords from filename
+                # e.g., "tiny-code" -> ["code"], "my-model" -> []
+                domain_keywords = []
+                if "-" in name:
+                    # Use the part after the last hyphen as primary domain
+                    domain_keywords.append(name.split("-")[-1])
+                else:
+                    domain_keywords.append(name)
+
+                spec = ModelSpec(
+                    name=name,
+                    path=str(model_file),
+                    domain_keywords=domain_keywords,
+                    param_count=param_count,
+                    config=config,
+                    created_at=time.time(),
+                    metrics={}
+                )
+                self._specs[name] = spec
+                discovered.append(spec)
+                print(f"Discovered: {name} ({param_count:,} params, domains: {domain_keywords})")
+            except Exception as e:
+                print(f"Failed to load {model_file}: {e}")
+
+        if discovered:
+            self._save()
+
+        return discovered
+
 
 # =============================================================================
 # ModelLoader: Load models from catalog
@@ -356,7 +412,7 @@ def catalog_cli():
 
     if len(sys.argv) < 2:
         print("Usage: python -m model_mgmt <command> [args]")
-        print("Commands: list, add, remove, info, find")
+        print("Commands: list, add, remove, info, find, discover")
         return
 
     cmd = sys.argv[1]
@@ -412,6 +468,13 @@ def catalog_cli():
         results = catalog.find_by_domain([sys.argv[2]])
         for spec in results:
             print(f"{spec.name:20s} {spec.param_count:>10,} params  domains: {spec.domain_keywords}")
+
+    elif cmd == "discover":
+        models_dir = sys.argv[2] if len(sys.argv) > 2 else "models"
+        discovered = catalog.discover_models(models_dir)
+        print(f"Discovered {len(discovered)} new model(s)")
+        for spec in discovered:
+            print(f"  {spec.name}: {spec.param_count:,} params, domains: {spec.domain_keywords}")
 
 
 # Global catalog instance

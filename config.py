@@ -112,6 +112,17 @@ class Config:
             "batch_size": 16,
             "n_negatives": 256,
             "workers": None,
+            "lr_scheduler": "cosine_warmup",
+            "warmup_steps": 100,
+            "min_lr": 0.0,
+            "grad_clip": 1.0,
+            "val_split": 0.1,
+            "eval_every": 50,
+            "early_stopping": True,
+            "patience": 5,
+            "min_delta": 1e-4,
+            "checkpoint_every": 100,
+            "checkpoint_dir": "checkpoints",
         },
         "generation": {
             "n_tokens": 60,
@@ -139,6 +150,17 @@ class Config:
             "batch_size": (int, lambda x: x > 0, "batch_size must be > 0"),
             "n_negatives": (int, lambda x: x >= 0, "n_negatives must be >= 0"),
             "workers": (type(None), lambda x: x is None or x > 0, "workers must be None or > 0"),
+            "lr_scheduler": (str, lambda x: x in ("linear", "cosine_warmup", "constant"), "lr_scheduler must be linear, cosine_warmup, or constant"),
+            "warmup_steps": (int, lambda x: x >= 0, "warmup_steps must be >= 0"),
+            "min_lr": (float, lambda x: x >= 0, "min_lr must be >= 0"),
+            "grad_clip": (float, lambda x: x >= 0, "grad_clip must be >= 0"),
+            "val_split": (float, lambda x: 0.0 <= x < 1.0, "val_split must be in [0.0, 1.0)"),
+            "eval_every": (int, lambda x: x >= 0, "eval_every must be >= 0"),
+            "early_stopping": (bool, lambda x: True, "early_stopping must be boolean"),
+            "patience": (int, lambda x: x > 0, "patience must be > 0"),
+            "min_delta": (float, lambda x: x >= 0, "min_delta must be >= 0"),
+            "checkpoint_every": (int, lambda x: x >= 0, "checkpoint_every must be >= 0"),
+            "checkpoint_dir": (str, lambda x: True, "checkpoint_dir must be string"),
         },
         "generation": {
             "n_tokens": (int, lambda x: x > 0, "n_tokens must be > 0"),
@@ -237,10 +259,22 @@ def model_config(vocab_size: int = 1000, ctx: int = 50, emb: int = 50, hidden: i
 
 
 def training_config(steps: int = 100, lr: float = 0.05, batch_size: int = 16,
-                    n_negatives: int = 256, workers: Optional[int] = None) -> Dict[str, Any]:
+                    n_negatives: int = 256, workers: Optional[int] = None,
+                    lr_scheduler: str = "cosine_warmup", warmup_steps: int = 100,
+                    min_lr: float = 0.0, grad_clip: float = 1.0,
+                    val_split: float = 0.1, eval_every: int = 50,
+                    early_stopping: bool = True, patience: int = 5,
+                    min_delta: float = 1e-4, checkpoint_every: int = 100,
+                    checkpoint_dir: str = "checkpoints") -> Dict[str, Any]:
     """Create a training config dict."""
     return {"training": {"steps": steps, "lr": lr, "batch_size": batch_size,
-                         "n_negatives": n_negatives, "workers": workers}}
+                         "n_negatives": n_negatives, "workers": workers,
+                         "lr_scheduler": lr_scheduler, "warmup_steps": warmup_steps,
+                         "min_lr": min_lr, "grad_clip": grad_clip,
+                         "val_split": val_split, "eval_every": eval_every,
+                         "early_stopping": early_stopping, "patience": patience,
+                         "min_delta": min_delta, "checkpoint_every": checkpoint_every,
+                         "checkpoint_dir": checkpoint_dir}}
 
 
 def generation_config(n_tokens: int = 60, temperature: float = 0.8, top_k: int = 0, top_p: float = 0.0, repetition_penalty: float = 1.0) -> Dict[str, Any]:

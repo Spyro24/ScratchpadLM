@@ -913,20 +913,47 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None):
 
 
 def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
-          progress_cb=None, use_c=None):
-    """Mini-batch SGD with sampled softmax.
+          progress_cb=None, use_c=None,
+          lr_scheduler: str = "cosine_warmup", warmup_steps: int = 100, min_lr: float = 0.0,
+          grad_clip: float = 1.0, val_ids=None, val_split: float = 0.0, eval_every: int = 50,
+          early_stopping: bool = True, patience: int = 5, min_delta: float = 1e-4,
+          checkpoint_every: int = 100, checkpoint_dir: str = "checkpoints"):
+    """Mini-batch SGD with sampled softmax and advanced training features.
 
     Each step averages the loss over `batch_size` windows. For each target, the
     softmax runs over the true token plus `n_negatives` random tokens instead of
     the whole vocabulary. This cuts the output-layer cost by roughly
     vocab_size / (n_negatives + 1).
 
-    `progress_cb(done, total, loss)` is called after every step if given.
+    New features:
+    - LR scheduling: cosine_warmup, linear, constant
+    - Gradient clipping by global norm
+    - Validation evaluation with perplexity
+    - Early stopping with best model restoration
+    - Checkpointing for resume capability
+
+    `progress_cb(done, total, loss, val_loss=None, lr=None)` is called after every step if given.
     `use_c` forces the optional C kernel on/off; default: on when available.
+    Note: C kernel is disabled when advanced features (LR scheduler, grad clip, validation, 
+    early stopping, checkpointing) are enabled.
     """
+    # Disable C kernel when advanced features are requested
+    advanced_features = (
+        lr_scheduler != "linear" or  # linear is what C kernel does
+        warmup_steps > 0 or
+        min_lr > 0.0 or
+        grad_clip > 0 or
+        val_ids is not None or
+        val_split > 0 or
+        eval_every > 0 or
+        early_stopping or
+        checkpoint_every > 0
+    )
+    
     if use_c is None:
-        use_c = _accel_available()
+        use_c = _accel_available() and not advanced_features
     if use_c:
+        # C kernel path only supports linear decay, no advanced features
         _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb)
         return
 
@@ -935,12 +962,32 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     vocab = len(model.C)
     params = model.params
 
+    # Split validation data if provided as ratio
+    if val_ids is None and val_split > 0:
+        split_idx = int(len(ids) * (1 - val_split))
+        train_ids = ids[:split_idx]
+        val_ids = ids[split_idx:]
+        starts = range(len(train_ids) - ctx)
+    else:
+        train_ids = ids
+
+    # Setup LR scheduler
+    scheduler = LR_Scheduler(lr, steps, lr_scheduler, warmup_steps, min_lr)
+
+    # Setup early stopping
+    early_stopper = EarlyStopping(patience=patience, min_delta=min_delta) if early_stopping else None
+
+    # Setup checkpoint directory
+    from pathlib import Path
+    checkpoint_path = Path(checkpoint_dir)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+
     for step in range(steps):
-        rate = lr * (1.0 - step / steps)
+        rate = scheduler.get_lr(step)
         losses = []
         for _ in range(batch_size):
             i = random.choice(starts)
-            context, target = ids[i:i + ctx], ids[i + ctx]
+            context, target = train_ids[i:i + ctx], train_ids[i + ctx]
             losses.append(model.sampled_loss(context, target, n_negatives, vocab))
         # Average losses by summing and scaling once
         loss = losses[0]
@@ -952,14 +999,57 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
             p.grad = 0.0
         loss.backward()
 
+        # Gradient clipping
+        if grad_clip > 0:
+            clip_grads(params, grad_clip)
+
         for p in params:
             p.data -= rate * p.grad
 
+        # Validation evaluation
+        val_loss = None
+        if val_ids is not None and eval_every > 0 and (step + 1) % eval_every == 0:
+            val_loss = evaluate(model, val_ids, batch_size, n_negatives)
+            # Early stopping check
+            if early_stopper is not None:
+                if early_stopper(val_loss, model):
+                    print(f"Early stopping at step {step + 1}: val_loss={val_loss:.4f} (best={early_stopper.best_score:.4f})")
+                    if progress_cb is not None:
+                        progress_cb(step + 1, steps, loss.data, val_loss, rate)
+                    break
+
+        # Checkpointing
+        if checkpoint_every > 0 and (step + 1) % checkpoint_every == 0:
+            ckpt = Checkpoint(
+                step=step + 1,
+                model_state=_flat_params(model),
+                config=model.get_config(),
+                loss=loss.data,
+                val_loss=val_loss,
+                lr=rate,
+            )
+            ckpt_file = checkpoint_path / f"checkpoint_step_{step + 1}.json"
+            save_checkpoint(ckpt, str(ckpt_file))
+
         if progress_cb is not None:
-            progress_cb(step + 1, steps, loss.data)
+            progress_cb(step + 1, steps, loss.data, val_loss, rate)
 
         if step % 25 == 0:
-            print(f"step {step:5d}  loss {loss.data:.3f}")
+            val_str = f"  val_loss={val_loss:.4f}" if val_loss is not None else ""
+            print(f"step {step:5d}  loss {loss.data:.3f}  lr {rate:.6f}{val_str}")
+
+    # Save final checkpoint
+    if checkpoint_every > 0:
+        ckpt = Checkpoint(
+            step=steps,
+            model_state=_flat_params(model),
+            config=model.get_config(),
+            loss=loss.data,
+            val_loss=val_loss,
+            lr=scheduler.get_lr(steps - 1),
+        )
+        ckpt_file = checkpoint_path / "checkpoint_final.json"
+        save_checkpoint(ckpt, str(ckpt_file))
 
 def fast_logits(model, context):
         """Forward pass on plain floats, no graph. Used for generation."""
@@ -1036,6 +1126,187 @@ def generate(model, tok, prompt, n_tokens=60, temperature=0.8, top_k=0, top_p=0.
         next_id = _sample_next_token(logits, temperature, top_k, top_p, repetition_penalty, ids)
         ids.append(next_id)
     return tok.decode(ids)
+
+
+# ---- LR Scheduler -----------------------------------------------------------
+
+class LR_Scheduler:
+    """Learning rate scheduler with multiple strategies."""
+
+    def __init__(self, base_lr: int, total_steps: int, scheduler: str = "cosine_warmup",
+                 warmup_steps: int = 0, min_lr: float = 0.0):
+        self.base_lr = base_lr
+        self.total_steps = total_steps
+        self.scheduler = scheduler
+        self.warmup_steps = min(warmup_steps, total_steps)
+        self.min_lr = min_lr
+
+    def get_lr(self, step: int) -> float:
+        """Get learning rate for given step (0-indexed)."""
+        if step < self.warmup_steps:
+            # Linear warmup
+            return self.base_lr * (step + 1) / max(1, self.warmup_steps)
+
+        progress = (step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
+        progress = min(1.0, max(0.0, progress))
+
+        if self.scheduler == "cosine_warmup":
+            # Cosine decay to min_lr
+            cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+            return self.min_lr + (self.base_lr - self.min_lr) * cosine_decay
+        elif self.scheduler == "linear":
+            # Linear decay to min_lr
+            return self.min_lr + (self.base_lr - self.min_lr) * (1.0 - progress)
+        else:  # constant
+            return self.base_lr
+
+
+# ---- Gradient Clipping ------------------------------------------------------
+
+def clip_grads(params, max_norm: float = 1.0) -> float:
+    """Clip gradients by global norm. Returns the global norm before clipping."""
+    total_norm = 0.0
+    for p in params:
+        total_norm += p.grad * p.grad
+    total_norm = math.sqrt(total_norm)
+
+    if total_norm > max_norm and total_norm > 0:
+        clip_coef = max_norm / (total_norm + 1e-6)
+        for p in params:
+            p.grad *= clip_coef
+
+    return total_norm
+
+
+# ---- Evaluation -------------------------------------------------------------
+
+def evaluate(model, val_ids, batch_size=16, n_negatives=256) -> float:
+    """Evaluate model on validation data. Returns perplexity."""
+    ctx = model.ctx
+    vocab = len(model.C)
+    starts = range(len(val_ids) - ctx)
+    params = model.params
+
+    total_loss = 0.0
+    n_batches = min(batch_size, len(starts))
+    if n_batches == 0:
+        return float('inf')
+
+    for _ in range(n_batches):
+        i = random.choice(starts)
+        context, target = val_ids[i:i + ctx], val_ids[i + ctx]
+        loss = model.sampled_loss(context, target, n_negatives, vocab)
+        total_loss += loss.data
+
+        for p in params:
+            p.grad = 0.0
+        loss.backward()
+
+    avg_loss = total_loss / n_batches
+    perplexity = math.exp(min(avg_loss, 20))  # Cap to avoid overflow
+    return perplexity
+
+
+# ---- Early Stopping ---------------------------------------------------------
+
+class EarlyStopping:
+    """Early stopping with best model restoration."""
+
+    def __init__(self, patience: int = 5, min_delta: float = 1e-4, mode: str = "min"):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode  # "min" for loss/perplexity, "max" for accuracy
+        self.best_score = None
+        self.counter = 0
+        self.best_params = None
+        self.should_stop = False
+
+    def __call__(self, score: float, model) -> bool:
+        """Check if training should stop. Returns True if should stop."""
+        if self.mode == "min":
+            improved = self.best_score is None or score < self.best_score - self.min_delta
+        else:
+            improved = self.best_score is None or score > self.best_score + self.min_delta
+
+        if improved:
+            self.best_score = score
+            self.counter = 0
+            # Save best model parameters
+            self.best_params = [p.data for p in model.params]
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.should_stop = True
+                # Restore best parameters
+                if self.best_params is not None:
+                    for p, val in zip(model.params, self.best_params):
+                        p.data = val
+                return True
+        return False
+
+    def restore_best(self, model):
+        """Manually restore best parameters."""
+        if self.best_params is not None:
+            for p, val in zip(model.params, self.best_params):
+                p.data = val
+
+
+# ---- Checkpointing ----------------------------------------------------------
+
+@dataclass
+class Checkpoint:
+    """Training checkpoint with model state, optimizer state, and metadata."""
+    step: int
+    model_state: list  # flat list of parameter values
+    config: dict
+    loss: float
+    val_loss: Optional[float] = None
+    lr: float = 0.0
+
+    def to_dict(self) -> dict:
+        import json
+        return {
+            "step": self.step,
+            "model_state": self.model_state,
+            "config": self.config,
+            "loss": self.loss,
+            "val_loss": self.val_loss,
+            "lr": self.lr,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Checkpoint":
+        return cls(
+            step=data["step"],
+            model_state=data["model_state"],
+            config=data["config"],
+            loss=data["loss"],
+            val_loss=data.get("val_loss"),
+            lr=data.get("lr", 0.0),
+        )
+
+
+def save_checkpoint(checkpoint: Checkpoint, path: str):
+    """Save checkpoint to JSON file."""
+    import json
+    from pathlib import Path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(checkpoint.to_dict(), f)
+
+
+def load_checkpoint(path: str) -> Checkpoint:
+    """Load checkpoint from JSON file."""
+    import json
+    with open(path, "r") as f:
+        data = json.load(f)
+    return Checkpoint.from_dict(data)
+
+
+def resume_from_checkpoint(model, checkpoint: Checkpoint):
+    """Restore model from checkpoint."""
+    for p, val in zip(model.params, checkpoint.model_state):
+        p.data = val
 
 
 def _flat_params(model):

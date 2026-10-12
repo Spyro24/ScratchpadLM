@@ -131,6 +131,7 @@
 
 ### 11. Harness (Automation Engine)
 - [ ] **Protection layer**: Anti-circumvention guard — enforces command restrictions, prevents AI from bypassing allowlists/blocklists, validates all tool calls against policy, audit logging of all executions
+- [ ] **MCP support**: Model Context Protocol client — connect to MCP servers, discover tools/resources, call tools, read resources, use in `.tlm` scripts via `mcp call` / `mcp read` commands
 - [ ] **Parser**: `parse_tlm(script)` → AST (commands, assertions, control flow)
 - [ ] **Runtime**: `HarnessRuntime` — executes AST, manages variables, models
 - [ ] **Commands**: `prompt`, `task`, `assert`, `loop`, `branch`, `parallel`, `retry`, `save`, `load`

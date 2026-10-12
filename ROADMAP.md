@@ -11,7 +11,7 @@
 ## Backlog (ordered, atomic steps)
 
 ### 0. Foundations (prerequisites)
-- [ ] **Config system**: `Config` class (YAML/JSON → dict, validation, defaults)
+- [x] **Config system**: `Config` class (YAML/JSON → dict, validation, defaults)
 - [ ] **Model registry**: `ModelRegistry` — `register(name, factory)`, `get(name)`, `list()`
 - [ ] **Task registry**: `TaskRegistry` — `register(name, model_name, template)`, `get(name)`
 - [ ] **Shared tokenizer singleton**: `TokenizerManager` — single `BPETokenizer` instance, `extend()`, `save()`, `load()`

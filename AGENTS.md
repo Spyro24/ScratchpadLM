@@ -145,6 +145,23 @@ model = create_model("my-model")  # Creates new instance
 print(list_models())  # ['my-model', ...]
 ```
 
+### Save/Load Model (4-bit, works for any architecture)
+```python
+from ai import save_model, load_model, count_params, enforce_param_limit
+
+# Model must implement get_config() and get_tensors()
+save_model(model, "my_model.tlm")  # Small binary file (~4 bits/param)
+
+loaded = load_model("my_model.tlm")  # Uses registry by config['arch']
+
+# Count parameters
+n = count_params(model)
+print(f"Params: {n:,}")
+
+# Enforce limits (e.g., ≤100K for specialized, ≤300K for router)
+enforce_param_limit(model, 100_000, "specialized-model")  # Raises if exceeded
+```
+
 ### Register a Task
 ```python
 from registry import register_task, get_task, list_tasks, TaskTemplate

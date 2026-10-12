@@ -85,31 +85,30 @@ def _dequantize_rows(scales, packed, n_rows, n_cols):
 def save_model(model, path):
     """Save architecture and 4-bit quantized weights to a binary file.
 
+    Works for any model that implements:
+      - model.get_tensors() -> Dict[str, List[List[Value]]]
+      - model.get_config() -> Dict[str, Any] (must include 'arch' for identification)
+
     Layout (little-endian):
       magic "TLM4"
-      4 x uint32: vocab_size, ctx, emb, hidden
-      for each matrix (C, W1, W2) and bias vector (b1, b2):
+      uint32: config_json_length
+      config_json (UTF-8)
+      for each tensor in get_tensors().values():
         uint32 rows, uint32 cols
         float32 scale per row
         packed 4-bit values, (rows * cols + 1) // 2 bytes
     """
-    vocab_size = len(model.C)
-    emb = len(model.C[0])
-    hidden = len(model.b1)
+    import json
+    config = model.get_config()
+    config_json = json.dumps(config, separators=(',', ':')).encode('utf-8')
 
     with open(path, "wb") as f:
         f.write(MAGIC)
-        f.write(struct.pack("<4I", vocab_size, model.ctx, emb, hidden))
+        f.write(struct.pack("<I", len(config_json)))
+        f.write(config_json)
 
-        # Biases are stored as one-row matrices so they use the same format
-        tensors = [
-            model.C,
-            model.W1,
-            [model.b1],
-            model.W2,
-            [model.b2],
-        ]
-        for rows in tensors:
+        tensors = model.get_tensors()
+        for name, rows in tensors.items():
             n_rows, n_cols = len(rows), len(rows[0])
             scales, packed = _quantize_rows(rows)
             f.write(struct.pack("<2I", n_rows, n_cols))
@@ -117,19 +116,51 @@ def save_model(model, path):
             f.write(packed)
 
 
-def load_model(path):
-    """Rebuild a TinyLM from a file written by save_model."""
+def load_model(path, model_factory=None):
+    """Rebuild a model from a file written by save_model.
+
+    Args:
+        path: Path to model file
+        model_factory: Optional callable(config) -> model instance.
+                       If None, tries to use registered model factory for config['arch'].
+
+    Returns:
+        Model instance with loaded weights.
+    """
+    import json
     with open(path, "rb") as f:
         if f.read(4) != MAGIC:
             raise ValueError(f"{path} is not a 4-bit TinyLM file")
-        vocab_size, ctx, emb, hidden = struct.unpack("<4I", f.read(16))
-        model = TinyLM(vocab_size=vocab_size, ctx=ctx, emb=emb, hidden=hidden)
+        config_len = struct.unpack("<I", f.read(4))[0]
+        config_json = f.read(config_len).decode('utf-8')
+        config = json.loads(config_json)
 
-        targets = [model.C, model.W1, [model.b1], model.W2, [model.b2]]
-        for target in targets:
+        # Create model instance
+        if model_factory is not None:
+            model = model_factory(config)
+        else:
+            # Try to get from registry
+            arch = config.get('arch', 'TinyLM')
+            try:
+                from registry import get_model_factory
+                factory = get_model_factory(arch)
+                # Filter out 'arch' from config for factory
+                model_config = {k: v for k, v in config.items() if k != 'arch'}
+                model = factory(**model_config)
+            except (ImportError, KeyError):
+                # Fallback to TinyLM
+                from ai import TinyLM
+                model_config = {k: v for k, v in config.items() if k != 'arch'}
+                model = TinyLM(**model_config)
+
+        # Load tensors
+        tensors = model.get_tensors()
+        for name, target in tensors.items():
             n_rows, n_cols = struct.unpack("<2I", f.read(8))
             if n_rows != len(target) or n_cols != len(target[0]):
-                raise ValueError("Shape mismatch while loading weights")
+                raise ValueError(f"Shape mismatch for tensor '{name}': "
+                                 f"expected ({len(target)}, {len(target[0])}), "
+                                 f"got ({n_rows}, {n_cols})")
             scales = struct.unpack(f"<{n_rows}f", f.read(4 * n_rows))
             packed = f.read((n_rows * n_cols + 1) // 2)
             values = _dequantize_rows(scales, packed, n_rows, n_cols)
@@ -138,6 +169,26 @@ def load_model(path):
                     v.data = x
 
     return model
+
+
+def count_params(model) -> int:
+    """Count total parameters in a model.
+
+    Works for any model that implements model.get_tensors() -> Dict[str, List[List[Value]]].
+    """
+    total = 0
+    for rows in model.get_tensors().values():
+        for row in rows:
+            total += len(row)
+    return total
+
+
+def enforce_param_limit(model, max_params: int, model_name: str = "model"):
+    """Enforce parameter limit at init. Raises ValueError if exceeded."""
+    n = count_params(model)
+    if n > max_params:
+        raise ValueError(f"{model_name} has {n:,} parameters, exceeds limit of {max_params:,}")
+    return n
 
 import operator
 
@@ -344,6 +395,26 @@ class TinyLM:
             + [p for row in self.W1 for p in row] + self.b1
             + [p for row in self.W2 for p in row] + self.b2
         )
+
+    def get_config(self) -> dict:
+        """Return model configuration for serialization."""
+        return {
+            "arch": "TinyLM",
+            "vocab_size": len(self.C),
+            "ctx": self.ctx,
+            "emb": len(self.C[0]),
+            "hidden": len(self.b1),
+        }
+
+    def get_tensors(self) -> dict:
+        """Return model tensors as {name: List[List[Value]]} for serialization."""
+        return {
+            "C": self.C,
+            "W1": self.W1,
+            "b1": [self.b1],  # wrap bias as 1-row matrix
+            "W2": self.W2,
+            "b2": [self.b2],
+        }
 
     def _embed_context(self, context):
         """Concatenate embeddings for context tokens. Returns list of Values."""

@@ -101,6 +101,15 @@ config.py
 - `encode(text)`, `decode(ids)`, `vocab_size`, `vocab`, `merges`
 - Global instance: `TOKENIZER_MANAGER`
 
+### Serialization & Model Introspection (ai.py)
+- `save_model(model, path)` — saves any model with `get_config()` and `get_tensors()` to 4-bit binary
+- `load_model(path, model_factory=None)` — loads model, uses registry fallback by `config['arch']`
+- `count_params(model)` — returns total parameter count from `get_tensors()`
+- `enforce_param_limit(model, max_params, model_name)` — raises if model exceeds limit
+- Models must implement:
+  - `get_config() → dict` with `"arch"` key
+  - `get_tensors() → Dict[str, List[List[Value]]]`
+
 ---
 
 ## Training Flow

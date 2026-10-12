@@ -258,6 +258,8 @@ if __name__ == "__main__":
                    description="Code-specialized", param_count=80000, domain="code")
     register_model("router", lambda: TinyLM(vocab_size=1000, ctx=100, emb=128, hidden=256),
                    description="Router model", param_count=300000, domain="routing")
+    register_model("TinyLM", lambda **kw: TinyLM(**kw),
+                   description="TinyLM base architecture", domain="general")
 
     print("Registered models:", list_models())
     print("tiny-code metadata:", MODEL_REGISTRY.metadata("tiny-code"))

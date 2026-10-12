@@ -66,6 +66,8 @@ train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, progress_
 - Loss averaged over `batch_size` windows per step
 - Linear LR decay: `rate = lr * (1 - step / steps)`
 - `progress_cb(done, total, loss)` called after every step (optional)
+- `use_c` forces the C kernel on/off; default: on when `accel.AVAILABLE`
+- C kernel (`./build.sh` → `libtinylm_accel.so`, loaded via ctypes in `accel.py`): fused fwd/bwd/SGD on flat floats, ~14x faster, mathematically identical (parity-tested to 1e-9); pure-Python autograd path is the fallback
 
 ### Training (Parallel)
 ```python

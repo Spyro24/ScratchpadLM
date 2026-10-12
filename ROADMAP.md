@@ -194,11 +194,12 @@
 - [x] `main.py` — entry point: no args → GUI boot, `--cli` → CLI, `--mcp` → MCP system
 - [ ] `main.py --cli` — implement CLI (train, generate, serve, model mgmt) → section 12
 - [ ] `main.py --mcp` — implement MCP system → section 11 (MCP support)
-- [ ] `build.sh` — build script for optional C extensions
-- [ ] C source for performance-critical modules (tokenizer BPE, matrix ops, quantize/dequantize)
+- [x] `build.sh` — build script for optional C extensions
+- [x] C source for training hot path: `csrc/train_kernel.c` + `accel.py` (ctypes) — fused sampled-softmax fwd/bwd + SGD, ~14x faster, pure-Python fallback
+- [ ] C source for remaining modules (tokenizer BPE, quantize/dequantize)
 - [ ] `setup.py` / `pyproject.toml` for pip installable package
-- [ ] Optional C extension: `tinylm._c` with `bpe_train`, `matvec_dot`, `quantize`, `dequantize`
-- [ ] Fallback to pure Python when C not available
+- [ ] Optional C extension: `tinylm._c` with `bpe_train`, `quantize`, `dequantize`
+- [x] Fallback to pure Python when C not available (training; enforced by `accel.AVAILABLE` check)
 
 ---
 

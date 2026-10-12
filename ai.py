@@ -8,6 +8,11 @@ from tokenizer import BPETokenizer
 import struct
 from multiprocessing import Pool, cpu_count
 
+try:
+    import accel
+except Exception:  # pragma: no cover - accel never raises, belt and braces
+    accel = None
+
 MAGIC = b"TLM4"   # file signature: TinyLM, 4-bit
 
 from pathlib import Path
@@ -865,7 +870,50 @@ class Router:
 
 # ---- training and generation ----------------------------------------------
 
-def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, progress_cb=None):
+def _accel_available():
+    """True when the optional C training kernel is loaded (see accel.py)."""
+    return accel is not None and accel.AVAILABLE
+
+
+def _flat_data(model):
+    return [p.data for p in model.params]
+
+
+def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None):
+    """train() via the fused C kernel: forward + backward + SGD per step on
+    flat float buffers, copied back into Value.data in place (never replacing
+    Value objects). Same loss/update math as the autograd path."""
+    ctx = model.ctx
+    vocab = len(model.C)
+    emb = len(model.C[0])
+    hidden = len(model.b1)
+    dims = (vocab, ctx, emb, hidden)
+    starts = range(len(ids) - ctx)
+    flat = _flat_data(model)
+    params = model.params
+
+    for step in range(steps):
+        rate = lr * (1.0 - step / steps)
+        windows = []
+        for _ in range(batch_size):
+            i = random.choice(starts)
+            windows.extend(ids[i:i + ctx])
+            windows.append(ids[i + ctx])
+        loss, flat = accel.train_step(flat, windows, dims, n_negatives,
+                                      rate, random.randrange(1 << 62))
+        # In-place update of the existing Value objects
+        for p, x in zip(params, flat):
+            p.data = x
+
+        if progress_cb is not None:
+            progress_cb(step + 1, steps, loss)
+
+        if step % 25 == 0:
+            print(f"step {step:5d}  loss {loss:.3f}")
+
+
+def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
+          progress_cb=None, use_c=None):
     """Mini-batch SGD with sampled softmax.
 
     Each step averages the loss over `batch_size` windows. For each target, the
@@ -874,7 +922,14 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, progr
     vocab_size / (n_negatives + 1).
 
     `progress_cb(done, total, loss)` is called after every step if given.
+    `use_c` forces the optional C kernel on/off; default: on when available.
     """
+    if use_c is None:
+        use_c = _accel_available()
+    if use_c:
+        _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb)
+        return
+
     ctx = model.ctx
     starts = range(len(ids) - ctx)
     vocab = len(model.C)
@@ -949,25 +1004,41 @@ class _WorkerState:
     cfg = None
     vocab_size = 0
     n_negatives = 0
+    use_c = False
 
 
 def _init_worker(flat, cfg, vocab_size, n_negatives):
     """Initializer for persistent worker pool."""
+    _WorkerState.cfg = cfg
+    _WorkerState.vocab_size = vocab_size
+    _WorkerState.n_negatives = n_negatives
+    _WorkerState.use_c = _accel_available()
+    if _WorkerState.use_c:
+        # C kernel computes grads directly on flat floats — no model needed
+        _WorkerState.model = None
+        return
     _WorkerState.model = TinyLM(
         vocab_size=cfg["vocab"],
         ctx=cfg["ctx"],
         emb=cfg["emb"],
         hidden=cfg["hidden"],
     )
-    _WorkerState.cfg = cfg
-    _WorkerState.vocab_size = vocab_size
-    _WorkerState.n_negatives = n_negatives
     _set_flat_params(_WorkerState.model, flat)
 
 
 def _worker_grads_v2(args):
     """Worker function that receives (flat, windows) and uses persistent model."""
     flat, windows = args
+    if _WorkerState.use_c:
+        cfg = _WorkerState.cfg
+        dims = (cfg["vocab"], cfg["ctx"], cfg["emb"], cfg["hidden"])
+        flat_windows = []
+        for context, target in windows:
+            flat_windows.extend(context)
+            flat_windows.append(target)
+        return accel.batch_loss_grads(flat, flat_windows, dims,
+                                      _WorkerState.n_negatives,
+                                      random.randrange(1 << 62))
     model = _WorkerState.model
     _set_flat_params(model, flat)
 

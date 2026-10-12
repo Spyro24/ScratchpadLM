@@ -13,6 +13,8 @@
 |------|---------|----------------------|
 | `tokenizer.py` | Byte-level BPE tokenizer | `BPETokenizer`, `extend()`, `train()`, `encode()`, `decode()`, `save()`, `load()` |
 | `ai.py` | Autograd, model, training, generation, 4-bit I/O | `Value`, `TinyLM`, `train()`, `train_parallel()`, `generate()`, `save_model()`, `load_model()`, `sync_vocab()`, `count_params()`, `enforce_param_limit()` |
+| `accel.py` | Optional C training kernel via ctypes (loads `libtinylm_accel.so` from `build.sh`) | `AVAILABLE`, `batch_loss_grads()`, `train_step()`, `CAccelError` |
+| `csrc/train_kernel.c` | C source for fused sampled-softmax fwd/bwd + SGD | `tl_batch_loss_grads()`, `tl_train_step()` |
 | `config.py` | Config system (YAML/JSON, validation, defaults) | `Config`, `load_yaml()`, `model_config()`, `training_config()`, `merge_configs()` |
 | `registry.py` | Model/Task registries, Tokenizer singleton | `ModelRegistry`, `TaskRegistry`, `TokenizerManager`, `TaskTemplate` |
 | `model_mgmt.py` | Dynamic model management | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`, `MODEL_CATALOG` |
@@ -35,7 +37,8 @@ ui.py
 
 ai.py
   ├─ tokenizer.py (BPETokenizer)  ← only in __main__ demo
-  └─ config.py (Config)  ← NEW, not yet integrated
+  ├─ config.py (Config)  ← NEW, not yet integrated
+  └─ accel.py (optional C kernel; falls back to pure Python when missing)
 
 registry.py
   ├─ tokenizer.py (BPETokenizer)

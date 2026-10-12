@@ -976,15 +976,64 @@ def fast_logits(model, context):
                 for row, b in zip(model.W2, model.b2)]
 
 
-def generate(model, tok, prompt, n_tokens=60, temperature=0.8):
+def _sample_next_token(logits: list, temperature: float, top_k: int, top_p: float, repetition_penalty: float, generated_ids: list) -> int:
+    """Sample next token with temperature, top-k, top-p, and repetition penalty."""
+    # Apply repetition penalty
+    if repetition_penalty != 1.0:
+        for idx in set(generated_ids):
+            logits[idx] /= repetition_penalty
+
+    # Apply temperature
+    logits = [l / temperature for l in logits]
+
+    # Apply top-k
+    if top_k > 0:
+        # Find top-k indices
+        indexed_logits = list(enumerate(logits))
+        indexed_logits.sort(key=lambda x: x[1], reverse=True)
+        top_k_indices = {idx for idx, _ in indexed_logits[:top_k]}
+        # Set logits of non-top-k to -inf
+        logits = [logits[i] if i in top_k_indices else -float('inf') for i in range(len(logits))]
+
+    # Apply top-p (nucleus sampling)
+    if top_p > 0.0:
+        # Softmax to get probabilities
+        m = max(logits)
+        exps = [math.exp(x - m) for x in logits]
+        s = sum(exps)
+        probs = [e / s for e in exps]
+
+        # Sort by probability descending
+        indexed_probs = list(enumerate(probs))
+        indexed_probs.sort(key=lambda x: x[1], reverse=True)
+
+        # Find cutoff for top-p
+        cumulative = 0.0
+        cutoff_idx = len(indexed_probs)
+        for i, (idx, prob) in enumerate(indexed_probs):
+            cumulative += prob
+            if cumulative >= top_p:
+                cutoff_idx = i + 1
+                break
+
+        # Zero out probabilities beyond cutoff
+        allowed_indices = {idx for idx, _ in indexed_probs[:cutoff_idx]}
+        logits = [logits[i] if i in allowed_indices else -float('inf') for i in range(len(logits))]
+
+    # Final softmax and sample
+    m = max(logits)
+    weights = [math.exp(x - m) for x in logits]
+    next_id = random.choices(range(len(weights)), weights=weights)[0]
+    return next_id
+
+
+def generate(model, tok, prompt, n_tokens=60, temperature=0.8, top_k=0, top_p=0.0, repetition_penalty=1.0):
     ids = tok.encode(prompt) or [0]
     for _ in range(n_tokens):
         window = ids[-model.ctx:]
         window = [0] * (model.ctx - len(window)) + window
-        logits = [l / temperature for l in fast_logits(model, window)]
-        m = max(logits)
-        weights = [math.exp(x - m) for x in logits]
-        next_id = random.choices(range(len(weights)), weights=weights)[0]
+        logits = fast_logits(model, window)
+        next_id = _sample_next_token(logits, temperature, top_k, top_p, repetition_penalty, ids)
         ids.append(next_id)
     return tok.decode(ids)
 

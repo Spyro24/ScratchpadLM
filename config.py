@@ -116,6 +116,9 @@ class Config:
         "generation": {
             "n_tokens": 60,
             "temperature": 0.8,
+            "top_k": 0,
+            "top_p": 0.0,
+            "repetition_penalty": 1.0,
         },
         "tokenizer": {
             "vocab_size": 1000,
@@ -140,6 +143,9 @@ class Config:
         "generation": {
             "n_tokens": (int, lambda x: x > 0, "n_tokens must be > 0"),
             "temperature": (float, lambda x: x > 0, "temperature must be > 0"),
+            "top_k": (int, lambda x: x >= 0, "top_k must be >= 0"),
+            "top_p": (float, lambda x: 0.0 <= x <= 1.0, "top_p must be between 0.0 and 1.0"),
+            "repetition_penalty": (float, lambda x: x >= 1.0, "repetition_penalty must be >= 1.0"),
         },
         "tokenizer": {
             "vocab_size": (int, lambda x: x >= 256, "vocab_size must be >= 256"),
@@ -237,9 +243,9 @@ def training_config(steps: int = 100, lr: float = 0.05, batch_size: int = 16,
                          "n_negatives": n_negatives, "workers": workers}}
 
 
-def generation_config(n_tokens: int = 60, temperature: float = 0.8) -> Dict[str, Any]:
+def generation_config(n_tokens: int = 60, temperature: float = 0.8, top_k: int = 0, top_p: float = 0.0, repetition_penalty: float = 1.0) -> Dict[str, Any]:
     """Create a generation config dict."""
-    return {"generation": {"n_tokens": n_tokens, "temperature": temperature}}
+    return {"generation": {"n_tokens": n_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p, "repetition_penalty": repetition_penalty}}
 
 
 def tokenizer_config(vocab_size: int = 1000, min_frequency: int = 2) -> Dict[str, Any]:

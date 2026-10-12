@@ -17,6 +17,9 @@ training:
 generation:
   n_tokens: 60
   temperature: 0.8
+  top_k: 0
+  top_p: 0.0
+  repetition_penalty: 1.0
 
 tokenizer:
   vocab_size: 1000

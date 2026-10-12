@@ -254,8 +254,27 @@ class App:
         self.temp_var.insert(0, str(self.cfg["generation"]["temperature"]))
         self.temp_var.grid(row=0, column=3, padx=(0, 15))
 
-        self.clear_btn = tk.Button(gen_settings, text="Clear History", command=self.on_clear_history)
-        self.clear_btn.grid(row=0, column=4, padx=10)
+        tk.Label(gen_settings, text="Top-k:").grid(row=0, column=4, padx=(0, 5))
+        self.top_k_var = tk.Entry(gen_settings, width=8)
+        self.top_k_var.insert(0, str(self.cfg["generation"]["top_k"]))
+        self.top_k_var.grid(row=0, column=5, padx=(0, 15))
+
+        tk.Label(gen_settings, text="Top-p:").grid(row=0, column=6, padx=(0, 5))
+        self.top_p_var = tk.Entry(gen_settings, width=8)
+        self.top_p_var.insert(0, str(self.cfg["generation"]["top_p"]))
+        self.top_p_var.grid(row=0, column=7, padx=(0, 15))
+
+        # Second row for repetition penalty
+        gen_settings2 = tk.Frame(prompt_frame)
+        gen_settings2.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+
+        tk.Label(gen_settings2, text="Rep. Penalty:").grid(row=0, column=0, padx=(0, 5))
+        self.rep_penalty_var = tk.Entry(gen_settings2, width=8)
+        self.rep_penalty_var.insert(0, str(self.cfg["generation"]["repetition_penalty"]))
+        self.rep_penalty_var.grid(row=0, column=1, padx=(0, 15))
+
+        self.clear_btn = tk.Button(gen_settings2, text="Clear History", command=self.on_clear_history)
+        self.clear_btn.grid(row=0, column=2, padx=10)
 
     def _build_training_tab(self, tab):
         """Training tab: data input, controls, training log monitor."""
@@ -419,6 +438,9 @@ class App:
         settings = [
             ("generation", "n_tokens", "Generation tokens", int),
             ("generation", "temperature", "Temperature", float),
+            ("generation", "top_k", "Top-k", int),
+            ("generation", "top_p", "Top-p", float),
+            ("generation", "repetition_penalty", "Repetition penalty", float),
             ("training", "steps", "Training steps", int),
             ("training", "lr", "Learning rate", float),
             ("training", "batch_size", "Batch size", int),
@@ -631,12 +653,16 @@ class App:
         try:
             n_tokens = int(self.n_tokens_var.get())
             temperature = float(self.temp_var.get())
+            top_k = int(self.top_k_var.get())
+            top_p = float(self.top_p_var.get())
+            repetition_penalty = float(self.rep_penalty_var.get())
         except ValueError:
-            n_tokens, temperature = 60, 0.8
-        self._run_in_background("Generating", self._generate_job, prompt, n_tokens, temperature)
+            n_tokens, temperature, top_k, top_p, repetition_penalty = 60, 0.8, 0, 0.0, 1.0
+        self._run_in_background("Generating", self._generate_job, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty)
 
-    def _generate_job(self, prompt, n_tokens, temperature):
-        text = generate(self.model, self.tok, prompt, n_tokens=n_tokens, temperature=temperature)
+    def _generate_job(self, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty):
+        text = generate(self.model, self.tok, prompt, n_tokens=n_tokens, temperature=temperature, 
+                        top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty)
         return prompt, text
 
     def on_clear_history(self):
@@ -716,12 +742,26 @@ class App:
                     "Invalid value", f"{section}.{key}: '{raw}' is not a valid {cast.__name__}."
                 )
                 return
-            if isinstance(value, int) and value < 1:
-                messagebox.showwarning("Invalid value", f"{section}.{key} must be a positive whole number.")
-                return
+            # Validate integer fields - allow 0 for top_k, require positive for others
+            if isinstance(value, int):
+                if key == "top_k" and value < 0:
+                    messagebox.showwarning("Invalid value", f"{section}.{key} must be >= 0.")
+                    return
+                elif key != "top_k" and value < 1:
+                    messagebox.showwarning("Invalid value", f"{section}.{key} must be a positive whole number.")
+                    return
             new_data[section][key] = value
         if new_data["generation"]["temperature"] <= 0:
             messagebox.showwarning("Invalid value", "generation.temperature must be greater than 0.")
+            return
+        if new_data["generation"]["top_k"] < 0:
+            messagebox.showwarning("Invalid value", "generation.top_k must be >= 0.")
+            return
+        if not (0.0 <= new_data["generation"]["top_p"] <= 1.0):
+            messagebox.showwarning("Invalid value", "generation.top_p must be between 0.0 and 1.0.")
+            return
+        if new_data["generation"]["repetition_penalty"] < 1.0:
+            messagebox.showwarning("Invalid value", "generation.repetition_penalty must be >= 1.0.")
             return
 
         try:
@@ -738,6 +778,12 @@ class App:
         self.n_tokens_var.insert(0, str(new_data["generation"]["n_tokens"]))
         self.temp_var.delete(0, "end")
         self.temp_var.insert(0, str(new_data["generation"]["temperature"]))
+        self.top_k_var.delete(0, "end")
+        self.top_k_var.insert(0, str(new_data["generation"]["top_k"]))
+        self.top_p_var.delete(0, "end")
+        self.top_p_var.insert(0, str(new_data["generation"]["top_p"]))
+        self.rep_penalty_var.delete(0, "end")
+        self.rep_penalty_var.insert(0, str(new_data["generation"]["repetition_penalty"]))
 
         self._append_history("system", f"[Config saved to {CONFIG_PATH}]")
 

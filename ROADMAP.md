@@ -19,6 +19,8 @@
 - [x] **Parameter counter**: `count_params(model)` — enforces ≤100K / 300K limits at init
 
 ### 0a. Control UI (HIGH PRIORITY)
+- [ ] **Prompt interface**: Text input box for prompting the AI, send button, conversation history
+- [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
 - [ ] **Control panel**: Tkinter-based dashboard with model status, training controls, generation settings
 - [ ] **Model selector**: dropdown to switch between registered models (router + specialized)
 - [ ] **Training monitor**: live loss chart, step counter, learning rate display
@@ -128,7 +130,7 @@
 - [ ] Resume: `train(model, data, steps, resume_from=path)`
 
 ### 11. Harness (Automation Engine)
-- [ ] **Protection layer**: Sandbox/execution guard — timeout limits, memory limits, filesystem isolation, subprocess restrictions
+- [ ] **Protection layer**: Anti-circumvention guard — enforces command restrictions, prevents AI from bypassing allowlists/blocklists, validates all tool calls against policy, audit logging of all executions
 - [ ] **Parser**: `parse_tlm(script)` → AST (commands, assertions, control flow)
 - [ ] **Runtime**: `HarnessRuntime` — executes AST, manages variables, models
 - [ ] **Commands**: `prompt`, `task`, `assert`, `loop`, `branch`, `parallel`, `retry`, `save`, `load`

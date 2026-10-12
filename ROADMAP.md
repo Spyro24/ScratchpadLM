@@ -73,8 +73,8 @@
 - [x] Router architecture: 2-layer transformer (attention + FFN, residuals, LayerNorm)
 - [x] Router forward: input tokens → logits (with fast inference)
 - [x] Router training: sampled_loss compatible with train()
-- [ ] Router training data format: `(prompt, [subtasks])` pairs
-- [ ] Router pretraining script: `train_router(corpus, steps=10000)` → saves `router.tlm`
+- [x] Router training data format: `(prompt, [subtasks])` pairs
+- [x] Router pretraining script: `train_router(corpus, steps=10000)` → saves `router.tlm`
 - [x] Router inference: `router.split(prompt)` → list of subtasks with model assignments (heuristic)
 - [x] Router quantization: 4-bit save/load compatible
 - [ ] **MCP tool use**: Router can invoke MCP tools during inference — tool calling head, tool schema awareness, multi-step tool chains, result integration into context

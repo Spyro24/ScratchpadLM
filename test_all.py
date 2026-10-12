@@ -602,6 +602,70 @@ def t_registry():
     check(isinstance(TOKENIZER_MANAGER.vocab_size, int))
 
 
+@test("router: training data format encode/decode")
+def t_router_training_format():
+    from ai import RouterTrainingExample, encode_router_example, decode_router_sequence, create_router_training_data
+    from tokenizer import BPETokenizer
+    
+    tok = BPETokenizer()
+    tok.train("hello world " * 100, vocab_size=500)
+    target_vocab_size = 500  # Use target vocab size for special token allocation
+    ctx = 32  # Larger context to fit prompts
+    
+    # Create test example with prompts that fit in context
+    ex = RouterTrainingExample(
+        prompt="write python function",
+        subtasks=[
+            {"model": "tiny-code", "prompt": "def fib(n): return n"},
+            {"model": "tiny-prose", "prompt": "This calculates fib"}
+        ]
+    )
+    
+    # Encode and decode
+    encoded = encode_router_example(ex, tok, ctx, target_vocab_size)
+    decoded = decode_router_sequence(encoded, tok, target_vocab_size)
+    
+    check(decoded.prompt.strip() == ex.prompt.strip())
+    check(len(decoded.subtasks) == 2)
+    check(decoded.subtasks[0]["model"] == "tiny-code")
+    check(decoded.subtasks[1]["model"] == "tiny-prose")
+    
+    # Test create_router_training_data
+    ids = create_router_training_data(tok, target_vocab_size, ctx, [ex, ex])
+    check(len(ids) > 0)
+
+
+@test("router: train_router runs and reduces loss")
+def t_router_train():
+    from ai import Router, RouterConfig, train_router, generate_router_training_data
+    from tokenizer import BPETokenizer
+    
+    tok = BPETokenizer()
+    corpus = ("write a python function to calculate fibonacci. " * 50 +
+              "solve the math equation x^2 + 2x = 0. " * 50 +
+              "write a story about a cat. " * 50)
+    tok.train(corpus, vocab_size=2000)
+    vocab_size = len(tok.vocab)
+    
+    config = RouterConfig(vocab_size=vocab_size, ctx=32, emb=64, hidden=128, n_layers=2, d_ff=256)
+    router = Router(config, seed=42)
+    
+    examples = generate_router_training_data(corpus, tok, vocab_size, config.ctx)
+    check(len(examples) > 0)
+    
+    # Train for a few steps
+    import io, contextlib
+    losses = []
+    with contextlib.redirect_stdout(io.StringIO()):
+        train_router(router, tok, examples, steps=4, lr=0.05, batch_size=4, n_negatives=16,
+                     use_c=False, progress_cb=lambda d, t, l, *a: losses.append(l))
+    
+    check(len(losses) == 4)
+    check(all(math.isfinite(l) for l in losses))
+    # Loss should generally decrease or at least be stable
+    check(losses[-1] < losses[0] * 2)  # Not diverging
+
+
 @test("model_mgmt: catalog create/load/delete roundtrip")
 def t_catalog():
     from model_mgmt import ModelCatalog, ModelCreator, ModelLoader

@@ -248,12 +248,14 @@ def get_tokenizer() -> Any:
 
 
 # Register built-in model factories (run on import)
-from ai import TinyLM, Router, RouterConfig
+from ai import TinyLM, Router, RouterConfig, SpecializedLM, SpecializedConfig
 
 register_model("TinyLM", lambda **kw: TinyLM(**kw),
                description="TinyLM base architecture", domain="general")
 register_model("Router", lambda **kw: Router(RouterConfig(**kw)),
                description="Router model (2-layer transformer)", domain="routing", param_count=300000)
+register_model("SpecializedLM", lambda **kw: SpecializedLM(SpecializedConfig(**kw)),
+               description="Specialized model (1-layer transformer, ≤100K params)", domain="specialized", param_count=100000)
 
 
 if __name__ == "__main__":

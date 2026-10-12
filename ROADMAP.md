@@ -80,11 +80,11 @@
 - [ ] **MCP tool use**: Router can invoke MCP tools during inference — tool calling head, tool schema awareness, multi-step tool chains, result integration into context
 
 ### 2. Specialized Model Base (≤100K params each)
-- [ ] Base config: `ModelConfig(vocab, ctx, emb, hidden, n_layers=1, model_type)`
-- [ ] Base architecture: 1-layer transformer block (attention + FFN, residuals, LayerNorm)
-- [ ] Model factory: `create_model(config)` — returns model instance
-- [ ] Model save/load: uses shared 4-bit format
-- [ ] Param limit enforcement: raises if `count_params > 100_000`
+- [x] Base config: `ModelConfig(vocab, ctx, emb, hidden, n_layers=1, model_type)`
+- [x] Base architecture: 1-layer transformer block (attention + FFN, residuals, LayerNorm)
+- [x] Model factory: `create_model(config)` — returns model instance
+- [x] Model save/load: uses shared 4-bit format
+- [x] Param limit enforcement: raises if `count_params > 100_000`
 - [ ] **MCP tool use**: Specialized models can invoke MCP tools — tool calling head, domain-specific tool schemas (e.g., SolidCraft for tiny-code), result integration, stays within 100K param budget
 
 ### 3. Default Specialized Models (variable count, user-driven)

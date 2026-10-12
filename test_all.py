@@ -666,6 +666,49 @@ def t_router_train():
     check(losses[-1] < losses[0] * 2)  # Not diverging
 
 
+@test("specialized: model creation, training, save/load")
+def t_specialized_model():
+    from ai import SpecializedLM, SpecializedConfig, create_specialized_model, get_specialized_presets, count_params, save_model, load_model
+    from tokenizer import BPETokenizer
+    
+    tok = BPETokenizer()
+    tok.train("hello world " * 200, vocab_size=500)
+    vocab_size = len(tok.vocab)
+    
+    # Test custom config
+    config = SpecializedConfig(vocab_size=vocab_size, ctx=32, emb=32, hidden=32, n_layers=1, d_ff=128, model_type="test")
+    model = SpecializedLM(config, seed=42)
+    check(count_params(model) < 100_000)
+    
+    # Test forward/loss
+    ids = tok.encode("hello world")
+    loss = model.sampled_loss(ids[-config.ctx:], ids[0], 16, vocab_size)
+    check(math.isfinite(loss.data))
+    
+    # Test fast_logits
+    fast = model.fast_logits(ids[-config.ctx:])
+    check(len(fast) == vocab_size)
+    
+    # Test save/load
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "specialized.tlm")
+        save_model(model, path)
+        loaded = load_model(path)
+        check(count_params(loaded) == count_params(model))
+    
+    # Test presets
+    presets = get_specialized_presets()
+    for name, preset_config in presets.items():
+        preset_model = create_specialized_model(preset_config, seed=123)
+        check(count_params(preset_model) < 100_000)
+    
+    # Test generation
+    from ai import generate
+    text = generate(model, tok, "hello", n_tokens=10, temperature=0.8)
+    check(isinstance(text, str) and len(text) > 0)
+
+
 @test("model_mgmt: catalog create/load/delete roundtrip")
 def t_catalog():
     from model_mgmt import ModelCatalog, ModelCreator, ModelLoader

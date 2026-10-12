@@ -18,7 +18,7 @@
 - [x] **4-bit quantized save/load per model**: `save_model(model, path)`, `load_model(path)` — works for any architecture
 - [x] **Parameter counter**: `count_params(model)` — enforces ≤100K / 300K limits at init
 
-### 0a. Control UI
+### 0a. Control UI (HIGH PRIORITY)
 - [ ] **Control panel**: Tkinter-based dashboard with model status, training controls, generation settings
 - [ ] **Model selector**: dropdown to switch between registered models (router + specialized)
 - [ ] **Training monitor**: live loss chart, step counter, learning rate display
@@ -128,6 +128,7 @@
 - [ ] Resume: `train(model, data, steps, resume_from=path)`
 
 ### 11. Harness (Automation Engine)
+- [ ] **Protection layer**: Sandbox/execution guard — timeout limits, memory limits, filesystem isolation, subprocess restrictions
 - [ ] **Parser**: `parse_tlm(script)` → AST (commands, assertions, control flow)
 - [ ] **Runtime**: `HarnessRuntime` — executes AST, manages variables, models
 - [ ] **Commands**: `prompt`, `task`, `assert`, `loop`, `branch`, `parallel`, `retry`, `save`, `load`

@@ -29,7 +29,7 @@
 - [ ] **Train vs Create advisor**: Analyzes user data → "Fine-tune existing tiny-X (92% match)" vs "Create new tiny-Y (new domain)" with confidence
 - [ ] **Variable batch tokenizer**: Training batches with mixed-domain detection — routes tokens to appropriate model trainers, prevents single-model training on heterogeneous data
 - [ ] **Control panel**: Tkinter-based dashboard with model status, training controls, generation settings
-- [ ] **Model selector**: dropdown to switch between registered models (router + specialized)
+- [x] **Model selector**: dropdown to switch between registered models (router + specialized)
 - [ ] **Training monitor**: live loss chart, step counter, learning rate display
 - [ ] **Generation controls**: temperature, top-k, top-p, repetition penalty sliders
 - [ ] **Tokenizer manager**: view vocab size, learned patterns, extend vocab button

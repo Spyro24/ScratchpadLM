@@ -2,15 +2,34 @@ import os
 import queue
 import threading
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox, ttk
 
 from tokenizer import BPETokenizer
 from ai import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel
+from registry import MODEL_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
 
 MODEL_PATH = "tinyLM"
 TOKENIZER_PATH = "bpe_merges.txt"
 VOCAB_SIZE = 1000
 CTX, EMB, HIDDEN = 50, 50, 50
+
+# Available models from registry (updated dynamically)
+def get_available_models():
+    """Get list of available model names from registry, catalog, and local files."""
+    models = list(MODEL_REGISTRY.list())
+    # Add models from catalog that have valid files
+    try:
+        from model_mgmt import MODEL_CATALOG
+        from pathlib import Path
+        for spec in MODEL_CATALOG.list():
+            if spec.name not in models and Path(spec.path).exists():
+                models.append(spec.name)
+    except Exception:
+        pass
+    # Add built-in if not present
+    if "TinyLM" not in models:
+        models.insert(0, "TinyLM")
+    return models
 
 
 class App:
@@ -22,9 +41,10 @@ class App:
         self.queue = queue.Queue()
         self.busy = False
 
-        self.tok = BPETokenizer()
+        # Use shared tokenizer manager
+        self.tok = TOKENIZER_MANAGER.tokenizer
         if os.path.exists(TOKENIZER_PATH):
-            self.tok.load(TOKENIZER_PATH)
+            TOKENIZER_MANAGER.load(TOKENIZER_PATH)
         self.model = self._load_model()
 
         self._build_ui()
@@ -42,6 +62,77 @@ class App:
             pass
         return TinyLM(vocab_size=len(self.tok.vocab), ctx=CTX, emb=EMB, hidden=HIDDEN)
 
+    def refresh_models(self):
+        """Refresh the model dropdown with available models."""
+        models = get_available_models()
+        self.model_combo["values"] = models
+        if self.model_var.get() not in models:
+            self.model_var.set(models[0] if models else "TinyLM")
+        self._append_history("system", f"[Refreshed model list: {', '.join(models)}]")
+
+    def on_model_change(self, event=None):
+        """Handle model selection change."""
+        model_name = self.model_var.get()
+        self._switch_model(model_name)
+
+    def _switch_model(self, model_name):
+        """Switch to the selected model."""
+        if self.busy:
+            return
+        self._append_history("system", f"[Switching to model: {model_name}...]")
+        
+        # Run model loading in background
+        self._run_in_background(f"Loading {model_name}", self._load_model_job, model_name)
+
+    def _load_model_job(self, model_name):
+        """Background job to load a model."""
+        if model_name == "TinyLM":
+            # Create a fresh TinyLM with current vocab size
+            return TinyLM(vocab_size=len(self.tok.vocab), ctx=CTX, emb=EMB, hidden=HIDDEN)
+        try:
+            factory = MODEL_REGISTRY.get(model_name)
+            return factory()
+        except KeyError:
+            # Try loading from catalog
+            try:
+                from model_mgmt import ModelLoader, MODEL_CATALOG
+                loader = ModelLoader(MODEL_CATALOG, tokenizer_manager=TOKENIZER_MANAGER)
+                return loader.load_model(model_name)
+            except Exception as e:
+                raise ValueError(f"Model '{model_name}' not found in registry or catalog: {e}")
+
+    def _handle_result(self, kind, label, payload):
+        if kind == "error":
+            self._set_busy(False, "Error")
+            self._append_history("error", f"Error: {payload}")
+            messagebox.showerror("Error", f"{label} failed:\n{payload}")
+            return
+
+        if label == "Training":
+            prompt, steps = payload
+            save_model(self.model, MODEL_PATH)
+            self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
+            self._append_history("system", f"[Trained on {len(prompt)} chars, {steps} steps, model saved. Vocab: {len(self.tok.vocab)}]")
+            self._set_busy(False, "Training done")
+        elif label.startswith("Loading "):
+            self.model = payload
+            model_name = label.replace("Loading ", "")
+            self._append_history("system", f"[Loaded model: {model_name} ({len(self.model.C)} vocab, {self.model.ctx} ctx)]")
+            self._set_busy(False, "Ready")
+        elif label == "Generating":
+            prompt, text = payload
+            self._append_history("assistant", text)
+            self._set_busy(False, "Ready")
+
+    def _get_model_factory(self, model_name):
+        """Get model factory from registry or return TinyLM."""
+        if model_name == "TinyLM":
+            return lambda: TinyLM(vocab_size=len(self.tok.vocab), ctx=CTX, emb=EMB, hidden=HIDDEN)
+        try:
+            return MODEL_REGISTRY.get(model_name)
+        except KeyError:
+            return None
+
     # ---- UI ----------------------------------------------------------------
 
     def _build_ui(self):
@@ -58,14 +149,33 @@ class App:
         train_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         train_frame.columnconfigure(0, weight=1)
 
+        # Model selector row (above training text)
+        model_row = tk.Frame(train_frame)
+        model_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        model_row.columnconfigure(1, weight=1)
+
+        tk.Label(model_row, text="Model:").grid(row=0, column=0, padx=(0, 5))
+        self.model_var = tk.StringVar(value="TinyLM")
+        self.model_combo = ttk.Combobox(model_row, textvariable=self.model_var, state="readonly", width=20)
+        self.model_combo["values"] = get_available_models()
+        self.model_combo.grid(row=0, column=1, sticky="w", padx=(0, 10))
+        self.model_combo.bind("<<ComboboxSelected>>", self.on_model_change)
+
+        # Refresh models button
+        tk.Button(model_row, text="Refresh Models", command=self.refresh_models, width=15).grid(row=0, column=2, padx=5)
+
+        # Vocab size display
+        self.vocab_label = tk.Label(model_row, text=f"Vocab: {len(self.tok.vocab)}")
+        self.vocab_label.grid(row=0, column=3, padx=10)
+
         # Training text area (multi-line for larger training data)
         self.train_text = scrolledtext.ScrolledText(train_frame, wrap="word", height=4)
-        self.train_text.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.train_text.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         self.train_text.insert("1.0", "Enter training text here...")
 
         # Training controls row
         train_controls = tk.Frame(train_frame)
-        train_controls.grid(row=1, column=0, sticky="ew")
+        train_controls.grid(row=2, column=0, sticky="ew")
         train_controls.columnconfigure(1, weight=1)
 
         tk.Label(train_controls, text="Steps:").grid(row=0, column=0, padx=(0, 5))
@@ -75,10 +185,6 @@ class App:
 
         self.train_btn = tk.Button(train_controls, text="Train on Data", width=15, command=self.on_train)
         self.train_btn.grid(row=0, column=2, padx=5)
-
-        # Vocab size display
-        self.vocab_label = tk.Label(train_controls, text=f"Vocab: {len(self.tok.vocab)}")
-        self.vocab_label.grid(row=0, column=3, padx=10)
 
         # ============================================================
         # SECTION 2: Conversation History (middle - expands)
@@ -203,6 +309,11 @@ class App:
             self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
             self._append_history("system", f"[Trained on {len(prompt)} chars, {steps} steps, model saved. Vocab: {len(self.tok.vocab)}]")
             self._set_busy(False, "Training done")
+        elif label.startswith("Loading "):
+            self.model = payload
+            model_name = label.replace("Loading ", "")
+            self._append_history("system", f"[Loaded model: {model_name} ({len(self.model.C)} vocab, {self.model.ctx} ctx)]")
+            self._set_busy(False, "Ready")
         elif label == "Generating":
             prompt, text = payload
             self._append_history("assistant", text)

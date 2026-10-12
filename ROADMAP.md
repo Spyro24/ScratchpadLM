@@ -58,13 +58,14 @@
 - [ ] **Metrics**: tracks per-model `avg_rating`, `train_count`, `last_trained`, `improvement_delta`
 
 ### 1. Router Model (300K params, pretrained)
-- [ ] Router config: `RouterConfig(vocab, ctx, emb, hidden, n_layers=2)`
-- [ ] Router architecture: 2-layer transformer (attention + FFN, residuals, LayerNorm)
-- [ ] Router forward: input tokens → `[{subtask, model, context_tokens}]` (structured output)
+- [x] Router config: `RouterConfig(vocab, ctx, emb, hidden, n_layers=2)`
+- [x] Router architecture: 2-layer transformer (attention + FFN, residuals, LayerNorm)
+- [x] Router forward: input tokens → logits (with fast inference)
+- [x] Router training: sampled_loss compatible with train()
 - [ ] Router training data format: `(prompt, [subtasks])` pairs
 - [ ] Router pretraining script: `train_router(corpus, steps=10000)` → saves `router.tlm`
-- [ ] Router inference: `router.split(prompt)` → list of subtasks with model assignments
-- [ ] Router quantization: 4-bit save/load compatible
+- [x] Router inference: `router.split(prompt)` → list of subtasks with model assignments (heuristic)
+- [x] Router quantization: 4-bit save/load compatible
 
 ### 2. Specialized Model Base (≤100K params each)
 - [ ] Base config: `ModelConfig(vocab, ctx, emb, hidden, n_layers=1, model_type)`

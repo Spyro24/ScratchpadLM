@@ -247,6 +247,15 @@ def get_tokenizer() -> Any:
     return TOKENIZER_MANAGER.tokenizer
 
 
+# Register built-in model factories (run on import)
+from ai import TinyLM, Router, RouterConfig
+
+register_model("TinyLM", lambda **kw: TinyLM(**kw),
+               description="TinyLM base architecture", domain="general")
+register_model("Router", lambda **kw: Router(RouterConfig(**kw)),
+               description="Router model (2-layer transformer)", domain="routing", param_count=300000)
+
+
 if __name__ == "__main__":
     # Demo
     from ai import TinyLM
@@ -256,10 +265,6 @@ if __name__ == "__main__":
                    description="Base model", param_count=50000, domain="general")
     register_model("tiny-code", lambda: TinyLM(vocab_size=1000, ctx=50, emb=64, hidden=128),
                    description="Code-specialized", param_count=80000, domain="code")
-    register_model("router", lambda: TinyLM(vocab_size=1000, ctx=100, emb=128, hidden=256),
-                   description="Router model", param_count=300000, domain="routing")
-    register_model("TinyLM", lambda **kw: TinyLM(**kw),
-                   description="TinyLM base architecture", domain="general")
 
     print("Registered models:", list_models())
     print("tiny-code metadata:", MODEL_REGISTRY.metadata("tiny-code"))

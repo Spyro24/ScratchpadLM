@@ -68,6 +68,7 @@
 - [ ] Router pretraining script: `train_router(corpus, steps=10000)` → saves `router.tlm`
 - [x] Router inference: `router.split(prompt)` → list of subtasks with model assignments (heuristic)
 - [x] Router quantization: 4-bit save/load compatible
+- [ ] **MCP tool use**: Router can invoke MCP tools during inference — tool calling head, tool schema awareness, multi-step tool chains, result integration into context
 
 ### 2. Specialized Model Base (≤100K params each)
 - [ ] Base config: `ModelConfig(vocab, ctx, emb, hidden, n_layers=1, model_type)`
@@ -88,6 +89,7 @@
 - [ ] `runtime.route(prompt)` → router splits → dispatches to specialized models
 - [ ] `runtime.generate(prompt)` → collaborative generation coordinator
 - [ ] Memory budget: lazy-load models, unload unused after timeout
+- [ ] **MCP tool execution**: Runtime executes MCP tool calls from router — tool registry, invocation sandbox, result streaming back to model context, timeout/circuit breaker
 
 ### 5. Task System
 - [ ] Task definition: `Task(name, model_name, prompt_template, output_parser)`

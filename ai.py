@@ -4,6 +4,7 @@ import random
 from tokenizer import BPETokenizer
 
 import struct
+from multiprocessing import Pool, cpu_count
 
 MAGIC = b"TLM4"   # file signature: TinyLM, 4-bit
 
@@ -266,6 +267,37 @@ def dot(ws, xs, b=None):
     return out
 
 
+def matvec_dot(rows, xs, biases=None):
+    """Compute multiple dot products: [row @ x + b for row, b in zip(rows, biases)].
+    More efficient than calling dot() per row - shares forward computation."""
+    xd = [x.data for x in xs]
+    outs = []
+    for i, row in enumerate(rows):
+        wd = [w.data for w in row]
+        total = sum(map(operator.mul, wd, xd))
+        if biases is not None:
+            total += biases[i].data
+        prev = tuple(row) + tuple(xs)
+        if biases is not None:
+            prev += (biases[i],)
+        out = Value(total, prev)
+
+        # Capture wd and out for this row's backward (avoid late binding)
+        def make_back(row=row, wd=wd, b=biases[i] if biases else None, out=out):
+            def back():
+                g = out.grad
+                for w, xv in zip(row, xd):
+                    w.grad += g * xv
+                for x, wv in zip(xs, wd):
+                    x.grad += g * wv
+                if b is not None:
+                    b.grad += g
+            return back
+        out._back = make_back()
+        outs.append(out)
+    return outs
+
+
 def softmax_cross_entropy(logits, target):
     """Cross-entropy of softmax(logits) against one target index, as one node.
     The gradient with respect to each logit is probs[i] - (1 if i == target)."""
@@ -313,12 +345,19 @@ class TinyLM:
             + [p for row in self.W2 for p in row] + self.b2
         )
 
-    def logits(self, context):
+    def _embed_context(self, context):
+        """Concatenate embeddings for context tokens. Returns list of Values."""
         x = []
         for tok in context:
             x.extend(self.C[tok])
-        h = [dot(row, x, b).tanh() for row, b in zip(self.W1, self.b1)]
-        return [dot(row, h, b) for row, b in zip(self.W2, self.b2)]
+        return x
+
+    def logits(self, context):
+        x = self._embed_context(context)
+        h = matvec_dot(self.W1, x, self.b1)
+        for i in range(len(h)):
+            h[i] = h[i].tanh()
+        return matvec_dot(self.W2, h, self.b2)
 
     def loss(self, context, target):
         return softmax_cross_entropy(self.logits(context), target)
@@ -326,13 +365,15 @@ class TinyLM:
     def sampled_loss(self, context, target, n_negatives, vocab_size):
         """Cross-entropy over the target plus random negatives only.
         Computes just those output rows instead of the whole vocabulary."""
-        x = []
-        for tok in context:
-            x.extend(self.C[tok])
-        h = [dot(row, x, b).tanh() for row, b in zip(self.W1, self.b1)]
+        x = self._embed_context(context)
+        h = matvec_dot(self.W1, x, self.b1)
+        for i in range(len(h)):
+            h[i] = h[i].tanh()
 
         candidates = [target] + [random.randrange(vocab_size) for _ in range(n_negatives)]
-        logits = [dot(self.W2[c], h, self.b2[c]) for c in candidates]
+        W2_sub = [self.W2[c] for c in candidates]
+        b2_sub = [self.b2[c] for c in candidates]
+        logits = matvec_dot(W2_sub, h, b2_sub)
         return softmax_cross_entropy(logits, 0)
 
 
@@ -353,12 +394,16 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256):
 
     for step in range(steps):
         rate = lr * (1.0 - step / steps)
-        batch_loss = Value(0.0)
+        losses = []
         for _ in range(batch_size):
             i = random.choice(starts)
             context, target = ids[i:i + ctx], ids[i + ctx]
-            batch_loss = batch_loss + model.sampled_loss(context, target, n_negatives, vocab)
-        loss = batch_loss * (1.0 / batch_size)
+            losses.append(model.sampled_loss(context, target, n_negatives, vocab))
+        # Average losses by summing and scaling once
+        loss = losses[0]
+        for L in losses[1:]:
+            loss = loss + L
+        loss = loss * (1.0 / batch_size)
 
         for p in params:
             p.grad = 0.0
@@ -375,8 +420,12 @@ def fast_logits(model, context):
         x = []
         for tok in context:
             x.extend(v.data for v in model.C[tok])
-        h = [math.tanh(sum(w.data * xi for w, xi in zip(row, x)) + b.data)
-             for row, b in zip(model.W1, model.b1)]
+        # Fused: h = tanh(W1 @ x + b1)
+        h = []
+        for row, b in zip(model.W1, model.b1):
+            s = sum(w.data * xi for w, xi in zip(row, x)) + b.data
+            h.append(math.tanh(s))
+        # Fused: logits = W2 @ h + b2
         return [sum(w.data * hi for w, hi in zip(row, h)) + b.data
                 for row, b in zip(model.W2, model.b2)]
 
@@ -393,8 +442,6 @@ def generate(model, tok, prompt, n_tokens=60, temperature=0.8):
         ids.append(next_id)
     return tok.decode(ids)
 
-from multiprocessing import Pool, cpu_count
-
 
 def _flat_params(model):
     return [p.data for p in model.params]
@@ -405,22 +452,48 @@ def _set_flat_params(model, flat):
         p.data = x
 
 
-def _worker_grads(args):
-    """Runs in a worker process. Rebuilds the model from its floats, computes
-    the loss gradient for a few windows, and returns the gradients as floats."""
-    flat, cfg, windows, n_negatives, vocab_size = args
-    model = TinyLM(vocab_size=cfg["vocab"], ctx=cfg["ctx"], emb=cfg["emb"], hidden=cfg["hidden"])
+class _WorkerState:
+    """Holds a model instance in each worker process to avoid reconstruction."""
+    model = None
+    cfg = None
+    vocab_size = 0
+    n_negatives = 0
+
+
+def _init_worker(flat, cfg, vocab_size, n_negatives):
+    """Initializer for persistent worker pool."""
+    _WorkerState.model = TinyLM(
+        vocab_size=cfg["vocab"],
+        ctx=cfg["ctx"],
+        emb=cfg["emb"],
+        hidden=cfg["hidden"],
+    )
+    _WorkerState.cfg = cfg
+    _WorkerState.vocab_size = vocab_size
+    _WorkerState.n_negatives = n_negatives
+    _set_flat_params(_WorkerState.model, flat)
+
+
+def _worker_grads_v2(args):
+    """Worker function that receives (flat, windows) and uses persistent model."""
+    flat, windows = args
+    model = _WorkerState.model
     _set_flat_params(model, flat)
 
-    batch_loss = Value(0.0)
+    losses = []
     for context, target in windows:
-        batch_loss = batch_loss + model.sampled_loss(context, target, n_negatives, vocab_size)
-    batch_loss.backward()
-    return batch_loss.data * len(windows), [p.grad * len(windows) for p in model.params]
+        losses.append(model.sampled_loss(context, target, _WorkerState.n_negatives, _WorkerState.vocab_size))
+    # Sum losses
+    loss = losses[0]
+    for L in losses[1:]:
+        loss = loss + L
+    loss.backward()
+    return loss.data, [p.grad for p in model.params]
 
 
 def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, workers=None):
-    """Data-parallel version of train. The batch is split across processes and
+    """Data-parallel version of train. Uses persistent worker pool to avoid
+    rebuilding the model each step. The batch is split across processes and
     the gradients are summed before one SGD update."""
     workers = workers or cpu_count()
     ctx = model.ctx
@@ -429,7 +502,14 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
     cfg = {"vocab": vocab, "ctx": ctx, "emb": len(model.C[0]), "hidden": len(model.b1)}
     params = model.params
 
-    with Pool(workers) as pool:
+    # Pre-create initial flat params for worker initialization
+    init_flat = _flat_params(model)
+
+    with Pool(
+        workers,
+        initializer=_init_worker,
+        initargs=(init_flat, cfg, vocab, n_negatives),
+    ) as pool:
         for step in range(steps):
             rate = lr * (1.0 - step / steps)
             batch = [(ids[i:i + ctx], ids[i + ctx])
@@ -438,7 +518,8 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
             chunks = [c for c in chunks if c]
 
             flat = _flat_params(model)
-            results = pool.map(_worker_grads, [(flat, cfg, c, n_negatives, vocab) for c in chunks])
+            # Send (flat, chunk) to each worker
+            results = pool.map(_worker_grads_v2, [(flat, c) for c in chunks])
 
             total_loss = sum(r[0] for r in results)
             grad = [0.0] * len(params)

@@ -21,6 +21,9 @@
 ### 0a. Control UI (HIGH PRIORITY)
 - [ ] **Prompt interface**: Text input box for prompting the AI, send button, conversation history
 - [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
+- [ ] **Training data selector**: UI to choose training data directly — file upload, text paste, URL fetch, data preview, domain tagging, split train/val
+- [ ] **Model training advisor**: Analyzes training data → recommends "train existing model X" vs "create new model Y" based on domain match, param budget, catalog coverage
+- [ ] **Variable batch tokenizer**: Training batches with mixed-domain detection — routes tokens to appropriate model trainers, prevents single-model training on heterogeneous data
 - [ ] **Control panel**: Tkinter-based dashboard with model status, training controls, generation settings
 - [ ] **Model selector**: dropdown to switch between registered models (router + specialized)
 - [ ] **Training monitor**: live loss chart, step counter, learning rate display
@@ -78,11 +81,17 @@
 - [ ] Param limit enforcement: raises if `count_params > 100_000`
 - [ ] **MCP tool use**: Specialized models can invoke MCP tools — tool calling head, domain-specific tool schemas (e.g., SolidCraft for tiny-code), result integration, stays within 100K param budget
 
-### 3. Default Specialized Models (4 models)
+### 3. Default Specialized Models (extensible, >4 models)
+- [ ] **Model prioritization**: Training queue with priority scoring — domain coverage gaps, performance metrics, data availability → decides which models to train first
 - [ ] `tiny-code`: config optimized for code (larger hidden, code-specific pretraining) — MCP tools: SolidCraft (CAD sketches), Git (version control), LSP (code analysis)
 - [ ] `tiny-reason`: config optimized for logic (deeper, math/logic pretraining) — MCP tools: WolframAlpha (computation), Proof assistants (Lean, Coq)
 - [ ] `tiny-prose`: config optimized for text (standard) — MCP tools: Web search, Document APIs, Translation
 - [ ] `tiny-embed`: no LM head, outputs `[CLS]` embedding, contrastive loss — MCP tools: Vector DB (search/index), RAG pipelines
+- [ ] `tiny-sql`: SQL/databases — MCP tools: PostgreSQL, MySQL, DuckDB
+- [ ] `tiny-docs`: documentation/manuals — MCP tools: Confluence, Notion, GitBook
+- [ ] `tiny-shell`: shell/CLI commands — MCP tools: terminal, kubectl, AWS CLI
+- [ ] `tiny-data`: data analysis/visualization — MCP tools: Pandas, Plotly, Jupyter
+- [ ] **Dynamic model creation**: Auto-create new specialized models when domain gap detected
 
 ### 4. Multi-Model Runtime
 - [ ] `ModelRuntime` class: loads router + all specialized models at startup
@@ -107,12 +116,15 @@
 
 ### 7. Training Pipeline
 - [ ] `train(model, data, steps, config)` — works for any model type
-- [ ] Data loaders: `CodeDataset`, `ReasoningDataset`, `ProseDataset`, `EmbeddingDataset`
+- [ ] Data loaders: `CodeDataset`, `ReasoningDataset`, `ProseDataset`, `EmbeddingDataset`, `SQLDataset`, `ShellDataset`, `DataAnalysisDataset`
+- [ ] **Variable batch token router**: Analyzes batch tokens → routes to correct model trainer (code→tiny-code, math→tiny-reason, etc.), prevents cross-domain contamination
+- [ ] **Model selection for training**: Given training data, evaluates catalog → returns (existing_model_to_finetune OR new_model_spec) with confidence score
 - [ ] LR scheduler: `CosineWithWarmup(lr, warmup_steps, total_steps)`
 - [ ] Gradient clipping: `clip_grads(params, max_norm=1.0)`
 - [ ] Validation: `evaluate(model, val_data)` → perplexity / accuracy
 - [ ] Early stopping: patience, min_delta, restore best
 - [ ] Router fine-tune: `train_router(router, decomposition_data, steps)`
+- [ ] **Training priority queue**: Scores models by (domain_gap * data_volume * performance_delta) → trains highest priority first
 
 ### 8. Tokenizer Enhancements
 - [ ] `word_freq` cache: `save_word_freq(path)`, `load_word_freq(path)`

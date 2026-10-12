@@ -1,79 +1,53 @@
-import random
-import re
-import sys
-from collections import defaultdict
-from pathlib import Path
+"""ScratchpadLM entry point.
 
-# Demo text so the script works immediately.
-# For better results, give it a larger plain-text file as an argument.
-DEMO_TEXT = """
-The moon rose over the quiet town. The old train crossed the river
-and disappeared into the hills. In the morning, people walked to the
-market and spoke about the weather. A curious child watched the birds
-and asked where they were going. The birds flew above the rooftops
-toward the green fields. The train returned at sunset, carrying stories
-from distant places. Everyone in the town gathered near the station
-and listened to the travelers.
+Usage:
+    python3 main.py          # launch Tkinter GUI (default)
+    python3 main.py --cli    # launch CLI (roadmap, not yet implemented)
+    python3 main.py --mcp    # launch MCP system (roadmap, not yet implemented)
 """
 
-def tokenize(text):
-    """Keep words and punctuation as separate tokens."""
-    return re.findall(r"\w+|[^\w\s]", text.lower())
+import argparse
+import sys
 
-def train(tokens, context_size=4):
-    """Count which tokens follow each preceding context."""
-    choices = defaultdict(list)
-    padded = ["<START>"] * context_size + tokens + ["<END>"]
 
-    for i in range(context_size, len(padded)):
-        context = tuple(padded[i - context_size:i])
-        choices[context].append(padded[i])
+def run_gui():
+    """Boot the Tkinter UI (must run on the main thread)."""
+    import tkinter as tk
 
-    return choices, context_size
+    from ui import App
 
-def generate(choices, context_size, length=100):
-    context = ["<START>"] * context_size
-    output = []
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
 
-    for _ in range(length):
-        key = tuple(context[-context_size:])
-        possible = choices.get(key)
 
-        # If this exact context wasn't seen, try a shorter context.
-        while not possible and len(key) > 0:
-            key = key[1:]
-            possible = choices.get(key)
+def run_cli():
+    """Launch the command-line interface (roadmap section 12)."""
+    raise SystemExit("CLI is not implemented yet — see ROADMAP.md section 12 (CLI / API).")
 
-        if not possible:
-            break
 
-        next_token = random.choice(possible)
-        if next_token == "<END>":
-            break
+def run_mcp():
+    """Launch the MCP system (roadmap section 11, MCP support)."""
+    raise SystemExit("MCP system is not implemented yet — see ROADMAP.md section 11 (Harness: MCP support).")
 
-        output.append(next_token)
-        context.append(next_token)
 
-    # Basic punctuation spacing.
-    result = " ".join(output)
-    result = re.sub(r"\s+([.,!?;:])", r"\1", result)
-    return result.capitalize()
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="ScratchpadLM entry point (GUI by default).",
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--cli", action="store_true", help="start the CLI instead of the GUI")
+    group.add_argument("--mcp", action="store_true", help="start the MCP system instead of the GUI")
+    args = parser.parse_args(argv)
 
-def main():
-    if len(sys.argv) > 1:
-        path = Path(sys.argv[1])
-        text = path.read_text(encoding="utf-8")
+    if args.cli:
+        run_cli()
+    elif args.mcp:
+        run_mcp()
     else:
-        text = DEMO_TEXT
-        print("Using built-in demo text. For better results, provide a text file:")
-        print("  python mini_model.py my_text.txt\n")
+        run_gui()
 
-    tokens = tokenize(text)
-    if len(tokens) < 10:
-        raise SystemExit("Please provide a longer text file.")
-
-    model, context_size = train(tokens)
-    print(generate(model, context_size))
 
 if __name__ == "__main__":
     main()

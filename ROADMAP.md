@@ -190,7 +190,9 @@
 - [ ] `API.md` — Python API, HTTP API
 
 ### 15. Build & Distribution (HIGH PRIORITY)
-- [ ] `main.py` — proper entry point with CLI args (train, generate, serve, model mgmt)
+- [x] `main.py` — entry point: no args → GUI boot, `--cli` → CLI, `--mcp` → MCP system
+- [ ] `main.py --cli` — implement CLI (train, generate, serve, model mgmt) → section 12
+- [ ] `main.py --mcp` — implement MCP system → section 11 (MCP support)
 - [ ] `build.sh` — build script for optional C extensions
 - [ ] C source for performance-critical modules (tokenizer BPE, matrix ops, quantize/dequantize)
 - [ ] `setup.py` / `pyproject.toml` for pip installable package

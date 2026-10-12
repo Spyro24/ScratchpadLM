@@ -29,12 +29,12 @@
 - [ ] **Model inspector**: parameter count, memory usage, architecture summary
 
 ### 0b. Dynamic Model Management (runtime)
-- [ ] **ModelSpec**: dataclass `{name, path, domain_keywords, param_count, config, created_at, metrics}`
-- [ ] **ModelCatalog**: persistent registry (JSON file) — `add(spec)`, `remove(name)`, `get(name)`, `list()`, `find_by_domain(keywords)`
-- [ ] **ModelLoader**: `load_model(name)` — loads from catalog path, injects shared tokenizer, validates param limit
-- [ ] **ModelCreator**: `create_model(name, domain_keywords, base_config=None)` — instantiates new specialized model, saves to catalog, returns handle
-- [ ] **ModelUpdater**: `update_model(name, new_config)` — hot-swaps config, preserves weights where shapes match
-- [ ] **Catalog CLI**: `tinylm model list`, `tinylm model add <name> --domain "code,python"`, `tinylm model remove <name>`, `tinylm model info <name>`
+- [x] **ModelSpec**: dataclass `{name, path, domain_keywords, param_count, config, created_at, metrics}`
+- [x] **ModelCatalog**: persistent registry (JSON file) — `add(spec)`, `remove(name)`, `get(name)`, `list()`, `find_by_domain(keywords)`
+- [x] **ModelLoader**: `load_model(name)` — loads from catalog path, injects shared tokenizer, validates param limit
+- [x] **ModelCreator**: `create_model(name, domain_keywords, base_config=None)` — instantiates new specialized model, saves to catalog, returns handle
+- [x] **ModelUpdater**: `update_model(name, new_config)` — hot-swaps config, preserves weights where shapes match
+- [x] **Catalog CLI**: `tinylm model list`, `tinylm model add <name> --domain "code,python"`, `tinylm model remove <name>`, `tinylm model info <name>`
 - [ ] **Auto-discovery**: on startup, scan `models/` dir, register any `.tlm` files not in catalog
 - [ ] **Router integration**: router reads catalog `domain_keywords` for routing decisions
 - [ ] **Harness integration**: `model load <name>`, `model create <name> --domain "..."` commands in `.tlm` scripts

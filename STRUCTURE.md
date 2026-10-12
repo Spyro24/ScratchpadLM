@@ -9,9 +9,10 @@
 | File | Purpose | Key Classes/Functions |
 |------|---------|----------------------|
 | `tokenizer.py` | Byte-level BPE tokenizer | `BPETokenizer`, `extend()`, `train()`, `encode()`, `decode()`, `save()`, `load()` |
-| `ai.py` | Autograd, model, training, generation, 4-bit I/O | `Value`, `TinyLM`, `train()`, `train_parallel()`, `generate()`, `save_model()`, `load_model()`, `sync_vocab()` |
+| `ai.py` | Autograd, model, training, generation, 4-bit I/O | `Value`, `TinyLM`, `train()`, `train_parallel()`, `generate()`, `save_model()`, `load_model()`, `sync_vocab()`, `count_params()`, `enforce_param_limit()` |
 | `config.py` | Config system (YAML/JSON, validation, defaults) | `Config`, `load_yaml()`, `model_config()`, `training_config()`, `merge_configs()` |
 | `registry.py` | Model/Task registries, Tokenizer singleton | `ModelRegistry`, `TaskRegistry`, `TokenizerManager`, `TaskTemplate` |
+| `model_mgmt.py` | Dynamic model management | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`, `MODEL_CATALOG` |
 | `ui.py` | Tkinter GUI (input, train/generate buttons, history) | `App`, background thread via `queue.Queue` |
 | `main.py` | Legacy demo script (n-gram model) | `tokenize()`, `train()`, `generate()` |
 | `AGENTS.md` | Agent guidance (this project's rules) | — |
@@ -37,6 +38,11 @@ registry.py
   ├─ tokenizer.py (BPETokenizer)
   ├─ ai.py (TinyLM)  ← only in __main__ demo
   └─ config.py (Config)  ← for future config-driven registration
+
+model_mgmt.py
+  ├─ ai.py (TinyLM, save_model, load_model, count_params)
+  ├─ registry.py (TokenizerManager)
+  └─ config.py (Config)
 
 tokenizer.py
   └─ (stdlib only: re, collections, multiprocessing)
@@ -109,6 +115,29 @@ config.py
 - Models must implement:
   - `get_config() → dict` with `"arch"` key
   - `get_tensors() → Dict[str, List[List[Value]]]`
+
+### Dynamic Model Management (model_mgmt.py)
+
+#### `ModelSpec` (dataclass)
+- Fields: `name`, `path`, `domain_keywords`, `param_count`, `config`, `created_at`, `metrics`
+- `to_dict()`, `from_dict()` for JSON serialization
+
+#### `ModelCatalog`
+- `add(spec)`, `remove(name)`, `get(name)`, `list()`, `find_by_domain(keywords)`, `update(name, **kwargs)`, `update_metrics(name, metrics)`
+- Persists to JSON file (`models/catalog.json`)
+- Global instance: `MODEL_CATALOG`
+
+#### `ModelLoader`
+- `load_model(name, force_reload=False)` — loads from catalog, injects shared tokenizer, validates param limit
+- `unload(name)`, `unload_all()`, `is_loaded(name)`, `get_loaded(name)`
+
+#### `ModelCreator`
+- `create_model(name, domain_keywords, base_config=None, model_factory=None)` — creates and registers new model
+- Saves model to `models/<name>.tlm`, adds spec to catalog
+
+#### `ModelUpdater`
+- `update_model(name, new_config)` — hot-swaps config, preserves weights where shapes match
+- Uses `get_tensors()` to copy matching weights
 
 ---
 
@@ -257,14 +286,18 @@ sync_vocab(model, len(tok.vocab))  # model grows in place
 cfg = Config.from_file("config.yaml")
 train(model, ids, steps=cfg["training"]["steps"], lr=cfg["training"]["lr"], ...)
 
-# Save/load model
+# Save/load model (4-bit, works for any architecture)
 save_model(model, "my_model.tlm")
-model = load_model("my_model.tlm")
+loaded = load_model("my_model.tlm")
+
+# Count parameters
+n = count_params(model)
+enforce_param_limit(model, 100_000, "specialized-model")
 
 # Model registry
-from registry import register_model, create_model, list_models, MODEL_REGISTRY
+from registry import register_model, create_model, list_models
 register_model("my-model", lambda: TinyLM(vocab_size=1000, ctx=50, emb=64, hidden=128),
-               description="My model", param_count=75000)
+               description="My model", param_count=75000, domain="custom")
 model = create_model("my-model")
 
 # Task registry
@@ -278,4 +311,18 @@ from registry import TOKENIZER_MANAGER, get_tokenizer
 TOKENIZER_MANAGER.load("bpe_merges.txt")
 tok = get_tokenizer()
 ids = tok.encode("hello")
+
+# Dynamic model management
+from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, ModelUpdater
+
+catalog = ModelCatalog("models/catalog.json")
+creator = ModelCreator(catalog, "models", tokenizer_manager=TOKENIZER_MANAGER)
+spec = creator.create_model("tiny-code", ["code", "python"],
+                            base_config={"ctx": 100, "emb": 64, "hidden": 128})
+
+loader = ModelLoader(catalog, tokenizer_manager=TOKENIZER_MANAGER)
+model = loader.load_model("tiny-code")
+
+updater = ModelUpdater(catalog, loader)
+updater.update_model("tiny-code", {"hidden": 256})
 ```

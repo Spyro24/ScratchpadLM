@@ -13,6 +13,7 @@ After reading this document, read **STRUCTURE.md** for codebase overview, then *
 | Model & Autograd | `ai.py` | `Value` (autograd), `TinyLM`, training (SGD + sampled softmax), generation, 4-bit save/load. |
 | Config | `config.py` | YAML/JSON config with validation, defaults, merging. Stdlib only. |
 | Registries | `registry.py` | `ModelRegistry`, `TaskRegistry`, `TokenizerManager` (singleton). |
+| Model Management | `model_mgmt.py` | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`. |
 | UI | `ui.py` | Tkinter app: input box, steps field, Train/Generate buttons, history. |
 | Legacy Demo | `main.py` | N-gram model demo (not used by main app). |
 
@@ -160,6 +161,32 @@ print(f"Params: {n:,}")
 
 # Enforce limits (e.g., ≤100K for specialized, ≤300K for router)
 enforce_param_limit(model, 100_000, "specialized-model")  # Raises if exceeded
+```
+
+### Dynamic Model Management
+```python
+from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, ModelUpdater
+from registry import TOKENIZER_MANAGER
+
+# Catalog (persistent JSON)
+catalog = ModelCatalog("models/catalog.json")
+
+# Create specialized models
+creator = ModelCreator(catalog, "models", tokenizer_manager=TOKENIZER_MANAGER)
+spec = creator.create_model("tiny-code", ["code", "python"],
+                            base_config={"ctx": 100, "emb": 64, "hidden": 128})
+# Creates models/tiny-code.tlm, registers in catalog
+
+# Load models (with shared tokenizer injection)
+loader = ModelLoader(catalog, tokenizer_manager=TOKENIZER_MANAGER, max_params=100_000)
+model = loader.load_model("tiny-code")
+
+# Hot-swap config, preserve weights where shapes match
+updater = ModelUpdater(catalog, loader)
+updater.update_model("tiny-code", {"hidden": 256})
+
+# Find models by domain
+code_models = catalog.find_by_domain(["code", "python"])
 ```
 
 ### Register a Task

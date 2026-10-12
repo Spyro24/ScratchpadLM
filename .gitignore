@@ -6,3 +6,4 @@ libtinylm_accel.so
 tinyLM
 bpe_merges.txt
 models/
+checkpoints/

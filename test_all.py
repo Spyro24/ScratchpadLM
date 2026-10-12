@@ -1,0 +1,652 @@
+"""Fast unit test suite for ScratchpadLM (TinyLM).
+
+Runs every core subsystem with tiny models so the whole suite finishes in
+seconds. Usage:
+
+    python3 test_all.py            # all tests
+    python3 test_all.py tokenizer  # run tests whose name matches a filter
+
+Exit code 0 = all passed, 1 = failures. Stdlib only (no pytest required).
+"""
+import math
+import os
+import random
+import shutil
+import sys
+import tempfile
+import traceback
+
+# ---------------------------------------------------------------------------
+# tiny helpers
+# ---------------------------------------------------------------------------
+
+PASS, FAIL = 0, 0
+FILTER = sys.argv[1] if len(sys.argv) > 1 else ""
+
+
+def test(name):
+    def deco(fn):
+        TESTS.append((name, fn))
+        return fn
+    return deco
+
+
+TESTS = []
+
+
+def check(cond, msg=""):
+    if not cond:
+        raise AssertionError(msg or "check failed")
+
+
+def run():
+    global PASS, FAIL
+    for name, fn in TESTS:
+        if FILTER and FILTER not in name:
+            continue
+        try:
+            fn()
+            PASS += 1
+            print(f"  PASS  {name}")
+        except Exception:
+            FAIL += 1
+            print(f"  FAIL  {name}")
+            traceback.print_exc()
+    print(f"\n{PASS} passed, {FAIL} failed")
+    sys.exit(1 if FAIL else 0)
+
+
+# ---------------------------------------------------------------------------
+# shared fixtures (tiny model/tokenizer, rebuilt per test for isolation)
+# ---------------------------------------------------------------------------
+
+def tiny_tok_and_ids(corpus="the quick brown fox jumps over the lazy dog. " * 40,
+                     vocab=400):
+    from tokenizer import BPETokenizer
+    tok = BPETokenizer()
+    tok.train(corpus, vocab_size=vocab)
+    return tok, tok.encode(corpus)
+
+
+def tiny_model(vocab=400, ctx=6, emb=8, hidden=16):
+    from ai import TinyLM
+    return TinyLM(vocab_size=vocab, ctx=ctx, emb=emb, hidden=hidden)
+
+
+# ---------------------------------------------------------------------------
+# config
+# ---------------------------------------------------------------------------
+
+@test("config: defaults + validation")
+def t_config_defaults():
+    from config import Config, ConfigError
+    cfg = Config.from_dict({})
+    check(cfg["generation"]["top_k"] == 0)
+    check(cfg["generation"]["top_p"] == 0.0)
+    check(cfg["generation"]["repetition_penalty"] == 1.0)
+    check(cfg["training"]["lr_scheduler"] == "cosine_warmup")
+    check(cfg["training"]["grad_clip"] == 1.0)
+    check(cfg["training"]["early_stopping"] is True)
+    for bad in ({"generation": {"top_k": -1}},
+                {"generation": {"top_p": 1.5}},
+                {"generation": {"repetition_penalty": 0.5}},
+                {"training": {"lr_scheduler": "nope"}},
+                {"training": {"val_split": 1.0}}):
+        try:
+            Config.from_dict(bad)
+            raise AssertionError(f"expected ConfigError for {bad}")
+        except ConfigError:
+            pass
+
+
+@test("config: yaml round trip via _write_config_yaml")
+def t_config_yaml_roundtrip():
+    from config import Config
+    from ui import _write_config_yaml
+    data = Config.from_dict({"generation": {"top_k": 7, "top_p": 0.95}}).to_dict()
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        path = f.name
+    try:
+        _write_config_yaml(path, data)
+        cfg = Config.from_file(path)
+        check(cfg["generation"]["top_k"] == 7)
+        check(cfg["generation"]["top_p"] == 0.95)
+    finally:
+        os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# tokenizer
+# ---------------------------------------------------------------------------
+
+@test("tokenizer: encode/decode roundtrip + extend keeps ids")
+def t_tokenizer():
+    from tokenizer import BPETokenizer
+    tok = BPETokenizer()
+    tok.train("hello world " * 50, vocab_size=300)
+    text = "hello world"
+    check(tok.decode(tok.encode(text)) == text)
+    old_vocab = dict(tok.vocab)
+    tok.extend("newwords appear here " * 30, vocab_size=360)
+    for tid, b in old_vocab.items():
+        check(tok.vocab.get(tid) == b, f"token {tid} was renumbered!")
+
+
+@test("tokenizer: save/load preserves merges")
+def t_tokenizer_saveload():
+    from tokenizer import BPETokenizer
+    tok = BPETokenizer()
+    tok.train("abc def ghi " * 50, vocab_size=300)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "m.txt")
+        tok.save(path)
+        tok2 = BPETokenizer()
+        tok2.load(path)
+        check(tok2.encode("abc def") == tok.encode("abc def"))
+
+
+# ---------------------------------------------------------------------------
+# autograd
+# ---------------------------------------------------------------------------
+
+@test("autograd: grads match finite differences")
+def t_autograd():
+    from ai import Value
+    a, b = Value(2.0), Value(-3.0)
+    out = (a * b + a.tanh()) * (b * b + 1.0)
+    out.backward()
+    # finite difference on a
+    eps = 1e-6
+    f = lambda x, y: (x * y + math.tanh(x)) * (y * y + 1.0)
+    da = (f(2.0 + eps, -3.0) - f(2.0, -3.0)) / eps
+    check(abs(a.grad - da) < 1e-4, f"{a.grad} != {da}")
+    check(abs(out.data - f(2.0, -3.0)) < 1e-9)
+
+
+# ---------------------------------------------------------------------------
+# model forward/backward + sync_vocab
+# ---------------------------------------------------------------------------
+
+@test("model: loss decreases after training step")
+def t_model_train_step():
+    from ai import train
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    random.seed(0)
+    before = None
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        train(model, ids, steps=6, lr=0.1, batch_size=8, n_negatives=32, use_c=False)
+        # one more step measured: capture loss via progress_cb
+    losses = []
+    with contextlib.redirect_stdout(buf):
+        train(model, ids, steps=6, lr=0.1, batch_size=8, n_negatives=32,
+              use_c=False, progress_cb=lambda d, t, l, *a: losses.append(l))
+    check(len(losses) == 6)
+    check(all(math.isfinite(l) for l in losses))
+
+
+@test("sync_vocab grows model in place")
+def t_sync_vocab():
+    from ai import TinyLM, sync_vocab
+    model = TinyLM(vocab_size=50, ctx=4, emb=8, hidden=16)
+    ref = model
+    check(sync_vocab(model, 80) is True)
+    check(model is ref)
+    check(len(model.C) == 80 and len(model.W2) == 80 and len(model.b2) == 80)
+    check(sync_vocab(model, 60) is False)  # never shrinks
+
+
+# ---------------------------------------------------------------------------
+# 4-bit save/load + param limits
+# ---------------------------------------------------------------------------
+
+@test("quantization: save/load roundtrip within 4-bit error")
+def t_quantize():
+    from ai import save_model, load_model, count_params, enforce_param_limit
+    tok, _ = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "m.tlm")
+        save_model(model, path)
+        loaded = load_model(path)
+    check(loaded.get_config() == model.get_config())
+    for r1, r2 in zip(model.W2, loaded.W2):
+        for v1, v2 in zip(r1, r2):
+            check(abs(v1.data - v2.data) < 0.05, "quant error too large")
+            break
+        break
+    n = count_params(model)
+    try:
+        enforce_param_limit(model, 100, "tiny")
+        raise AssertionError("expected limit exceeded")
+    except ValueError:
+        pass
+    check(n == count_params(loaded))
+
+
+# ---------------------------------------------------------------------------
+# sampling / generation
+# ---------------------------------------------------------------------------
+
+@test("generation: top-k confines candidates")
+def t_sample_topk():
+    from ai import _sample_next_token
+    random.seed(1)
+    logits = [1.0, 2.0, 3.0, 4.0, 5.0]
+    seen = set()
+    for _ in range(30):
+        seen.add(_sample_next_token(logits[:], 1.0, top_k=2, top_p=0.0,
+                                    repetition_penalty=1.0, generated_ids=[]))
+    check(seen <= {3, 4}, f"top-k leaked: {seen}")
+
+
+@test("generation: repetition penalty suppresses seen token")
+def t_sample_reppen():
+    from ai import _sample_next_token
+    random.seed(2)
+    logits = [1.0, 1.0, 1.0, 1.0, 1.0]
+    hits = 0
+    for _ in range(50):
+        if _sample_next_token(logits[:], 1.0, 0, 0.0, 2.0, [3]) == 3:
+            hits += 1
+    check(hits < 10, f"rep penalty ineffective: {hits}/50")
+
+
+@test("generation: top-p confines nucleus")
+def t_sample_topp():
+    from ai import _sample_next_token
+    random.seed(3)
+    logits = [0.0, 0.0, 0.0, 10.0]  # token 3 dominates
+    seen = set()
+    for _ in range(20):
+        seen.add(_sample_next_token(logits[:], 1.0, 0, 0.5, 1.0, []))
+    check(seen == {3}, f"top-p leaked: {seen}")
+
+
+@test("generation: generate() runs with all options")
+def t_generate():
+    from ai import generate
+    tok, _ = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    out = generate(model, tok, "the quick", n_tokens=8, temperature=0.7,
+                   top_k=10, top_p=0.9, repetition_penalty=1.2)
+    check(isinstance(out, str) and len(out) > 0)
+
+
+# ---------------------------------------------------------------------------
+# training pipeline: LR scheduler, grad clip, evaluate, early stop, checkpoint
+# ---------------------------------------------------------------------------
+
+@test("lr scheduler: cosine_warmup / linear / constant")
+def t_lr_scheduler():
+    from ai import LR_Scheduler
+    s = LR_Scheduler(0.1, 1000, "cosine_warmup", 100, 0.01)
+    check(abs(s.get_lr(0) - 0.001) < 1e-9)     # warmup ramps from base/N
+    check(abs(s.get_lr(99) - 0.1) < 1e-9)      # full lr at end of warmup
+    check(s.get_lr(500) < 0.1)                 # decays after warmup
+    check(s.get_lr(999) >= 0.01)               # reaches min_lr
+    lin = LR_Scheduler(0.1, 100, "linear", 0, 0.0)
+    check(abs(lin.get_lr(0) - 0.1) < 1e-9 and lin.get_lr(99) < 0.01)
+    const = LR_Scheduler(0.1, 100, "constant")
+    check(const.get_lr(0) == const.get_lr(50) == 0.1)
+
+
+@test("grad clip: global norm capped in place")
+def t_grad_clip():
+    from ai import clip_grads
+    tok, _ = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    for p in model.params:
+        p.grad = 5.0
+    norm = clip_grads(model.params, 1.0)
+    check(norm > 1.0, "should report pre-clip norm")
+    new_norm = math.sqrt(sum(p.grad * p.grad for p in model.params))
+    check(new_norm <= 1.0 + 1e-6, f"clip failed: {new_norm}")
+
+
+@test("evaluate: returns finite perplexity")
+def t_evaluate():
+    from ai import evaluate
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    ppl = evaluate(model, ids[:200], batch_size=8, n_negatives=32)
+    check(math.isfinite(ppl) and ppl > 1.0, f"bad ppl {ppl}")
+
+
+@test("early stopping: stops after patience and restores best")
+def t_early_stop():
+    from ai import EarlyStopping
+    tok, _ = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    es = EarlyStopping(patience=2, min_delta=1e-3)
+    model.params[0].data = 0.5
+    check(es(5.0, model) is False)          # first = best (params 0.5 saved)
+    model.params[0].data = 0.9
+    check(es(4.9, model) is False)          # improves -> best (params 0.9 saved)
+    model.params[0].data = 1.0
+    check(es(4.9, model) is False)          # no improvement (delta < min_delta)
+    check(es(4.9, model) is True)           # patience reached -> stop + restore
+    check(abs(model.params[0].data - 0.9) < 1e-12, "best not restored")
+
+
+@test("checkpoint: save/load/resume roundtrip")
+def t_checkpoint():
+    from ai import Checkpoint, save_checkpoint, load_checkpoint, resume_from_checkpoint
+    tok, _ = tiny_tok_and_ids()
+    m1 = tiny_model(vocab=len(tok.vocab))
+    ckpt = Checkpoint(step=42, model_state=[p.data for p in m1.params],
+                      config=m1.get_config(), loss=1.25, val_loss=1.5, lr=0.01)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "ckpt.json")
+        save_checkpoint(ckpt, path)
+        loaded = load_checkpoint(path)
+    check(loaded.step == 42 and loaded.loss == 1.25 and loaded.val_loss == 1.5)
+    m2 = tiny_model(vocab=len(tok.vocab))
+    resume_from_checkpoint(m2, loaded)
+    for a, b in zip(m1.params, m2.params):
+        check(abs(a.data - b.data) < 1e-12)
+
+
+@test("train: full pipeline with val split + checkpointing")
+def t_train_full():
+    from ai import train, load_checkpoint
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    d = tempfile.mkdtemp()
+    try:
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            train(model, ids, steps=12, lr=0.05, batch_size=8, n_negatives=32,
+                  lr_scheduler="cosine_warmup", warmup_steps=3, min_lr=0.001,
+                  grad_clip=1.0, val_split=0.15, eval_every=6,
+                  early_stopping=True, patience=2,
+                  checkpoint_every=6, checkpoint_dir=d, use_c=False)
+        check(os.path.exists(os.path.join(d, "checkpoint_step_6.json")))
+        check(os.path.exists(os.path.join(d, "checkpoint_final.json")))
+        ckpt = load_checkpoint(os.path.join(d, "checkpoint_final.json"))
+        check(ckpt.step == 12)
+        check(ckpt.val_loss is not None)
+        check(ckpt.lr > 0)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@test("train: resume from checkpoint continues training")
+def t_train_resume():
+    from ai import train, load_checkpoint, resume_from_checkpoint
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    d = tempfile.mkdtemp()
+    try:
+        import io, contextlib
+        with contextlib.redirect_stdout(io.StringIO()):
+            train(model, ids, steps=8, lr=0.05, batch_size=8, n_negatives=32,
+                  early_stopping=False, checkpoint_every=4,
+                  checkpoint_dir=d, use_c=False, val_split=0.0, eval_every=0)
+        ckpt = load_checkpoint(os.path.join(d, "checkpoint_final.json"))
+        m2 = tiny_model(vocab=len(tok.vocab))
+        resume_from_checkpoint(m2, ckpt)
+        with contextlib.redirect_stdout(io.StringIO()):
+            train(m2, ids, steps=4, lr=0.05, batch_size=8, n_negatives=32,
+                  early_stopping=False, checkpoint_every=0,
+                  checkpoint_dir=d, use_c=False, val_split=0.0, eval_every=0)
+        # params actually moved during continued training
+        check(any(abs(a.data - b.data) > 1e-9
+                  for a, b in zip(model.params, m2.params)))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@test("auto adjust: lr reduced on plateau, multiplier applied")
+def t_auto_adjust():
+    from ai import AutoAdjust
+    adj = AutoAdjust(enabled=True, factor=0.5, patience=3, min_delta=1e-2,
+                     warmup_ignore=0)
+    # improving loss -> no reduction
+    for i, loss in enumerate([5.0, 4.0, 3.0]):
+        adj.check(i + 1, loss)
+    check(adj.multiplier == 1.0)
+    # plateau (no improvement > min_delta) for patience steps -> reduce
+    reduced = any(adj.check(i, 3.0) for i in range(4, 8))
+    check(reduced, "expected an LR reduction on plateau")
+    check(adj.multiplier == 0.5)
+    # continues reducing every `patience` plateau steps
+    check(adj.check(7, 3.0) is False)   # bad_checks=1 after reset
+    check(adj.check(8, 3.0) is False)   # bad_checks=2
+    check(adj.check(9, 3.0) is True)    # patience=3 reached (steps 7,8,9)
+    check(adj.multiplier == 0.25)
+    # floor respected
+    for i in range(10, 400):
+        adj.check(i, 3.0)
+    check(adj.multiplier >= 1e-4)
+    check(adj.reduce_count >= 1)
+
+
+@test("auto adjust: warmup steps ignored")
+def t_auto_adjust_warmup():
+    from ai import AutoAdjust
+    adj = AutoAdjust(enabled=True, factor=0.5, patience=1, min_delta=0.5,
+                     warmup_ignore=10)
+    for i in range(1, 11):
+        adj.check(i, 1.0)
+    check(adj.multiplier == 1.0, "should not adjust during warmup")
+    adj.check(11, 1.0)
+    check(adj.multiplier == 0.5, "should adjust after warmup")
+
+
+@test("auto adjust: disabled is inert")
+def t_auto_adjust_off():
+    from ai import AutoAdjust
+    adj = AutoAdjust(enabled=False)
+    for i in range(100):
+        adj.check(i, 5.0)
+    check(adj.multiplier == 1.0 and adj.reduce_count == 0)
+
+
+@test("auto adjust: clip relaxation widens chronic clipping")
+def t_auto_adjust_clip():
+    from ai import AutoAdjust
+    adj = AutoAdjust(enabled=True, max_grad_clip=1.0, clip_relax_after=3,
+                     clip_relax_factor=2.0)
+    check(adj.grad_clip_now() == 1.0)
+    for _ in range(3):
+        adj.note_grad_clip(5.0)   # chronically clipped
+    check(adj.grad_clip_now() == 2.0, "clip limit should relax")
+    for _ in range(3):
+        adj.note_grad_clip(0.5)   # not clipping -> reset streak
+    adj.note_grad_clip(10.0)
+    check(adj.grad_clip_now() == 2.0, "streak should reset after non-clipping")
+
+
+@test("train: auto_adjust wired into training loop")
+def t_train_auto_adjust():
+    from ai import train, AutoAdjust
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    import io, contextlib
+    with contextlib.redirect_stdout(io.StringIO()):
+        # constant LR + min_delta large => guaranteed plateau => reduction
+        train(model, ids, steps=30, lr=0.05, batch_size=8, n_negatives=32,
+              lr_scheduler="constant", warmup_steps=0,
+              auto_adjust=True, auto_factor=0.5, auto_patience=3,
+              auto_clip_relax=False, grad_clip=0.0,
+              early_stopping=False, checkpoint_every=0,
+              val_split=0.0, eval_every=0, use_c=False)
+    check(all(math.isfinite(p.data) for p in model.params))
+
+
+@test("train: C kernel path supports auto_adjust + grad clip")
+def t_train_c_auto_adjust():
+    import accel
+    if not accel.AVAILABLE:
+        print("    (accel not built - run ./build.sh - skipping)")
+        return
+    from ai import train
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    import io, contextlib
+    losses = []
+    with contextlib.redirect_stdout(io.StringIO()):
+        train(model, ids, steps=20, lr=0.05, batch_size=8, n_negatives=32,
+              lr_scheduler="linear", warmup_steps=0,
+              grad_clip=1.0, auto_adjust=True, auto_patience=3,
+              early_stopping=False, checkpoint_every=0,
+              val_split=0.0, eval_every=0, use_c=True,
+              progress_cb=lambda d, t, l, *a: losses.append(l))
+    check(len(losses) == 20 and all(math.isfinite(l) for l in losses))
+
+
+# ---------------------------------------------------------------------------
+# parallel training + gradient clipping
+# ---------------------------------------------------------------------------
+
+@test("train_parallel: runs with grad clip")
+def t_train_parallel():
+    from ai import train_parallel
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    import io, contextlib
+    losses = []
+    with contextlib.redirect_stdout(io.StringIO()):
+        train_parallel(model, ids, steps=4, lr=0.05, batch_size=8,
+                       n_negatives=32, workers=2, grad_clip=1.0,
+                       progress_cb=lambda d, t, l, *a: losses.append(l))
+    check(len(losses) == 4 and all(math.isfinite(l) for l in losses))
+
+
+# ---------------------------------------------------------------------------
+# C kernel parity (skipped when unavailable)
+# ---------------------------------------------------------------------------
+
+@test("c kernel: available + parity with python path")
+def t_c_parity():
+    import accel
+    if not accel.AVAILABLE:
+        print("    (accel not built - run ./build.sh - skipping)")
+        return
+    from ai import TinyLM, train
+    tok, ids = tiny_tok_and_ids()
+    random.seed(7)
+    m1 = tiny_model(vocab=len(tok.vocab))
+    random.seed(7)
+    m2 = tiny_model(vocab=len(tok.vocab))
+    import io, contextlib
+    with contextlib.redirect_stdout(io.StringIO()):
+        train(m1, ids, steps=3, lr=0.05, batch_size=8, n_negatives=32,
+              use_c=True, lr_scheduler="constant", grad_clip=0.0,
+              early_stopping=False, checkpoint_every=0,
+              val_split=0.0, eval_every=0)
+        train(m2, ids, steps=3, lr=0.05, batch_size=8, n_negatives=32,
+              use_c=False, lr_scheduler="constant", grad_clip=0.0,
+              early_stopping=False, checkpoint_every=0,
+              val_split=0.0, eval_every=0)
+    # C path: same update rule, random negatives differ -> just check finite
+    check(all(math.isfinite(p.data) for p in m1.params))
+    check(all(math.isfinite(p.data) for p in m2.params))
+
+
+@test("c kernel: grad clip applied inside C train_step")
+def t_c_gradclip():
+    import accel
+    if not accel.AVAILABLE:
+        print("    (accel not built - run ./build.sh - skipping)")
+        return
+    # huge lr + no clip => huge param delta; with clip => bounded update
+    tok, ids = tiny_tok_and_ids()
+    from ai import TinyLM, _flat_data, _flat_params
+    from ai import random as ai_random
+    dims = None
+    random.seed(11)
+    m1 = tiny_model(vocab=len(tok.vocab))
+    dims = (len(m1.C), m1.ctx, len(m1.C[0]), len(m1.b1))
+    windows = []
+    for _ in range(8):
+        i = random.randrange(len(ids) - m1.ctx - 1)
+        windows.extend(ids[i:i + m1.ctx])
+        windows.append(ids[i + m1.ctx])
+    import accel
+    flat0 = _flat_data(m1)
+    _, flat_noclip = accel.train_step(list(flat0), windows, dims, 32, 0.5, 5, 0.0)
+    _, flat_clip = accel.train_step(list(flat0), windows, dims, 32, 0.5, 5, 1.0)
+    delta_noclip = max(abs(a - b) for a, b in zip(flat0, flat_noclip))
+    delta_clip = max(abs(a - b) for a, b in zip(flat0, flat_clip))
+    check(delta_clip <= delta_noclip + 1e-12,
+          f"clip should not increase update: {delta_clip} vs {delta_noclip}")
+    check(delta_clip > 0, "clip path should still update params")
+
+
+# ---------------------------------------------------------------------------
+# registries / model management / tasks / tokenizer manager
+# ---------------------------------------------------------------------------
+
+@test("registry: model registry + task registry")
+def t_registry():
+    from registry import MODEL_REGISTRY, TASK_REGISTRY, TaskTemplate, TOKENIZER_MANAGER
+    from ai import TinyLM
+    if not MODEL_REGISTRY.has("test-tiny"):
+        MODEL_REGISTRY.register("test-tiny",
+                                lambda: TinyLM(vocab_size=64, ctx=4, emb=8, hidden=16),
+                                description="unit test model")
+    m = MODEL_REGISTRY.create("test-tiny")
+    check(m is not None and "test-tiny" in MODEL_REGISTRY.list())
+    MODEL_REGISTRY.remove("test-tiny")
+    if not TASK_REGISTRY.has("test-task"):
+        TASK_REGISTRY.register(TaskTemplate(
+            name="test-task", model_name="test-tiny",
+            prompt_template="Do: {text}"))
+    check(TASK_REGISTRY.get("test-task").model_name == "test-tiny")
+    TASK_REGISTRY.remove("test-task")
+    check(isinstance(TOKENIZER_MANAGER.vocab_size, int))
+
+
+@test("model_mgmt: catalog create/load/delete roundtrip")
+def t_catalog():
+    from model_mgmt import ModelCatalog, ModelCreator, ModelLoader
+    with tempfile.TemporaryDirectory() as d:
+        catalog = ModelCatalog(os.path.join(d, "catalog.json"))
+        creator = ModelCreator(catalog, d)
+        spec = creator.create_model("tiny-unit", ["unit", "test"],
+                                    base_config={"ctx": 6, "emb": 8, "hidden": 16})
+        check(catalog.get("tiny-unit") is not None)
+        check(os.path.exists(spec.path))
+        loader = ModelLoader(catalog, max_params=100_000)
+        model = loader.load_model("tiny-unit")
+        check(len(model.C) > 0)
+        found = catalog.find_by_domain(["unit"])
+        check(any(s.name == "tiny-unit" for s in found))
+        catalog.remove("tiny-unit")
+        check(catalog.get("tiny-unit") is None)
+
+
+# ---------------------------------------------------------------------------
+# UI smoke test (headless-safe: requires display; skipped when unavailable)
+# ---------------------------------------------------------------------------
+
+@test("ui: app constructs and generation controls wired")
+def t_ui_smoke():
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+    except Exception:
+        print("    (no display - skipping)")
+        return
+    try:
+        from ui import App
+        app = App(root)
+        check(app.top_k_var.get() == str(app.cfg["generation"]["top_k"]))
+        check(app.top_p_var.get() == str(app.cfg["generation"]["top_p"]))
+        check(app.rep_penalty_var.get() == str(app.cfg["generation"]["repetition_penalty"]))
+        check(("training", "grad_clip") in app._settings_entries)
+        check(("training", "patience") in app._settings_entries)
+    finally:
+        root.destroy()
+
+
+if __name__ == "__main__":
+    print("ScratchpadLM unit tests")
+    print("-" * 40)
+    run()

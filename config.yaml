@@ -24,6 +24,10 @@ training:
   min_delta: 0.0001
   checkpoint_every: 100
   checkpoint_dir: checkpoints
+  auto_adjust: true
+  auto_factor: 0.5
+  auto_patience: 10
+  auto_clip_relax: true
 
 generation:
   n_tokens: 60

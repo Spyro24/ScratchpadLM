@@ -64,6 +64,19 @@ def _write_config_yaml(path, data):
     Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 
+def _parse_bool(raw: str) -> bool:
+    """Parse a Settings entry as a boolean (for early_stopping)."""
+    s = str(raw).strip().lower()
+    if s in ("true", "1", "yes", "on"):
+        return True
+    if s in ("false", "0", "no", "off"):
+        return False
+    raise ValueError(f"expected boolean, got '{raw}'")
+
+
+_parse_bool.__name__ = "bool"
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -446,6 +459,21 @@ class App:
             ("training", "batch_size", "Batch size", int),
             ("training", "n_negatives", "Negatives", int),
             ("training", "workers", "Workers", int),
+            ("training", "lr_scheduler", "LR scheduler", str),
+            ("training", "warmup_steps", "Warmup steps", int),
+            ("training", "min_lr", "Min learning rate", float),
+            ("training", "grad_clip", "Grad clip norm", float),
+            ("training", "val_split", "Validation split", float),
+            ("training", "eval_every", "Eval every N steps", int),
+            ("training", "early_stopping", "Early stopping", _parse_bool),
+            ("training", "patience", "Patience", int),
+            ("training", "min_delta", "Min delta", float),
+            ("training", "checkpoint_every", "Checkpoint every N", int),
+            ("training", "checkpoint_dir", "Checkpoint dir", str),
+            ("training", "auto_adjust", "Auto LR adjust", _parse_bool),
+            ("training", "auto_factor", "Auto LR factor", float),
+            ("training", "auto_patience", "Auto LR patience", int),
+            ("training", "auto_clip_relax", "Auto clip relax", _parse_bool),
             ("tokenizer", "vocab_size", "Tokenizer vocab size", int),
             ("tokenizer", "min_frequency", "Min frequency", int),
             ("model", "vocab_size", "Model vocab size", int),
@@ -742,26 +770,55 @@ class App:
                     "Invalid value", f"{section}.{key}: '{raw}' is not a valid {cast.__name__}."
                 )
                 return
-            # Validate integer fields - allow 0 for top_k, require positive for others
-            if isinstance(value, int):
-                if key == "top_k" and value < 0:
-                    messagebox.showwarning("Invalid value", f"{section}.{key} must be >= 0.")
-                    return
-                elif key != "top_k" and value < 1:
+            # Validate integer fields: most must be positive; some allow zero
+            ZERO_OK = {"top_k", "warmup_steps", "eval_every", "checkpoint_every"}
+            if isinstance(value, int) and not isinstance(value, bool):
+                if key in ZERO_OK:
+                    if value < 0:
+                        messagebox.showwarning("Invalid value", f"{section}.{key} must be >= 0.")
+                        return
+                elif value < 1:
                     messagebox.showwarning("Invalid value", f"{section}.{key} must be a positive whole number.")
                     return
             new_data[section][key] = value
-        if new_data["generation"]["temperature"] <= 0:
+        gen = new_data["generation"]
+        if gen["temperature"] <= 0:
             messagebox.showwarning("Invalid value", "generation.temperature must be greater than 0.")
             return
-        if new_data["generation"]["top_k"] < 0:
+        if gen["top_k"] < 0:
             messagebox.showwarning("Invalid value", "generation.top_k must be >= 0.")
             return
-        if not (0.0 <= new_data["generation"]["top_p"] <= 1.0):
+        if not (0.0 <= gen["top_p"] <= 1.0):
             messagebox.showwarning("Invalid value", "generation.top_p must be between 0.0 and 1.0.")
             return
-        if new_data["generation"]["repetition_penalty"] < 1.0:
+        if gen["repetition_penalty"] < 1.0:
             messagebox.showwarning("Invalid value", "generation.repetition_penalty must be >= 1.0.")
+            return
+        tr = new_data["training"]
+        if tr["lr_scheduler"] not in ("linear", "cosine_warmup", "constant"):
+            messagebox.showwarning("Invalid value",
+                                   "training.lr_scheduler must be linear, cosine_warmup or constant.")
+            return
+        if tr["min_lr"] < 0:
+            messagebox.showwarning("Invalid value", "training.min_lr must be >= 0.")
+            return
+        if tr["grad_clip"] < 0:
+            messagebox.showwarning("Invalid value", "training.grad_clip must be >= 0.")
+            return
+        if not (0.0 <= tr["val_split"] < 1.0):
+            messagebox.showwarning("Invalid value", "training.val_split must be in [0.0, 1.0).")
+            return
+        if tr["min_delta"] < 0:
+            messagebox.showwarning("Invalid value", "training.min_delta must be >= 0.")
+            return
+        if not isinstance(tr["early_stopping"], bool):
+            messagebox.showwarning("Invalid value", "training.early_stopping must be true or false.")
+            return
+        if not (0.0 < tr["auto_factor"] < 1.0):
+            messagebox.showwarning("Invalid value", "training.auto_factor must be between 0.0 and 1.0.")
+            return
+        if not isinstance(tr["auto_adjust"], bool) or not isinstance(tr["auto_clip_relax"], bool):
+            messagebox.showwarning("Invalid value", "training.auto_adjust and auto_clip_relax must be true or false.")
             return
 
         try:

@@ -37,6 +37,7 @@ if LIB_PATH.exists():
             ctypes.c_ulonglong,  # seed
             _dbl_p,          # out_loss
             _dbl_p,          # out_grads
+            ctypes.c_double, # max_norm
         ]
         _lib.tl_batch_loss_grads.restype = ctypes.c_int
 
@@ -52,6 +53,7 @@ if LIB_PATH.exists():
             ctypes.c_double, # lr
             ctypes.c_ulonglong,  # seed
             _dbl_p,          # out_loss
+            ctypes.c_double, # max_norm
         ]
         _lib.tl_train_step.restype = ctypes.c_int
 
@@ -81,14 +83,16 @@ def _as_int_array(values) -> ctypes.Array:
 
 
 def batch_loss_grads(flat: List[float], windows: List[int],
-                     dims: Tuple[int, int, int, int], n_negatives: int,
-                     seed: int = 0,
-                     negatives: Optional[List[int]] = None) -> Tuple[float, List[float]]:
+                      dims: Tuple[int, int, int, int], n_negatives: int,
+                      seed: int = 0,
+                      negatives: Optional[List[int]] = None,
+                      max_norm: float = 0.0) -> Tuple[float, List[float]]:
     """Summed loss and summed grads for a batch (no /batch scaling — matches
     summing per-window autograd losses + one backward()). `flat` is TinyLM
     params in order, `windows` is [ctx ids..., target] per window flattened.
     `negatives` (flat, batch*n_negatives) or internal RNG with `seed` selects
-    the sampled-softmax candidates."""
+    the sampled-softmax candidates.
+    If max_norm > 0, gradients are clipped by global norm before returning."""
     vocab, ctx, emb, hidden = dims
     batch = len(windows) // (ctx + 1)
     if batch < 1:
@@ -105,6 +109,7 @@ def batch_loss_grads(flat: List[float], windows: List[int],
         batch, ctx, vocab, emb, hidden,
         n_negatives, seed,
         ctypes.byref(arr_loss), arr_grads,
+        ctypes.c_double(max_norm),
     )
     if rc != 0:
         raise CAccelError(f"tl_batch_loss_grads failed: {_ERR.get(rc, rc)}")
@@ -113,9 +118,11 @@ def batch_loss_grads(flat: List[float], windows: List[int],
 
 def train_step(flat: List[float], windows: List[int],
                dims: Tuple[int, int, int, int], n_negatives: int,
-               lr: float, seed: int = 0) -> Tuple[float, List[float]]:
+               lr: float, seed: int = 0,
+               max_norm: float = 0.0) -> Tuple[float, List[float]]:
     """One fused step: forward + backward + in-place SGD on a copy of `flat`.
-    Returns (mean_loss, updated_flat)."""
+    Returns (mean_loss, updated_flat).
+    If max_norm > 0, gradients are clipped by global norm before SGD."""
     vocab, ctx, emb, hidden = dims
     batch = len(windows) // (ctx + 1)
     if batch < 1:
@@ -130,6 +137,7 @@ def train_step(flat: List[float], windows: List[int],
         batch, ctx, vocab, emb, hidden,
         n_negatives, lr, seed,
         ctypes.byref(arr_loss),
+        ctypes.c_double(max_norm),
     )
     if rc != 0:
         raise CAccelError(f"tl_train_step failed: {_ERR.get(rc, rc)}")

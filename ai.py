@@ -879,10 +879,19 @@ def _flat_data(model):
     return [p.data for p in model.params]
 
 
-def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None):
-    """train() via the fused C kernel: forward + backward + SGD per step on
-    flat float buffers, copied back into Value.data in place (never replacing
-    Value objects). Same loss/update math as the autograd path."""
+def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
+             lr_scheduler: str = "linear", warmup_steps: int = 0, min_lr: float = 0.0,
+             grad_clip: float = 0.0, val_ids=None, val_split: float = 0.0, eval_every: int = 0,
+             early_stopping: bool = False, patience: int = 5, min_delta: float = 1e-4,
+             checkpoint_every: int = 0, checkpoint_dir: str = "checkpoints",
+             auto_adjust: bool = True, auto_factor: float = 0.5,
+             auto_patience: int = 10, auto_clip_relax: bool = True):
+    """train() via the fused C kernel with gradient clipping support.
+    
+    C kernel supports: LR per step, gradient clipping.
+    Python handles: LR scheduling, validation, early stopping, checkpointing,
+    automatic adjustment (plateau LR reduction, clip relaxation).
+    """
     ctx = model.ctx
     vocab = len(model.C)
     emb = len(model.C[0])
@@ -892,24 +901,102 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None):
     flat = _flat_data(model)
     params = model.params
 
+    # Setup LR scheduler
+    from ai import LR_Scheduler
+    scheduler = LR_Scheduler(lr, steps, lr_scheduler, warmup_steps, min_lr)
+
+    # Setup early stopping
+    from ai import EarlyStopping
+    early_stopper = EarlyStopping(patience=patience, min_delta=min_delta) if early_stopping else None
+
+    # Setup automatic adjustment
+    from ai import AutoAdjust
+    adjuster = AutoAdjust(
+        enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
+        min_delta=min_delta, warmup_ignore=warmup_steps,
+        max_grad_clip=grad_clip if (auto_adjust and auto_clip_relax) else 0.0,
+    )
+
+    # Setup checkpoint directory
+    from pathlib import Path
+    checkpoint_path = Path(checkpoint_dir)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    # Split validation data if provided as ratio
+    if val_ids is None and val_split > 0:
+        split_idx = int(len(ids) * (1 - val_split))
+        train_ids = ids[:split_idx]
+        val_ids = ids[split_idx:]
+        starts = range(len(train_ids) - ctx)
+    else:
+        train_ids = ids
+
     for step in range(steps):
-        rate = lr * (1.0 - step / steps)
+        rate = scheduler.get_lr(step) * adjuster.multiplier
         windows = []
         for _ in range(batch_size):
-            i = random.choice(starts)
-            windows.extend(ids[i:i + ctx])
-            windows.append(ids[i + ctx])
+            i = random.choice(list(starts))
+            windows.extend(train_ids[i:i + ctx])
+            windows.append(train_ids[i + ctx])
+        
+        # C kernel with gradient clipping
         loss, flat = accel.train_step(flat, windows, dims, n_negatives,
-                                      rate, random.randrange(1 << 62))
+                                      rate, random.randrange(1 << 62),
+                                      max_norm=adjuster.grad_clip_now())
         # In-place update of the existing Value objects
         for p, x in zip(params, flat):
             p.data = x
 
+        # Automatic adjustment: reduce LR when loss plateaus
+        if adjuster.check(step + 1, loss):
+            rate = scheduler.get_lr(step) * adjuster.multiplier
+            print(f"step {step:5d}  auto-adjust: lr multiplier -> {adjuster.multiplier:.4f}")
+
+        # Validation evaluation
+        val_loss = None
+        if val_ids is not None and eval_every > 0 and (step + 1) % eval_every == 0:
+            val_loss = evaluate(model, val_ids, batch_size, n_negatives)
+            if early_stopper is not None:
+                if early_stopper(val_loss, model):
+                    print(f"Early stopping at step {step + 1}: val_loss={val_loss:.4f} (best={early_stopper.best_score:.4f})")
+                    if progress_cb is not None:
+                        progress_cb(step + 1, steps, loss, val_loss, rate)
+                    break
+
+        # Checkpointing
+        if checkpoint_every > 0 and (step + 1) % checkpoint_every == 0:
+            from ai import Checkpoint, save_checkpoint, _flat_params
+            ckpt = Checkpoint(
+                step=step + 1,
+                model_state=_flat_params(model),
+                config=model.get_config(),
+                loss=loss,
+                val_loss=val_loss,
+                lr=rate,
+            )
+            ckpt_file = checkpoint_path / f"checkpoint_step_{step + 1}.json"
+            save_checkpoint(ckpt, str(ckpt_file))
+
         if progress_cb is not None:
-            progress_cb(step + 1, steps, loss)
+            progress_cb(step + 1, steps, loss, val_loss, rate)
 
         if step % 25 == 0:
-            print(f"step {step:5d}  loss {loss:.3f}")
+            val_str = f"  val_loss={val_loss:.4f}" if val_loss is not None else ""
+            print(f"step {step:5d}  loss {loss:.3f}  lr {rate:.6f}{val_str}")
+
+    # Save final checkpoint
+    if checkpoint_every > 0:
+        from ai import Checkpoint, save_checkpoint, _flat_params
+        ckpt = Checkpoint(
+            step=steps,
+            model_state=_flat_params(model),
+            config=model.get_config(),
+            loss=loss,
+            val_loss=val_loss,
+            lr=scheduler.get_lr(steps - 1),
+        )
+        ckpt_file = checkpoint_path / "checkpoint_final.json"
+        save_checkpoint(ckpt, str(ckpt_file))
 
 
 def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
@@ -917,7 +1004,9 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
           lr_scheduler: str = "cosine_warmup", warmup_steps: int = 100, min_lr: float = 0.0,
           grad_clip: float = 1.0, val_ids=None, val_split: float = 0.0, eval_every: int = 50,
           early_stopping: bool = True, patience: int = 5, min_delta: float = 1e-4,
-          checkpoint_every: int = 100, checkpoint_dir: str = "checkpoints"):
+          checkpoint_every: int = 100, checkpoint_dir: str = "checkpoints",
+          auto_adjust: bool = True, auto_factor: float = 0.5,
+          auto_patience: int = 10, auto_clip_relax: bool = True):
     """Mini-batch SGD with sampled softmax and advanced training features.
 
     Each step averages the loss over `batch_size` windows. For each target, the
@@ -931,18 +1020,16 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     - Validation evaluation with perplexity
     - Early stopping with best model restoration
     - Checkpointing for resume capability
+    - Automatic adjustment: LR reduction on plateau + auto grad-clip relaxation
 
     `progress_cb(done, total, loss, val_loss=None, lr=None)` is called after every step if given.
     `use_c` forces the optional C kernel on/off; default: on when available.
-    Note: C kernel is disabled when advanced features (LR scheduler, grad clip, validation, 
-    early stopping, checkpointing) are enabled.
+    Note: C kernel supports LR scheduling and gradient clipping; Python handles validation, early stopping, checkpointing.
     """
-    # Disable C kernel when advanced features are requested
+    # Disable C kernel when advanced features are requested that C doesn't support
+    # C kernel now supports: gradient clipping, LR per step (for scheduling)
+    # C kernel does NOT support: validation, early stopping, checkpointing
     advanced_features = (
-        lr_scheduler != "linear" or  # linear is what C kernel does
-        warmup_steps > 0 or
-        min_lr > 0.0 or
-        grad_clip > 0 or
         val_ids is not None or
         val_split > 0 or
         eval_every > 0 or
@@ -953,8 +1040,14 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     if use_c is None:
         use_c = _accel_available() and not advanced_features
     if use_c:
-        # C kernel path only supports linear decay, no advanced features
-        _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb)
+        # C kernel path with gradient clipping support
+        _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
+                 lr_scheduler=lr_scheduler, warmup_steps=warmup_steps, min_lr=min_lr,
+                 grad_clip=grad_clip, val_ids=val_ids, val_split=val_split, eval_every=eval_every,
+                 early_stopping=early_stopping, patience=patience, min_delta=min_delta,
+                 checkpoint_every=checkpoint_every, checkpoint_dir=checkpoint_dir,
+                 auto_adjust=auto_adjust, auto_factor=auto_factor,
+                 auto_patience=auto_patience, auto_clip_relax=auto_clip_relax)
         return
 
     ctx = model.ctx
@@ -977,13 +1070,20 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     # Setup early stopping
     early_stopper = EarlyStopping(patience=patience, min_delta=min_delta) if early_stopping else None
 
+    # Setup automatic adjustment (LR on plateau + clip relaxation)
+    adjuster = AutoAdjust(
+        enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
+        min_delta=min_delta, warmup_ignore=warmup_steps,
+        max_grad_clip=grad_clip if (auto_adjust and auto_clip_relax) else 0.0,
+    )
+
     # Setup checkpoint directory
     from pathlib import Path
     checkpoint_path = Path(checkpoint_dir)
     checkpoint_path.mkdir(parents=True, exist_ok=True)
 
     for step in range(steps):
-        rate = scheduler.get_lr(step)
+        rate = scheduler.get_lr(step) * adjuster.multiplier
         losses = []
         for _ in range(batch_size):
             i = random.choice(starts)
@@ -999,12 +1099,19 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
             p.grad = 0.0
         loss.backward()
 
-        # Gradient clipping
-        if grad_clip > 0:
-            clip_grads(params, grad_clip)
+        # Gradient clipping (with automatic relaxation if chronically clipping)
+        clip_now = adjuster.grad_clip_now()
+        if clip_now > 0:
+            norm = clip_grads(params, clip_now)
+            adjuster.note_grad_clip(norm)
 
         for p in params:
             p.data -= rate * p.grad
+
+        # Automatic adjustment: reduce LR when loss plateaus
+        if adjuster.check(step + 1, loss.data):
+            rate = scheduler.get_lr(step) * adjuster.multiplier
+            print(f"step {step:5d}  auto-adjust: lr multiplier -> {adjuster.multiplier:.4f}")
 
         # Validation evaluation
         val_loss = None
@@ -1178,6 +1285,89 @@ def clip_grads(params, max_norm: float = 1.0) -> float:
     return total_norm
 
 
+# ---- Automatic adjustment ---------------------------------------------------
+
+class AutoAdjust:
+    """Automatic learning-rate adjustment on plateaus (ReduceLROnPlateau).
+
+    Tracks the running loss; when no improvement of at least `min_delta` is
+    seen for `patience` consecutive checks, the LR multiplier is scaled by
+    `factor` (floored at `floor`). Works with any LR schedule: the returned
+    multiplier is applied on top of `LR_Scheduler.get_lr(step)`.
+
+    Also exposes `grad_clip_now()` so the effective gradient-clip threshold
+    can be relaxed if clipping is firing on every step (clip too tight).
+    """
+
+    def __init__(self, enabled: bool = True, factor: float = 0.5,
+                 patience: int = 10, min_delta: float = 1e-3,
+                 floor: float = 1e-4, warmup_ignore: int = 0,
+                 check_every: int = 1, clip_relax_after: int = 5,
+                 clip_relax_factor: float = 2.0, max_grad_clip: float = 0.0):
+        self.enabled = enabled
+        self.factor = factor
+        self.patience = patience
+        self.min_delta = min_delta
+        self.floor = floor
+        self.warmup_ignore = warmup_ignore   # ignore first N steps (warmup)
+        self.check_every = check_every
+        self.clip_relax_after = clip_relax_after   # consecutive clipped steps
+        self.clip_relax_factor = clip_relax_factor
+        self.max_grad_clip = max_grad_clip   # 0 = no auto clip relaxation
+
+        self.multiplier = 1.0
+        self.best_loss = None
+        self.bad_checks = 0
+        self.last_check_step = -1
+        self.reduce_count = 0
+        self._clip_streak = 0
+        self._clip_limit = max_grad_clip
+
+    def check(self, step: int, loss: float) -> bool:
+        """Update state with a new loss; return True if LR was reduced.
+
+        Best loss is tracked from step 1 (even during warmup), but no
+        reduction ever happens at or before `warmup_ignore` steps.
+        """
+        if not self.enabled:
+            return False
+        improved = self.best_loss is None or loss < self.best_loss - self.min_delta
+        if improved:
+            self.best_loss = loss
+            self.bad_checks = 0
+            return False
+        if step <= self.warmup_ignore:
+            return False
+        if self.check_every > 1 and step % self.check_every != 0:
+            return False
+        self.bad_checks += 1
+        if self.bad_checks >= self.patience:
+            new_mult = max(self.floor, self.multiplier * self.factor)
+            if new_mult < self.multiplier:
+                self.multiplier = new_mult
+                self.bad_checks = 0
+                self.reduce_count += 1
+                return True
+            self.bad_checks = 0
+        return False
+
+    def note_grad_clip(self, norm: float) -> None:
+        """Track whether gradient clipping is firing, relax limit if chronic."""
+        if not self.enabled or self.max_grad_clip <= 0:
+            return
+        if norm > self._clip_limit:
+            self._clip_streak += 1
+            if self._clip_streak >= self.clip_relax_after:
+                self._clip_limit *= self.clip_relax_factor
+                self._clip_streak = 0
+        else:
+            self._clip_streak = 0
+
+    def grad_clip_now(self) -> float:
+        """Effective gradient-clip threshold (0 disables clipping)."""
+        return self._clip_limit
+
+
 # ---- Evaluation -------------------------------------------------------------
 
 def evaluate(model, val_ids, batch_size=16, n_negatives=256) -> float:
@@ -1325,13 +1515,15 @@ class _WorkerState:
     vocab_size = 0
     n_negatives = 0
     use_c = False
+    max_norm = 0.0
 
 
-def _init_worker(flat, cfg, vocab_size, n_negatives):
+def _init_worker(flat, cfg, vocab_size, n_negatives, max_norm=0.0):
     """Initializer for persistent worker pool."""
     _WorkerState.cfg = cfg
     _WorkerState.vocab_size = vocab_size
     _WorkerState.n_negatives = n_negatives
+    _WorkerState.max_norm = max_norm
     _WorkerState.use_c = _accel_available()
     if _WorkerState.use_c:
         # C kernel computes grads directly on flat floats — no model needed
@@ -1358,7 +1550,8 @@ def _worker_grads_v2(args):
             flat_windows.append(target)
         return accel.batch_loss_grads(flat, flat_windows, dims,
                                       _WorkerState.n_negatives,
-                                      random.randrange(1 << 62))
+                                      random.randrange(1 << 62),
+                                      max_norm=_WorkerState.max_norm)
     model = _WorkerState.model
     _set_flat_params(model, flat)
 
@@ -1370,11 +1563,15 @@ def _worker_grads_v2(args):
     for L in losses[1:]:
         loss = loss + L
     loss.backward()
+    # Apply gradient clipping in Python path
+    if _WorkerState.max_norm > 0:
+        from ai import clip_grads
+        clip_grads(model.params, _WorkerState.max_norm)
     return loss.data, [p.grad for p in model.params]
 
 
 def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, workers=None,
-                   progress_cb=None):
+                   progress_cb=None, grad_clip: float = 0.0):
     """Data-parallel version of train. Uses persistent worker pool to avoid
     rebuilding the model each step. The batch is split across processes and
     the gradients are summed before one SGD update.
@@ -1395,7 +1592,7 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
     with Pool(
         workers,
         initializer=_init_worker,
-        initargs=(init_flat, cfg, vocab, n_negatives),
+        initargs=(init_flat, cfg, vocab, n_negatives, grad_clip),
     ) as pool:
         for step in range(steps):
             rate = lr * (1.0 - step / steps)
@@ -1413,6 +1610,15 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
             for _, g in results:
                 for k, x in enumerate(g):
                     grad[k] += x
+
+            # Apply gradient clipping on main process (after summing)
+            if grad_clip > 0:
+                import math
+                total_norm = math.sqrt(sum(g * g for g in grad))
+                if total_norm > grad_clip and total_norm > 0:
+                    scale = grad_clip / total_norm
+                    for k in range(len(grad)):
+                        grad[k] *= scale
 
             for p, g in zip(params, grad):
                 p.data -= rate * g / batch_size

@@ -133,6 +133,7 @@
 - [x] Gradient clipping: `clip_grads(params, max_norm=1.0)`
 - [x] Validation: `evaluate(model, val_data)` → perplexity / accuracy
 - [x] Early stopping: patience, min_delta, restore best
+- [x] **Automatic adjustment**: plateau LR reduction (`AutoAdjust`) + auto grad-clip relaxation — wired into `train()`, `_train_c()`, C kernel path
 - [ ] Router fine-tune: `train_router(router, decomposition_data, steps)`
 - [ ] **Training priority queue**: Scores models by (domain_gap * data_volume * performance_delta) → trains highest priority first
 - [ ] **User-driven training**: UI accepts training data → auto-detects domain → creates/updates model with generated name → queues for training
@@ -177,8 +178,8 @@
 - [ ] `tinylm "prompt"` — interactive, auto-plans via router + tasks
 
 ### 13. Testing & Validation
-- [ ] Unit tests: autograd, tokenizer, model forward/backward, quantize/dequantize
-- [ ] Integration tests: train → save → load → generate
+- [x] Unit tests: autograd, tokenizer, model forward/backward, quantize/dequantize (`test_all.py`)
+- [x] Integration tests: train → save → load → generate (`test_all.py`)
 - [ ] Harness tests: run `.tlm` scripts, verify assertions
 - [ ] Benchmark script: `bench_train()`, `bench_generate()`, `bench_router()`
 - [ ] CI: GitHub Actions (lint, test, bench)
@@ -195,7 +196,7 @@
 - [ ] `main.py --cli` — implement CLI (train, generate, serve, model mgmt) → section 12
 - [ ] `main.py --mcp` — implement MCP system → section 11 (MCP support)
 - [x] `build.sh` — build script for optional C extensions
-- [x] C source for training hot path: `csrc/train_kernel.c` + `accel.py` (ctypes) — fused sampled-softmax fwd/bwd + SGD, ~14x faster, pure-Python fallback
+- [x] C source for training hot path: `csrc/train_kernel.c` + `accel.py` (ctypes) — fused sampled-softmax fwd/bwd + SGD with gradient clipping (`max_norm`), ~14x faster, pure-Python fallback
 - [ ] C source for remaining modules (tokenizer BPE, quantize/dequantize)
 - [ ] `setup.py` / `pyproject.toml` for pip installable package
 - [ ] Optional C extension: `tinylm._c` with `bpe_train`, `quantize`, `dequantize`

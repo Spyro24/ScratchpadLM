@@ -12,10 +12,12 @@ Do only one task.
 | Component | File | Description |
 |-----------|------|-------------|
 | Tokenizer | `tokenizer.py` | Byte-level BPE. `extend()` adds tokens without changing existing IDs. |
-| Model & Autograd | `ai.py` | `Value` (autograd), `TinyLM`, training (SGD + sampled softmax), generation, 4-bit save/load. |
+| Model & Autograd | `ai.py` | `Value` (autograd), `TinyLM`, training (SGD + sampled softmax), generation, 4-bit save/load. Training extras: `LR_Scheduler`, `clip_grads`, `evaluate`, `EarlyStopping`, `Checkpoint`/`save_checkpoint`/`load_checkpoint`/`resume_from_checkpoint`, `AutoAdjust`. |
 | Config | `config.py` | YAML/JSON config with validation, defaults, merging. Stdlib only. |
 | Registries | `registry.py` | `ModelRegistry`, `TaskRegistry`, `TokenizerManager` (singleton). |
 | Model Management | `model_mgmt.py` | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`. |
+| C Acceleration | `accel.py` + `csrc/train_kernel.c` | Optional fused C kernel (ctypes). Supports LR-per-step and gradient clipping (`max_norm`). Built via `./build.sh`. |
+| Tests | `test_all.py` | Fast unit test suite (stdlib only). Run `python3 test_all.py` after every change. |
 | UI | `ui.py` | Tkinter app: input box, steps field, Train/Generate buttons, history. |
 | Legacy Demo | `main.py` | N-gram model demo (not used by main app). |
 
@@ -60,24 +62,41 @@ sync_vocab(model, len(tok.vocab))  # Updates C, W2, b2, model.params
 
 ### Training (Sequential)
 ```python
-train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, progress_cb=None)
+train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, progress_cb=None,
+      lr_scheduler="cosine_warmup", warmup_steps=100, min_lr=0.0,
+      grad_clip=1.0, val_ids=None, val_split=0.0, eval_every=50,
+      early_stopping=True, patience=5, min_delta=1e-4,
+      checkpoint_every=100, checkpoint_dir="checkpoints",
+      auto_adjust=True, auto_factor=0.5, auto_patience=10, auto_clip_relax=True)
 ```
 - Sampled softmax: target + `n_negatives` random tokens
 - Loss averaged over `batch_size` windows per step
-- Linear LR decay: `rate = lr * (1 - step / steps)`
-- `progress_cb(done, total, loss)` called after every step (optional)
+- `lr_scheduler`: `cosine_warmup` | `linear` | `constant`; warmup applies first, then decay to `min_lr`
+- `grad_clip`: global-norm gradient clipping (0 disables)
+- `val_split`: holds out a fraction of `ids` for perplexity checks every `eval_every` steps
+- `early_stopping`: stops after `patience` non-improving evals and restores best weights
+- `checkpoint_every`: writes JSON checkpoints (`save_checkpoint`) to `checkpoint_dir`, plus `checkpoint_final.json`
+- `auto_adjust`: **automatic adjustment** — reduces LR by `auto_factor` on loss plateaus (after `warmup_steps`, patience `auto_patience`), and relaxes the grad-clip limit if clipping fires on consecutive steps (`auto_clip_relax`)
+- `progress_cb(done, total, loss, val_loss=None, lr=None)` called after every step (optional)
 - `use_c` forces the C kernel on/off; default: on when `accel.AVAILABLE`
-- C kernel (`./build.sh` → `libtinylm_accel.so`, loaded via ctypes in `accel.py`): fused fwd/bwd/SGD on flat floats, ~14x faster, mathematically identical (parity-tested to 1e-9); pure-Python autograd path is the fallback
+- C kernel (`./build.sh` → `libtinylm_accel.so`, loaded via ctypes in `accel.py`): fused fwd/bwd/SGD on flat floats, supports LR-per-step + `max_norm` gradient clipping; used automatically when validation/early-stopping/checkpointing are off. Pure-Python autograd path is the fallback
 
 ### Training (Parallel)
 ```python
 train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16,
-               n_negatives=256, workers=4, progress_cb=None)
+               n_negatives=256, workers=4, progress_cb=None, grad_clip=0.0)
 ```
 - Persistent worker pool (`_WorkerState.model` reused)
 - Each worker receives flat floats, returns `(loss, grads)`
-- Main process sums grads, single SGD update
+- Main process sums grads, clips (if `grad_clip > 0`), single SGD update
 - `progress_cb(done, total, loss)` runs in main process (safe for UI queues)
+
+### Resume from Checkpoint
+```python
+from ai import load_checkpoint, resume_from_checkpoint
+ckpt = load_checkpoint("checkpoints/checkpoint_final.json")
+resume_from_checkpoint(model, ckpt)  # in-place restore of Value.data
+```
 
 ### Generation
 ```python
@@ -258,7 +277,7 @@ print_graph(loss)
 1. Read `STRUCTURE.md` → `ROADMAP.md`
 2. Pick an unchecked task from ROADMAP (prefer top of section)
 3. Implement following constraints above
-4. Test: `python3 -m pytest` (when tests exist) or manual run
+4. Test: `python3 test_all.py` (fast, ~seconds — must pass before committing)
 5. Update `ROADMAP.md`: check the box, add new tasks if discovered
 6. Commit: `git add -A && git commit -m "Task: <description>"`
 
@@ -267,6 +286,11 @@ print_graph(loss)
 ## Testing Commands
 
 ```bash
+# Fast unit test suite (stdlib only, no pytest needed — run after EVERY change)
+python3 test_all.py                    # all tests (~seconds)
+python3 test_all.py tokenizer          # filter by name substring
+python3 test_all.py "c kernel"         # spaces OK in filter
+
 # Run GUI
 python3 ui.py
 
@@ -279,18 +303,8 @@ python3 tokenizer.py
 # Test model train/generate (from ai.py __main__)
 python3 ai.py
 
-# Quick vocab grow test
-python3 -c "
-from tokenizer import BPETokenizer
-from ai import TinyLM, sync_vocab
-tok = BPETokenizer()
-tok.train('hello world ' * 100, vocab_size=500)
-model = TinyLM(vocab_size=len(tok.vocab), ctx=10, emb=16, hidden=32)
-print('Before:', len(model.C))
-tok.extend('new words here', vocab_size=600)
-sync_vocab(model, len(tok.vocab))
-print('After:', len(model.C))
-"
+# Rebuild C kernel after editing csrc/train_kernel.c
+./build.sh                             # -> libtinylm_accel.so (accel.AVAILABLE)
 ```
 
 ---

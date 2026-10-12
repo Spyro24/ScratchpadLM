@@ -134,6 +134,13 @@ static size_t count_params(int vocab, int ctx, int emb, int hidden) {
          + (size_t)vocab * hidden + (size_t)vocab;
 }
 
+/* Helper: compute global gradient norm */
+static double compute_grad_norm(const double *grads, size_t n) {
+    double sum = 0.0;
+    for (size_t i = 0; i < n; i++) sum += grads[i] * grads[i];
+    return sqrt(sum);
+}
+
 /* Core: summed loss + summed grads over the batch (unscaled). */
 static int core(const double *params, const int *windows, const int *negatives,
                 int batch, int ctx, int vocab, int emb, int hidden,
@@ -182,34 +189,45 @@ static int core(const double *params, const int *windows, const int *negatives,
     return rc;
 }
 
-/* Exported: summed loss and summed grads over the batch (no parameter
- * update, no /batch scaling — same semantics as summing per-window autograd
- * losses and calling backward() once). Used by train_parallel workers and
- * parity tests. `negatives` may be NULL to sample internally with `seed`.
+/* Exported: summed loss and summed grads over the batch with optional gradient clipping
+ * Returns summed loss and summed grads (no scaling, no parameter update).
+ * Used by train_parallel workers and parity tests. `negatives` may be NULL to sample
+ * internally with `seed`. If max_norm > 0, gradients are clipped by global norm.
  * Returns 0 on success, -1 invalid arg, -2 token id out of range, -3 OOM. */
 int tl_batch_loss_grads(const double *params, const int *windows,
                         const int *negatives,
                         int batch, int ctx, int vocab, int emb, int hidden,
                         int n_negatives, unsigned long long seed,
-                        double *out_loss, double *out_grads)
+                        double *out_loss, double *out_grads,
+                        double max_norm)
 {
     if (!out_loss || !out_grads) return -1;
     uint64_t rng = (uint64_t)seed ^ 0x9E3779B97F4A7C15ULL;
     if (rng == 0) rng = 0x9E3779B97F4A7C15ULL;
-    return core(params, windows, negatives, batch, ctx, vocab, emb, hidden,
-                n_negatives, &rng, out_loss, out_grads);
+    int rc = core(params, windows, negatives, batch, ctx, vocab, emb, hidden,
+                  n_negatives, &rng, out_loss, out_grads);
+    if (rc == 0 && max_norm > 0.0) {
+        const size_t n_params = count_params(vocab, ctx, emb, hidden);
+        double norm = compute_grad_norm(out_grads, n_params);
+        if (norm > max_norm && norm > 0.0) {
+            double scale = max_norm / norm;
+            for (size_t i = 0; i < n_params; i++) out_grads[i] *= scale;
+        }
+    }
+    return rc;
 }
 
-/* Exported: one fused training step — loss + grads + in-place SGD update
- * (params[i] -= lr * mean_grad[i]), matching ai.py's train() update rule.
+/* Exported: one fused training step with optional gradient clipping
+ * params[i] -= lr * grad[i] / batch (with clipping if max_norm > 0)
  * Negatives are sampled internally. Returns 0 on success, see codes above. */
 int tl_train_step(double *params, const int *windows,
                   int batch, int ctx, int vocab, int emb, int hidden,
                   int n_negatives, double lr, unsigned long long seed,
-                  double *out_loss)
+                  double *out_loss, double max_norm)
 {
     if (!out_loss) return -1;
-    double *grads = malloc(count_params(vocab, ctx, emb, hidden) * sizeof(double));
+    const size_t n_params = count_params(vocab, ctx, emb, hidden);
+    double *grads = malloc(n_params * sizeof(double));
     if (!grads) return -3;
     uint64_t rng = (uint64_t)seed ^ 0x9E3779B97F4A7C15ULL;
     if (rng == 0) rng = 0x9E3779B97F4A7C15ULL;
@@ -217,8 +235,14 @@ int tl_train_step(double *params, const int *windows,
                   n_negatives, &rng, out_loss, grads);
     if (rc == 0) {
         *out_loss /= batch;
-        const size_t n = count_params(vocab, ctx, emb, hidden);
-        for (size_t i = 0; i < n; i++) params[i] -= lr * grads[i] / batch;
+        if (max_norm > 0.0) {
+            double norm = compute_grad_norm(grads, n_params);
+            if (norm > max_norm && norm > 0.0) {
+                double scale = max_norm / norm;
+                for (size_t i = 0; i < n_params; i++) grads[i] *= scale;
+            }
+        }
+        for (size_t i = 0; i < n_params; i++) params[i] -= lr * grads[i] / batch;
     }
     free(grads);
     return rc;

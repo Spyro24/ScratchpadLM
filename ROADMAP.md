@@ -23,6 +23,7 @@
 
 ### 0a. Control UI (HIGH PRIORITY)
 - [x] **Prompt interface**: Text input box for prompting the AI, send button, conversation history
+- [ ] **Tabbed UI layout**: Reorganize UI into tabs — **Chat** (prompt + history), **Training** (data input + controls + monitor), **Model Info** (inspector + tensor details), **Admin** (model list, create/delete, catalog mgmt), **Settings** (generation params, training config, tokenizer config)
 - [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
 - [ ] **Training data provider**: User provides training data directly — file upload, text paste, URL fetch, folder watch, data preview, auto domain detection, train/val split
 - [ ] **Auto model naming**: System generates model name from training data domain — shows preview `tiny-{detected_domain}` before creation
@@ -180,14 +181,14 @@
 - [ ] Benchmark script: `bench_train()`, `bench_generate()`, `bench_router()`
 - [ ] CI: GitHub Actions (lint, test, bench)
 
-### 14. Documentation
+### 14. Documentation (HIGH PRIORITY)
 - [ ] `README.md` — quickstart, architecture, constraints
 - [ ] `CONFIG.md` — all config options
 - [ ] `HARNESS.md` — script DSL reference, examples
 - [ ] `MODELS.md` — adding custom specialized models
 - [ ] `API.md` — Python API, HTTP API
 
-### 15. Build & Distribution
+### 15. Build & Distribution (HIGH PRIORITY)
 - [ ] `main.py` — proper entry point with CLI args (train, generate, serve, model mgmt)
 - [ ] `build.sh` — build script for optional C extensions
 - [ ] C source for performance-critical modules (tokenizer BPE, matrix ops, quantize/dequantize)

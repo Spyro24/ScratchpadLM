@@ -114,7 +114,7 @@ config.py
 - **Layout**: `ttk.Notebook` with 5 tabs — **Chat** (model selector + conversation history + prompt input + quick gen settings), **Training** (training data ScrolledText + steps entry + Train button + training monitor log), **Model Info** (inspector labels + tensor details popup + refresh), **Admin** (catalog Listbox + create model name/domains + delete selected + refresh catalog), **Settings** (generation/training/tokenizer/model config entries + Save Config → writes `config.yaml` via `_write_config_yaml()`)
 - **Threading**: `_run_in_background(label, func, *args)` → daemon thread → `queue.Queue` → `root.after(100, _poll_queue)`
 - **History**: `_append_history(role, text)` with tags: "user" (blue bold), "assistant" (green bold), "system" (gray italic), "error" (red bold)
-- **Training monitor**: `_log_train(message)` — timestamped lines in Training tab log
+- **Training monitor**: `_log_train(message)` — timestamped lines in Training tab log; `ttk.Progressbar` (determinate) updated via `("progress", "Training", (done, total, loss))` queue messages from `progress_cb`
 - **Vocab display**: Live label showing current tokenizer vocab size
 - **Generation settings**: Configurable n_tokens (default 60) and temperature (default 0.8)
 
@@ -155,7 +155,7 @@ config.py
 ## Training Flow
 
 ```
-train(model, ids, steps, lr, batch_size, n_negatives)
+train(model, ids, steps, lr, batch_size, n_negatives, progress_cb)
   └─ for each step:
        ├─ sample batch_size random windows
        ├─ model.sampled_loss() for each (context, target)

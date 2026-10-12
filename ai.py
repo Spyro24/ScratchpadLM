@@ -865,13 +865,15 @@ class Router:
 
 # ---- training and generation ----------------------------------------------
 
-def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256):
+def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, progress_cb=None):
     """Mini-batch SGD with sampled softmax.
 
     Each step averages the loss over `batch_size` windows. For each target, the
     softmax runs over the true token plus `n_negatives` random tokens instead of
     the whole vocabulary. This cuts the output-layer cost by roughly
     vocab_size / (n_negatives + 1).
+
+    `progress_cb(done, total, loss)` is called after every step if given.
     """
     ctx = model.ctx
     starts = range(len(ids) - ctx)
@@ -897,6 +899,9 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256):
 
         for p in params:
             p.data -= rate * p.grad
+
+        if progress_cb is not None:
+            progress_cb(step + 1, steps, loss.data)
 
         if step % 25 == 0:
             print(f"step {step:5d}  loss {loss.data:.3f}")
@@ -977,10 +982,15 @@ def _worker_grads_v2(args):
     return loss.data, [p.grad for p in model.params]
 
 
-def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, workers=None):
+def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, workers=None,
+                   progress_cb=None):
     """Data-parallel version of train. Uses persistent worker pool to avoid
     rebuilding the model each step. The batch is split across processes and
-    the gradients are summed before one SGD update."""
+    the gradients are summed before one SGD update.
+
+    `progress_cb(done, total, loss)` is called after every step if given
+    (runs in the main process; safe for queue-based UI updates).
+    """
     workers = workers or cpu_count()
     ctx = model.ctx
     vocab = len(model.C)
@@ -1015,6 +1025,9 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
 
             for p, g in zip(params, grad):
                 p.data -= rate * g / batch_size
+
+            if progress_cb is not None:
+                progress_cb(step + 1, steps, total_loss / batch_size)
 
             if step % 25 == 0:
                 print(f"step {step:5d}  loss {total_loss / batch_size:.3f}")

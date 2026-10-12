@@ -32,7 +32,7 @@
 - [ ] **Variable batch tokenizer**: Training batches with mixed-domain detection — routes tokens to appropriate model trainers, prevents single-model training on heterogeneous data
 - [ ] **Control panel**: Tkinter-based dashboard with model status, training controls, generation settings
 - [x] **Model selector**: dropdown to switch between registered models (router + specialized)
-- [ ] **Training monitor**: live loss chart, step counter, learning rate display
+- [x] **Training monitor**: progress bar with step counter + live loss (loss chart/LR display still open)
 - [ ] **Generation controls**: temperature, top-k, top-p, repetition penalty sliders
 - [ ] **Tokenizer manager**: view vocab size, learned patterns, extend vocab button
 - [ ] **Config editor**: YAML editor with validation, save/load presets

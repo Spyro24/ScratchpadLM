@@ -260,7 +260,7 @@ class App:
     def _build_training_tab(self, tab):
         """Training tab: data input, controls, training log monitor."""
         tab.rowconfigure(1, weight=1)  # Training text expands
-        tab.rowconfigure(3, weight=1)  # Log monitor expands
+        tab.rowconfigure(4, weight=1)  # Log monitor expands
         tab.columnconfigure(0, weight=1)
 
         # Target model indicator (mirrors Chat tab selection)
@@ -291,9 +291,19 @@ class App:
         self.train_btn = tk.Button(train_controls, text="Train on Data", width=15, command=self.on_train)
         self.train_btn.pack(side="left", padx=5)
 
+        # Progress bar row
+        progress_row = tk.Frame(tab)
+        progress_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        progress_row.columnconfigure(0, weight=1)
+
+        self.train_progress = ttk.Progressbar(progress_row, mode="determinate", maximum=100)
+        self.train_progress.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.progress_label = tk.Label(progress_row, text="", font=("Consolas", 9), width=22, anchor="w")
+        self.progress_label.grid(row=0, column=1)
+
         # Training monitor (log)
         monitor_frame = tk.LabelFrame(tab, text="Training Monitor", padx=10, pady=10)
-        monitor_frame.grid(row=3, column=0, sticky="nsew")
+        monitor_frame.grid(row=4, column=0, sticky="nsew")
         monitor_frame.rowconfigure(0, weight=1)
         monitor_frame.columnconfigure(0, weight=1)
 
@@ -500,10 +510,21 @@ class App:
         try:
             while True:
                 kind, label, payload = self.queue.get_nowait()
-                self._handle_result(kind, label, payload)
+                if kind == "progress":
+                    self._handle_progress(label, payload)
+                else:
+                    self._handle_result(kind, label, payload)
         except queue.Empty:
             pass
         self.root.after(100, self._poll_queue)
+
+    def _handle_progress(self, label, payload):
+        """Update the training progress bar (runs on the main thread)."""
+        if label != "Training":
+            return
+        done, total, loss = payload
+        self.train_progress.configure(maximum=max(total, 1), value=done)
+        self.progress_label.configure(text=f"Step {done}/{total}  loss {loss:.3f}")
 
     def _handle_result(self, kind, label, payload):
         if kind == "error":
@@ -511,6 +532,7 @@ class App:
             self._append_history("error", f"Error: {payload}")
             if label == "Training":
                 self._log_train(f"{label} failed: {payload}", is_error=True)
+                self.progress_label.configure(text="Failed")
             messagebox.showerror("Error", f"{label} failed:\n{payload}")
             return
 
@@ -520,6 +542,8 @@ class App:
             self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
             self._append_history("system", f"[Trained on {len(prompt)} chars, {steps} steps, model saved. Vocab: {len(self.tok.vocab)}]")
             self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}")
+            self.train_progress.configure(maximum=max(steps, 1), value=steps)
+            self.progress_label.configure(text=f"Done ({steps} steps)")
             self._set_busy(False, "Training done")
             self.update_model_inspector()
         elif label.startswith("Loading "):
@@ -565,6 +589,8 @@ class App:
             messagebox.showwarning("Invalid input", "Training steps must be a positive whole number.")
             return
         self._log_train(f"Training started: {len(prompt)} chars, {steps} steps, model={self.model_var.get()}")
+        self.train_progress.configure(maximum=steps, value=0)
+        self.progress_label.configure(text=f"Step 0/{steps}")
         self._run_in_background("Training", self._train_job, prompt, steps)
 
     def _train_job(self, prompt, steps):
@@ -581,9 +607,14 @@ class App:
             raise ValueError(
                 f"The input has {len(ids)} tokens, but training needs more than {self.model.ctx}."
             )
+
+        # Progress callback: thread-safe, only puts messages on the queue
+        def on_progress(done, total, loss):
+            self.queue.put(("progress", "Training", (done, total, loss)))
+
         train_parallel(self.model, ids, steps=steps, lr=training_cfg["lr"], 
                        batch_size=training_cfg["batch_size"], n_negatives=training_cfg["n_negatives"],
-                       workers=training_cfg["workers"])
+                       workers=training_cfg["workers"], progress_cb=on_progress)
         return prompt, steps
 
     def on_send_prompt(self):

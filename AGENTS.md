@@ -60,20 +60,22 @@ sync_vocab(model, len(tok.vocab))  # Updates C, W2, b2, model.params
 
 ### Training (Sequential)
 ```python
-train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256)
+train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, progress_cb=None)
 ```
 - Sampled softmax: target + `n_negatives` random tokens
 - Loss averaged over `batch_size` windows per step
 - Linear LR decay: `rate = lr * (1 - step / steps)`
+- `progress_cb(done, total, loss)` called after every step (optional)
 
 ### Training (Parallel)
 ```python
 train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16,
-               n_negatives=256, workers=4)
+               n_negatives=256, workers=4, progress_cb=None)
 ```
 - Persistent worker pool (`_WorkerState.model` reused)
 - Each worker receives flat floats, returns `(loss, grads)`
 - Main process sums grads, single SGD update
+- `progress_cb(done, total, loss)` runs in main process (safe for UI queues)
 
 ### Generation
 ```python

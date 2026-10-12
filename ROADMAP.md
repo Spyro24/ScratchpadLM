@@ -76,12 +76,13 @@
 - [ ] Model factory: `create_model(config)` — returns model instance
 - [ ] Model save/load: uses shared 4-bit format
 - [ ] Param limit enforcement: raises if `count_params > 100_000`
+- [ ] **MCP tool use**: Specialized models can invoke MCP tools — tool calling head, domain-specific tool schemas (e.g., SolidCraft for tiny-code), result integration, stays within 100K param budget
 
 ### 3. Default Specialized Models (4 models)
-- [ ] `tiny-code`: config optimized for code (larger hidden, code-specific pretraining)
-- [ ] `tiny-reason`: config optimized for logic (deeper, math/logic pretraining)
-- [ ] `tiny-prose`: config optimized for text (standard)
-- [ ] `tiny-embed`: no LM head, outputs `[CLS]` embedding, contrastive loss
+- [ ] `tiny-code`: config optimized for code (larger hidden, code-specific pretraining) — MCP tools: SolidCraft (CAD sketches), Git (version control), LSP (code analysis)
+- [ ] `tiny-reason`: config optimized for logic (deeper, math/logic pretraining) — MCP tools: WolframAlpha (computation), Proof assistants (Lean, Coq)
+- [ ] `tiny-prose`: config optimized for text (standard) — MCP tools: Web search, Document APIs, Translation
+- [ ] `tiny-embed`: no LM head, outputs `[CLS]` embedding, contrastive loss — MCP tools: Vector DB (search/index), RAG pipelines
 
 ### 4. Multi-Model Runtime
 - [ ] `ModelRuntime` class: loads router + all specialized models at startup

@@ -81,6 +81,7 @@
 - [x] **Router integration in UI**: Router used for every user prompt, routes to best model
 - [x] **Router training in UI**: `tinylm router train` CLI and UI button for training on collected data
 - [x] **Router training data collection**: Automatic collection from user interactions
+- [x] **Router pretraining**: CLI `tinylm router train` pretrains router on corpus
 - [ ] **MCP tool use**: Router can invoke MCP tools during inference — tool calling head, tool schema awareness, multi-step tool chains, result integration into context
 
 ### 2. Specialized Model Base (≤100K params each)

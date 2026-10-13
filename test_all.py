@@ -941,27 +941,44 @@ def t_router_training_format():
 
 @test("planner: router.split creates TaskPad tasks")
 def t_planner():
-    from scratchpad import TaskPad, TaskType, plan
+    from scratchpad import TaskPad, TaskType, model_to_task_type, plan
+    from model_mgmt import ModelCatalog, ModelSpec
+    # Dynamic mapping works for any model count/naming, not a fixed list
+    check(model_to_task_type("tiny-code") == TaskType.CODE)
+    check(model_to_task_type("my-embed") == TaskType.EMBED)
+    check(model_to_task_type("tiny-prose") == TaskType.GENERATE)
+    check(model_to_task_type("tiny-finance") == TaskType.CUSTOM)
+    check(model_to_task_type(None) == TaskType.CUSTOM)
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "taskpad.jsonl")
         pad = TaskPad(path=path)
+        catalog = ModelCatalog(os.path.join(d, "catalog.json"))
+        catalog.add(ModelSpec(name="tiny-code", path="m.tlm",
+                              domain_keywords=["code"], param_count=100,
+                              config={}))
 
         class FakeRouter:
             def split(self, prompt, tokenizer, max_subtasks=4, catalog=None):
                 ids = [1, 2, 3]
                 return [
                     {"model": "tiny-code", "prompt": prompt, "context_tokens": ids},
-                    {"model": "tiny-unknown", "prompt": "other", "context_tokens": ids},
+                    {"model": "tiny-finance", "prompt": "other", "context_tokens": ids},
+                    {"prompt": "no model key", "context_tokens": ids},
                 ]
 
-        tasks = plan("write code", FakeRouter(), tokenizer=None, taskpad=pad)
-        check(len(tasks) == 2)
+        tasks = plan("write code", FakeRouter(), tokenizer=None, taskpad=pad,
+                     catalog=catalog)
+        check(len(tasks) == 3)
         check(tasks[0].type == TaskType.CODE and tasks[0].model_name == "tiny-code")
         check(tasks[1].type == TaskType.CUSTOM)
+        check(tasks[2].type == TaskType.CUSTOM and tasks[2].model_name is None)
         check(tasks[0].metadata["context_tokens"] == [1, 2, 3])
         check(tasks[0].metadata["features"] == {})
+        check(tasks[0].metadata["model_available"] is True)
+        check(tasks[1].metadata["model_available"] is False)
+        check(tasks[2].metadata["model_available"] is False)
         # Tasks persist across TaskPad instances
-        check(len(TaskPad(path=path).list_tasks()) == 2)
+        check(len(TaskPad(path=path).list_tasks()) == 3)
 
 
 @test("router: train_router runs and reduces loss")

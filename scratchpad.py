@@ -310,16 +310,30 @@ class TaskPad:
 
 # ---- Router planner ---------------------------------------------------------
 
-MODEL_TO_TASK_TYPE = {
-    "tiny-code": TaskType.CODE,
-    "tiny-reason": TaskType.REASON,
-    "tiny-prose": TaskType.GENERATE,
-    "tiny-embed": TaskType.EMBED,
-    "tiny-sql": TaskType.CUSTOM,
-    "tiny-docs": TaskType.CUSTOM,
-    "tiny-shell": TaskType.CUSTOM,
-    "tiny-data": TaskType.ANALYZE,
+# Suffix aliases for model names whose suffix is not a TaskType value
+# (suffixes matching a value directly need no entry: code, reason, embed,
+# train, search, generate, ...). Anything unmapped → CUSTOM, so any
+# model count or naming scheme works.
+MODEL_SUFFIX_TASK_ALIASES = {
+    "prose": TaskType.GENERATE,
+    "data": TaskType.ANALYZE,
 }
+
+
+def model_to_task_type(model_name) -> TaskType:
+    """Map any model name to a `TaskType` without assuming a fixed model list.
+
+    Uses the name suffix after the last `-` (`tiny-code` → `code`); a suffix
+    matching a `TaskType` value (or alias above) selects that type, anything
+    else (including missing names) → `CUSTOM`.
+    """
+    suffix = (model_name or "").rsplit("-", 1)[-1].strip().lower()
+    if suffix in MODEL_SUFFIX_TASK_ALIASES:
+        return MODEL_SUFFIX_TASK_ALIASES[suffix]
+    try:
+        return TaskType(suffix)
+    except ValueError:
+        return TaskType.CUSTOM
 
 
 def plan(prompt: str, router, tokenizer, taskpad: Optional["TaskPad"] = None,
@@ -327,23 +341,31 @@ def plan(prompt: str, router, tokenizer, taskpad: Optional["TaskPad"] = None,
     """Decompose `prompt` via the router and create one `TaskPad` task per subtask.
 
     Each subtask dict from `router.split()` (`{model, prompt, context_tokens}`)
-    becomes a `Task` whose type follows `MODEL_TO_TASK_TYPE` (unknown models →
-    `CUSTOM`). The router's `context_tokens` are stored in
-    `task.metadata["context_tokens"]`; `task.metadata["features"]` starts empty
-    and is filled later by the feature-extraction model. When `task_registry`
-    holds a template named after the subtask model, its `prompt_template` (with
-    `{text}`) and `parameters` are applied.
+    becomes a `Task` whose type follows `model_to_task_type()` (any model
+    count/naming works; unmapped names → `CUSTOM`). The router's
+    `context_tokens` are stored in `task.metadata["context_tokens"]`;
+    `task.metadata["features"]` starts empty and is filled later by the
+    feature-extraction model. When `catalog` is given, each task records
+    `metadata["model_available"]` (whether its model is currently listed).
+    When `task_registry` holds a template named after the subtask model, its
+    `prompt_template` (with `{text}`) and `parameters` are applied.
     """
     if taskpad is None:
         taskpad = TaskPad()
+    available = None
+    if catalog is not None:
+        try:
+            available = {spec.name for spec in catalog.list()}
+        except Exception:
+            available = None
     subtasks = router.split(prompt, tokenizer, max_subtasks=max_subtasks,
                             catalog=catalog)
     tasks = []
     for sub in subtasks:
-        model_name = sub.get("model", "tiny-prose")
+        model_name = sub.get("model") or None
         sub_prompt = sub.get("prompt", prompt)
         params: Dict[str, Any] = {}
-        if task_registry is not None:
+        if task_registry is not None and model_name is not None:
             try:
                 tmpl = task_registry.get(model_name)
                 sub_prompt = tmpl.prompt_template.format(text=sub_prompt)
@@ -351,11 +373,13 @@ def plan(prompt: str, router, tokenizer, taskpad: Optional["TaskPad"] = None,
             except Exception:
                 pass
         task = taskpad.create_task(
-            MODEL_TO_TASK_TYPE.get(model_name, TaskType.CUSTOM),
+            model_to_task_type(model_name),
             sub_prompt, model_name=model_name, parameters=params,
         )
         task.metadata["context_tokens"] = list(sub.get("context_tokens", []))
         task.metadata["features"] = {}
+        if available is not None:
+            task.metadata["model_available"] = model_name in available
         tasks.append(task)
     taskpad._save()
     return tasks

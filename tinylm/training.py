@@ -125,7 +125,9 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
         rate = scheduler.get_lr(step) * adjuster.multiplier
         windows = []
         for _ in range(batch_size):
-            i = random.choice(list(starts))
+            # NB: `starts` is a range — choose on it directly. Materializing
+            # `list(starts)` here rebuilt an len(ids)-sized list per window.
+            i = random.choice(starts)
             windows.extend(train_ids[i:i + ctx])
             windows.append(train_ids[i + ctx])
 

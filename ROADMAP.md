@@ -58,7 +58,10 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 - [x] Loss-spike rollback (`rollback_window`, config default 2, 0=off): snapshots every step, restores lowest-loss step in window on spike, skips bad update (`rollbacks` in result; `RollbackGuard` in `sched.py`; wired into `train()`/`_train_c()`/`train_parallel()` + Config/UI)
 - [x] Multicore best-of-N trials (`train_multicore` in `tinylm/parallel.py`): one full training step per core from shared weights, shared probe batch picks the lowest-loss trial, winner's weights + velocity adopted; same result contract + `rollback_callback` (total divergence falls back to the best snapshot); fixed persistent-worker grad accumulation on the Python path (grads are now zeroed before each `backward()`)
 - [x] Rollback monitor: `rollback_callback(step,loss,best)` in all training paths → training monitor logs each rollback and the Training tab shows the gap (current loss − smallest loss in run); completion/cancel summaries include the rollback count (Tk + Qt)
+- [x] C-path window sampling: `_train_c` chose on `list(starts)` (rebuilt an `len(ids)`-sized list per window, ~4.7s/1600 windows at 100k tokens) → chooses on the range directly (~7x end-to-end on the C path)
 - [ ] Data loaders (`CodeDataset/ReasoningDataset/ProseDataset/EmbeddingDataset/SQLDataset/ShellDataset/DataAnalysisDataset/AutoDataset`)
+- [ ] `train()` upfront negative presampling (`steps*batch_size*n_negatives` ints ≈ 8.2M/3s at defaults) → lazy chunked refill
+- [ ] `train()` upfront negative presampling (`steps*batch_size*n_negatives` ints ≈ 8.2M/3s at defaults) → lazy chunked refill
 - [ ] **Variable batch token router** (per-model trainers, no contamination)
 - [ ] `gradient_accumulation` is accepted but ignored on the C kernel path (`_train_c` uses the fused per-batch step); make it effective or reject it there
 - [ ] Router fine-tune (`train_router` on decomposition data)

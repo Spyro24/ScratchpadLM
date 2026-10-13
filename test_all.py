@@ -1403,6 +1403,34 @@ def t_ui_smoke():
         root.destroy()
 
 
+@test("ui tk: training box shows marked text and locks during training")
+def t_ui_train_box():
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+    except Exception:
+        print("    (no display - skipping)")
+        return
+    try:
+        from uitk.app import App
+        app = App(root)
+        raw = "Hello world.\nSecond line."
+        app.train_text.delete("1.0", "end")
+        app.train_text.insert("1.0", raw)
+        app._train_text_raw = raw
+        app._show_marked_training_text("Hello world. [EOT] [EOL] [EOS]")
+        content = app.train_text.get("1.0", "end")
+        check("[EOT]" in content and "[EOS]" in content)
+        check(str(app.train_text.cget("state")) == "disabled")
+        check(len(app.train_text.tag_ranges("marker")) > 0)
+        app._restore_training_text()
+        check(app.train_text.get("1.0", "end-1c") == raw)
+        check(str(app.train_text.cget("state")) == "normal")
+    finally:
+        root.destroy()
+
+
 @test("ui: toolkit auto-detect prefers pyside6, tkinter fallback honors override")
 def t_ui_toolkit_detect():
     from ui_base import detect_toolkit, has_pyside6, parse_bool, write_config_yaml

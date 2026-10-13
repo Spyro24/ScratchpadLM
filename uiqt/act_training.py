@@ -101,8 +101,21 @@ class TrainingActionsMixin:
         self.progress_label.setText(f"Step 0/{steps}")
         self._rollback_count = 0
         self.rollback_label.setText("Last rollback gap: —")
+        # Show the marked-up training text and lock the box while training
+        # runs; the raw text is restored on completion.
+        self._train_text_raw = prompt
+        self.train_text.setPlainText(insert_markers(prompt))
+        self.train_text.setReadOnly(True)
         self.worker.submit("Training", self._train_job, prompt, steps)
         self.set_busy(True, "Training...")
+
+    def _restore_training_text(self):
+        """Restore the raw training text and unlock the box."""
+        raw = getattr(self, "_train_text_raw", None)
+        if raw is not None:
+            self.train_text.setPlainText(raw)
+            del self._train_text_raw
+        self.train_text.setReadOnly(False)
 
     def _train_job(self, prompt, steps):
         tokenizer_cfg = self.cfg["tokenizer"]

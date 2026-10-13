@@ -40,6 +40,8 @@ class ResultMixin:
                 self.cancel_train_btn.configure(state="disabled")
                 self.train_btn.configure(state="normal")
                 self.train_router_btn.configure(state="normal")
+                if label == "Training":
+                    self._restore_training_text()
             except Exception:
                 pass
             # Chat shows only conversation (user/assistant) plus model-selection
@@ -64,6 +66,11 @@ class ResultMixin:
             self.cancel_train_btn.configure(state="disabled")
             self.train_btn.configure(state="normal")
             self.train_router_btn.configure(state="normal")
+            if label == "Training":
+                try:
+                    self._restore_training_text()
+                except Exception:
+                    pass
 
         if label == "Training":
             if isinstance(payload, tuple) and len(payload) == 3:

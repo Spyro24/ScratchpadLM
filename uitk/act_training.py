@@ -55,7 +55,37 @@ class TrainingActionsMixin:
         self.progress_label.configure(text=f"Step 0/{steps}")
         self._rollback_count = 0
         self.rollback_label.configure(text="Last rollback gap: —")
+        # Show the marked-up training text (yellow markers) and lock the box
+        # while training runs; the raw text is restored on completion.
+        self._train_text_raw = prompt
+        self._show_marked_training_text(insert_markers(prompt))
         self._run_in_background("Training", self._train_job, prompt, steps)
+
+    def _show_marked_training_text(self, marked):
+        """Display marked training text with yellow marker tags, input locked."""
+        self.train_text.configure(state="normal")
+        self.train_text.delete("1.0", "end")
+        self.train_text.insert("1.0", marked)
+        self.train_text.tag_config("marker", foreground=PALETTE["warning"])
+        self.train_text.tag_remove("marker", "1.0", "end")
+        for short in ("[EOL]", "[EOS]", "[EOT]"):
+            idx = "1.0"
+            while True:
+                idx = self.train_text.search(short, idx, stopindex="end")
+                if not idx:
+                    break
+                self.train_text.tag_add("marker", idx, f"{idx}+{len(short)}c")
+                idx = f"{idx}+{len(short)}c"
+        self.train_text.configure(state="disabled")
+
+    def _restore_training_text(self):
+        """Restore the raw training text and unlock the box."""
+        raw = getattr(self, "_train_text_raw", None)
+        self.train_text.configure(state="normal")
+        if raw is not None:
+            self.train_text.delete("1.0", "end")
+            self.train_text.insert("1.0", raw)
+            del self._train_text_raw
 
     def _train_job(self, prompt, steps):
         # Use config for tokenizer and training settings

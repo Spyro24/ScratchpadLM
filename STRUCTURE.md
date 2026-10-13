@@ -25,6 +25,7 @@
 | `uiqt/window.py` + `uiqt/` mixins | Qt `MainWindow` + `run_qt_app`: `widgets` (bubbles), `core`, `shell`+`tab_*`, `chat`, `worker`, `logging`, `result`, `act_*` |
 | `ui_base.py` | `detect_toolkit`/`run_gui` (+ `SCRATCHPADLM_UI` override, `qt_platform_check` preflight), `PALETTE`/`qss_theme`, `BackgroundWorker`, config helpers |
 | `main.py` | CLI (`tinylm` subcommands) + GUI boot |
+| `opencodeSkill/readpy.py` | File-structure reader skill: `tree`/`treefull`/`class`/`function` for Python files (stdlib `ast`) |
 | `test_all.py` | stdlib unit/integration suite |
 
 Never delete: `tinyLM` (weights), `bpe_merges.txt` (merges).

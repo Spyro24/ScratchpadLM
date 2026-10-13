@@ -951,6 +951,47 @@ def t_specialized_model():
     check(isinstance(text, str) and len(text) > 0)
 
 
+@test("openskill: readpy tree/treefull/class/function")
+def t_readpy():
+    import importlib.util
+    import io, contextlib
+    root = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "readpy", os.path.join(root, "opencodeSkill", "readpy.py"))
+    readpy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(readpy)
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write('"""Mod doc."""\n\n# top comment\ndef top():\n'
+                '    """Top doc."""\n    return 1\n\nclass Foo:\n'
+                '    """Foo doc."""\n    def bar(self):\n        return 2\n')
+        path = f.name
+    try:
+        t = readpy.tree_text(path)
+        for needle in ("def top @", "class Foo @", "def bar @"):
+            check(needle in t, f"tree missing {needle!r}:\n{t}")
+        tf = readpy.treefull_text(path)
+        for needle in ("# top comment", "Top doc.", "Foo doc."):
+            check(needle in tf, f"treefull missing {needle!r}:\n{tf}")
+        src = readpy.class_source(path, "Foo")
+        check("class Foo" in src and "def bar" in src)
+        fsrc = readpy.function_source(path, "top")
+        check("def top" in fsrc and "class Foo" not in fsrc)
+        check("def bar" in readpy.function_source(path, "Foo.bar"))
+        for bad in (lambda: readpy.class_source(path, "Nope"),
+                    lambda: readpy.function_source(path, "Foo.nope"),
+                    lambda: readpy.class_source(path, "top")):
+            try:
+                bad()
+                raise AssertionError("expected LookupError")
+            except LookupError:
+                pass
+        with contextlib.redirect_stdout(io.StringIO()):
+            check(readpy.main(["tree", path]) == 0)
+            check(readpy.main(["function", path, "Nope"]) == 1)
+    finally:
+        os.unlink(path)
+
+
 @test("model_mgmt: catalog create/load/delete roundtrip")
 def t_catalog():
     from model_mgmt import ModelCatalog, ModelCreator, ModelLoader

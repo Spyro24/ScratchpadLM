@@ -1,301 +1,103 @@
 # ScratchpadLM Task List
 
-> **Project name**: ScratchpadLM (public-facing)  
-> **Internal package**: `tinylm` / `TinyLM` (unchanged)
+> Project: ScratchpadLM (public) · internal package `tinylm` / `TinyLM`.
 
-## Done
-- [x] Fused `matvec_dot` — single autograd node per layer
-- [x] Persistent workers in `train_parallel` — no model rebuild per step
-- [x] List-based loss accumulation — O(1) graph depth
-- [x] ~2x sequential, ~3x parallel speedup
+Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-depth loss accumulation (~2x sequential / ~3x parallel); `tinylm/` + `uitk/` + `uiqt/` module splits with shims removed.
 
----
+## Backlog (ordered, atomic)
 
-## Backlog (ordered, atomic steps)
-
-### 0. Foundations (prerequisites)
-- [x] **Config system**: `Config` class (YAML/JSON → dict, validation, defaults)
-- [x] **Model registry**: `ModelRegistry` — `register(name, factory)`, `get(name)`, `list()`
-- [x] **Task registry**: `TaskRegistry` — `register(name, model_name, template)`, `get(name)`
-- [x] **Shared tokenizer singleton**: `TokenizerManager` — single `BPETokenizer` instance, `extend()`, `save()`, `load()`
-- [x] **4-bit quantized save/load per model**: `save_model(model, path)`, `load_model(path)` — works for any architecture
-- [x] **Parameter counter**: `count_params(model)` — enforces ≤100K / 300K limits at init
-- [x] **Wire Config into ui.py**: Replace hardcoded `VOCAB_SIZE, CTX, EMB, HIDDEN` with `Config`
+### 0. Foundations
+- [x] Config, registries, task registry, tokenizer singleton, 4-bit save/load, param counter, Config wired into UI
 
 ### 0a. Control UI (HIGH PRIORITY)
-- [x] **Prompt interface**: Text input box for prompting the AI, send button, conversation history
-- [x] **Tabbed UI layout**: Reorganize UI into tabs — **Chat** (prompt + history), **Training** (data input + controls + monitor), **Model Info** (inspector + tensor details), **Admin** (model list, create/delete, catalog mgmt), **Settings** (generation params, training config, tokenizer config)
-- [ ] **UI Toolkit Migration**: Migrate from Tkinter to **PySide6 (Qt6)** as primary UI toolkit, with Tkinter as fallback
-  - [x] Abstract UI layer with common interface for both toolkits (`ui_base.py`: toolkit detection, `BackgroundWorker`, shared `PALETTE` theme, config helpers)
-  - [x] Implement PySide6 version of all tabs (Chat, Training, Model Info, Admin, Settings, Logs) — `ui_qt.py`
-  - [x] Keep Tkinter implementation as fallback for environments without Qt (`ui.py` unchanged API; `main.py`/`ui.py` launch via `ui_base.run_gui()`)
-  - [x] Auto-detect available toolkit at startup (PySide6 preferred, Tkinter fallback; override with `SCRATCHPADLM_UI=pyside6|tkinter`; Qt platform plugins are preflight-checked — e.g. missing `libxcb-cursor`/`xcb-cursor0` on X11 falls back to Tkinter instead of aborting)
-  - [x] Consistent styling/theme across both toolkits (shared `ui_base.PALETTE` drives Tk tags + Qt stylesheet)
-- [ ] **Chat Layout (PySide6)**: Modern chat interface layout
-  - [x] **Tabs at top**: Main navigation tabs (Chat, Training, Model Info, Admin, Settings, Logs — Harness tab still pending)
-  - [x] **Chats list at left**: Sidebar with conversation list/sessions (multi-session, auto-named from first prompt)
-  - [x] **Chat area center**: Main chat display with messages (styled bubbles: user/assistant/system/error)
-  - [x] **Chat input at bottom**: Text input area at bottom of chat
-  - [x] **Send button right of chat input**: Send button positioned to the right of input field
-  - [x] **Thumbs up/down on each answer**: Every AI response has thumbs up/down buttons for reinforcement learning feedback
-  - [x] **Reinforcement Learning integration**: Thumbs up/down feeds into auto-training system (RatingCollector → AutoTrainer)
-- [ ] **Harness Tab (PySide6)**: Harness configuration and control
-  - [ ] **Privilege Level Selector**: Dropdown/combo box to select AI privilege level (Read-only, Read-Write, Full Access, Admin)
-  - [ ] **Harness Root Path**: Text input with browse button to set harness root directory path
-  - [ ] **Harness Mode Toggle**: Slider/toggle switch to enable/disable harness mode
-  - [ ] **Privilege Level Descriptions**: Tooltip/help text explaining each privilege level
-  - [ ] **Path Validation**: Real-time validation of harness root path existence/permissions
-  - [ ] **Harness Status Indicator**: Visual indicator showing current harness mode (enabled/disabled) and active privilege level
-- [x] **Theme system (dark / white / follow system)**: UI theme selectable as **dark**, **white (light)**, or **system** (follow the OS/desktop setting)
-  - [x] Config option `ui.theme`: `dark` | `light` | `system` (default `system`) + selector in Settings tab
-  - [x] Shared theme palettes in `ui_base.py`: light + dark variants (`PALETTE_LIGHT` / `PALETTE_DARK`), `qss_theme(theme)` for Qt, per-theme tag colors for Tkinter
-  - [x] System detection: Qt `QStyleHints.colorScheme`; stdlib fallback on Linux (`gsettings get org.gnome.desktop.interface color-scheme`, `XDG_CURRENT_DESKTOP` heuristics)
-  - [x] Live theme switch without app restart (re-apply Qt stylesheet / retag Tk widgets in place)
-  - [x] React to OS theme changes at runtime when `system` is selected (Qt signal, periodic check fallback)
-- [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
-- [ ] **Training data provider**: User provides training data directly — file upload, text paste, URL fetch, folder watch, data preview, auto domain detection, train/val split
-- [x] **Auto model naming**: System generates model name from training data domain — shows preview `tiny-{detected_domain}` before creation
-- [x] **Train vs Create advisor**: Analyzes user data → "Fine-tune existing tiny-X (92% match)" vs "Create new tiny-Y (new domain)" with confidence
-- [ ] **Variable batch tokenizer**: Training batches with mixed-domain detection — routes tokens to appropriate model trainers, prevents single-model training on heterogeneous data
-- [ ] **Control panel**: PySide6-based dashboard with model status, training controls, generation settings (Tkinter fallback)
-- [x] **Model selector**: dropdown to switch between registered models (router + specialized)
-- [x] **Training monitor**: progress bar with step counter + live loss (loss chart/LR display still open)
-- [x] **Generation controls**: temperature, top-k, top-p, repetition penalty sliders
-- [x] **Tokenizer manager**: view vocab size, learned patterns, extend vocab button
-- [x] **Config editor**: YAML editor with validation, save/load presets
-- [x] **Log viewer**: scrollable training/generation logs with filtering
-- [x] **Model inspector**: parameter count, memory usage, architecture summary
-- [x] **UI polish & layout fixes**: Fix spacing issues, elements going off-screen, consistent padding/margins, responsive resizing, scrollable tabs for overflow content, improve visual hierarchy and alignment
+- [x] Prompt interface, tabbed layout (Chat/Training/Model Info/Admin/Settings/Logs), PySide6 primary + Tk fallback (`ui_base.py`, auto-detect + `SCRATCHPADLM_UI` override), chat layout (tabs/sidebar/bubbles/input/send/thumbs→RatingCollector→AutoTrainer), theme system (dark/light/system, live switch), auto model naming, train-vs-create advisor, model selector, training monitor, generation controls, tokenizer manager, config editor, log viewer, model inspector, layout polish
+- [ ] **UI Toolkit Migration** (parent)
+- [ ] **Harness Tab (PySide6)**: privilege selector, root path + browse, mode toggle, privilege help, path validation, status indicator
+- [ ] **Image processor**: upload/preview, resize/normalize, vision-model prompts
+- [ ] **Training data provider**: file/text/URL/folder-watch input, preview, domain detection, train/val split
+- [ ] **Variable batch tokenizer**: mixed-domain batches routed per model, no cross-domain contamination
+- [ ] **Control panel**: PySide6 dashboard (Tk fallback)
 
-### 0b. Dynamic Model Management (runtime)
-- [x] **ModelSpec**: dataclass `{name, path, domain_keywords, param_count, config, created_at, metrics}`
-- [x] **ModelCatalog**: persistent registry (JSON file) — `add(spec)`, `remove(name)`, `get(name)`, `list()`, `find_by_domain(keywords)`
-- [x] **ModelLoader**: `load_model(name)` — loads from catalog path, injects shared tokenizer, validates param limit
-- [x] **ModelCreator**: `create_model(name, domain_keywords, base_config=None)` — instantiates new specialized model, saves to catalog, returns handle
-- [x] **ModelUpdater**: `update_model(name, new_config)` — hot-swaps config, preserves weights where shapes match
-- [x] **Catalog CLI**: `tinylm model list`, `tinylm model add <name> --domain "code,python"`, `tinylm model remove <name>`, `tinylm model info <name>`
-- [x] **Auto-discovery**: on startup, scan `models/` dir, register any `.tlm` files not in catalog
-- [x] **Router integration**: router reads catalog `domain_keywords` for routing decisions
-- [ ] **Harness integration**: `model load <name>`, `model create <name> --domain "..."` commands in `.tlm` scripts
+### 0b. Dynamic Model Management
+- [x] `ModelSpec`, `ModelCatalog` (JSON), `ModelLoader`, `ModelCreator`, `ModelUpdater`, catalog CLI, auto-discovery, router↔catalog routing
+- [ ] **Harness integration**: `model load/create` in `.tlm` scripts
 
-### 0c. Auto-Training System (online learning from feedback)
-- [x] **RatingCollector**: `collect(prompt, response, model_name, rating, metadata)` — stores `(prompt, response, model, rating)` in `feedback.jsonl`
-- [x] **Rating thresholds**: `HIGH_THRESHOLD=4/5`, `LOW_THRESHOLD=2/5` — configurable
-- [x] **ModelSelector**: `select_model_for_input(prompt)` — uses router + catalog domain_keywords → best model
-- [x] **AutoTrainer**: background worker that:
-  - Monitors `feedback.jsonl` for new high-rated entries (rating ≥ HIGH_THRESHOLD)
-  - Groups by model_name
-  - Batches entries (min batch=8, max_wait=60s)
-  - Calls `train(model, batch_data, steps=10, lr=0.01)` — few-shot fine-tune
-  - Updates model in catalog, saves checkpoint
-  - Logs: `autotrain.log` — timestamp, model, batch_size, loss_before, loss_after
-- [x] **Low-rating handler**: rating ≤ LOW_THRESHOLD → flags for review, optionally trains "avoidance" (negative examples)
-- [x] **Deduplication**: hash prompts, skip near-duplicates (edit distance < 0.2)
-- [x] **Rate limiting**: max 1 auto-train per model per 5 min, max 100 steps/day per model
-- [ ] **CLI**: `tinylm autotrain status`, `tinylm autotrain enable/disable`, `tinylm autotrain config --threshold 4 --batch 16`
-- [ ] **Harness integration**: `autotrain on`, `autotrain off`, `autotrain config`, `rate last <1-5>` commands
-- [x] **Metrics**: tracks per-model `avg_rating`, `train_count`, `last_trained`, `improvement_delta`
+### 0c. Auto-Training
+- [x] `RatingCollector` (thresholds 4/5 high, 2/5 low), `ModelSelector`, `AutoTrainer` (batch ≥8, 60s wait, few-shot fine-tune, `autotrain.log`), low-rating handler, dedup, rate limits, per-model metrics
+- [ ] **CLI**: `autotrain status/enable/disable/config`
+- [ ] **Harness integration**: `autotrain on/off/config`, `rate last <1-5>`
 
-### 1. Router Model (300K params, pretrained)
-- [x] Router config: `RouterConfig(vocab, ctx, emb, hidden, n_layers=2)`
-- [x] Router architecture: 2-layer transformer (attention + FFN, residuals, LayerNorm)
-- [x] Router forward: input tokens → logits (with fast inference)
-- [x] Router training: sampled_loss compatible with train()
-- [x] Router training data format: `(prompt, [subtasks])` pairs
-- [x] Router pretraining script: `train_router(corpus, steps=10000)` → saves `router.tlm`
-- [x] Router inference: `router.split(prompt)` → list of subtasks with model assignments (heuristic)
-- [x] Router quantization: 4-bit save/load compatible
-- [x] **Router integration in UI**: Router used for every user prompt, routes to best model
-- [x] **Router training in UI**: `tinylm router train` CLI and UI button for training on collected data
-- [x] **Router training data collection**: Automatic collection from user interactions
-- [x] **Router pretraining**: CLI `tinylm router train` pretrains router on corpus
-- [ ] **MCP tool use**: Router can invoke MCP tools during inference — tool calling head, tool schema awareness, multi-step tool chains, result integration into context
+### 1. Router (300K, pretrained, frozen)
+- [x] `RouterConfig`, 2-layer transformer, forward + fast inference, sampled-loss training, `(prompt,[subtasks])` data, pretraining script → `router.tlm`, `split()` heuristic, 4-bit I/O, UI + CLI training, interaction data collection
+- [ ] **MCP tool use**: tool-calling head, schema awareness, multi-step chains, result→context
 
-### 2. Specialized Model Base (≤100K params each)
-- [x] Base config: `ModelConfig(vocab, ctx, emb, hidden, n_layers=1, model_type)`
-- [x] Base architecture: 1-layer transformer block (attention + FFN, residuals, LayerNorm)
-- [x] Model factory: `create_model(config)` — returns model instance
-- [x] Model save/load: uses shared 4-bit format
-- [x] Param limit enforcement: raises if `count_params > 100_000`
-- [ ] **MCP tool use**: Specialized models can invoke MCP tools — tool calling head, domain-specific tool schemas (e.g., SolidCraft for tiny-code), result integration, stays within 100K param budget
+### 2. Specialized Base (≤100K each)
+- [x] 1-layer transformer, `create_model()` factory, 4-bit I/O, limit enforced at init
+- [ ] **MCP tool use**: domain tool schemas within the 100K budget
 
-### 3. Default Specialized Models (variable count, user-driven)
-- [ ] **Variable model count**: No fixed limit — user provides training data for any number of domains, models created on demand
-- [ ] **Auto-generated model names**: System generates names from training data — domain analysis → `tiny-{domain}` (e.g., `tiny-rust`, `tiny-k8s`, `tiny-biology`)
-- [ ] **Seed models**: Pre-defined starter configs for common domains (code, reason, prose, embed, sql, docs, shell, data) — user can extend
-- [ ] **Model prioritization**: Training queue with priority scoring — domain coverage gaps, performance metrics, data availability → decides which models to train first
-- [ ] `tiny-code`: config optimized for code (larger hidden, code-specific pretraining) — MCP tools: SolidCraft (CAD sketches), Git (version control), LSP (code analysis)
-- [ ] `tiny-reason`: config optimized for logic (deeper, math/logic pretraining) — MCP tools: WolframAlpha (computation), Proof assistants (Lean, Coq)
-- [ ] `tiny-prose`: config optimized for text (standard) — MCP tools: Web search, Document APIs, Translation
-- [ ] `tiny-embed`: no LM head, outputs `[CLS]` embedding, contrastive loss — MCP tools: Vector DB (search/index), RAG pipelines
-- [ ] `tiny-sql`: SQL/databases — MCP tools: PostgreSQL, MySQL, DuckDB
-- [ ] `tiny-docs`: documentation/manuals — MCP tools: Confluence, Notion, GitBook
-- [ ] `tiny-shell`: shell/CLI commands — MCP tools: terminal, kubectl, AWS CLI
-- [ ] `tiny-data`: data analysis/visualization — MCP tools: Pandas, Plotly, Jupyter
-- [ ] **Dynamic model creation**: Auto-create new specialized models when domain gap detected — analyzes user-provided training data, generates config, registers in catalog
+### 3. Default Specialized Models (user-driven, unlimited count)
+- [ ] Variable model count; auto `tiny-{domain}` names; seed configs (code/reason/prose/embed/sql/docs/shell/data); training priority queue; `tiny-code` (+SolidCraft/Git/LSP), `tiny-reason` (+Wolfram/proofs), `tiny-prose` (+search/docs/i18n), `tiny-embed` (CLS + contrastive, +vector DB/RAG), `tiny-sql` (+PG/MySQL/DuckDB), `tiny-docs`, `tiny-shell`, `tiny-data`; auto-create on domain gap
 
 ### 4. Multi-Model Runtime
-- [x] `ModelRuntime` class: loads router + all specialized models at startup (lazy-load)
-- [x] Shared tokenizer injected into all models
-- [x] `runtime.route(prompt)` → router splits → dispatches to specialized models
-- [x] `runtime.generate(prompt)` → collaborative generation coordinator
-- [x] Memory budget: lazy-load models, unload unused after timeout (TTL + max models)
-- [ ] **MCP tool execution**: Runtime executes MCP tool calls from router — tool registry, invocation sandbox, result streaming back to model context, timeout/circuit breaker
+- [x] `ModelRuntime` (lazy-load, shared tokenizer, `route`/`generate`, TTL + max-models budget)
+- [ ] **MCP tool execution**: registry, sandbox, result streaming, timeouts/circuit breaker
 
 ### 5. Task System
-- [ ] Task definition: `Task(name, model_name, prompt_template, output_parser)`
-- [ ] Planner: `plan(prompt)` → uses router + task registry → `[TaskInstance]`
-- [ ] Executor: runs task graph (DAG), handles dependencies, passes outputs
-- [ ] Built-in tasks: `generate`, `summarize`, `code`, `analyze`, `train`, `embed`
-- [ ] Task output types: `text`, `json`, `code`, `embedding`, `model`
+- [ ] `Task` definition; planner (`plan()` via router+registry); DAG executor; built-ins (`generate/summarize/code/analyze/train/embed`); output types (`text/json/code/embedding/model`)
 
 ### 6. Collaborative Generation
-- [ ] Shared scratchpad: `Scratchpad` — append-only, `{step, model, tokens, metadata}`
-- [ ] Coordinator: assigns token ranges / sections to models, merges in order
-- [ ] Sync protocol: models write to scratchpad, coordinator emits final stream
-- [ ] Fallback: if model fails, reroute to another or use router to replan
+- [ ] Shared `Scratchpad`; coordinator (token ranges, ordered merge); sync protocol; fallback reroute/replan
 
 ### 7. Training Pipeline
-- [x] `train(model, data, steps, config)` — works for any model type
-- [x] **Training efficiency improvements**: pre-computed negative samples, gradient accumulation, optimized sampled softmax, batched processing, reduced memory allocations
-- [x] **Data cleaning & sorting**: normalize text (whitespace, unicode, encoding fixes), deduplicate lines, strip boilerplate, sort/classify cleaned data by domain → feeds per-model training queues
-- [ ] Data loaders: `CodeDataset`, `ReasoningDataset`, `ProseDataset`, `EmbeddingDataset`, `SQLDataset`, `ShellDataset`, `DataAnalysisDataset`, `AutoDataset` (from user data)
-- [ ] **Variable batch token router**: Analyzes batch tokens → routes to correct model trainer (code→tiny-code, math→tiny-reason, etc.), prevents cross-domain contamination
-- [x] **Model selection for training**: Given user-provided training data, evaluates catalog → returns (existing_model_to_finetune OR new_model_spec_with_autogenerated_name) with confidence score
-- [x] LR scheduler: `CosineWithWarmup(lr, warmup_steps, total_steps)`
-- [x] Gradient clipping: `clip_grads(params, max_norm=1.0)`
-- [x] Validation: `evaluate(model, val_data)` → perplexity / accuracy
-- [x] Early stopping: patience, min_delta, restore best
-- [x] **Automatic adjustment**: plateau LR reduction (`AutoAdjust`) + auto grad-clip relaxation — wired into `train()`, `_train_c()`, C kernel path
-- [ ] Router fine-tune: `train_router(router, decomposition_data, steps)`
-- [x] **Training priority queue**: Scores models by (domain_gap * data_volume * performance_delta) → trains highest priority first
-- [x] **Training cancel with save-if-improved**: `cancel_callback` checked per step in `train()`, `_train_c()`, `train_parallel()`; keeps best weights when `best_loss < initial_loss` (calls `save_on_cancel_callback`), otherwise restores initial weights; Cancel button in Tk + PySide6 training tabs
-- [ ] **User-driven training**: UI accepts training data → auto-detects domain → creates/updates model with generated name → queues for training
+- [x] Generic `train()`, efficiency (pre-sampled negatives, grad accumulation, batched), data cleaning/sorting by domain, model selection with confidence, LR schedule, grad clipping, validation, early stopping, auto-adjust (plateau LR + clip relaxation), priority queue, cancel-with-save-if-improved
+- [ ] Data loaders (`CodeDataset/ReasoningDataset/ProseDataset/EmbeddingDataset/SQLDataset/ShellDataset/DataAnalysisDataset/AutoDataset`)
+- [ ] **Variable batch token router** (per-model trainers, no contamination)
+- [ ] Router fine-tune (`train_router` on decomposition data)
+- [ ] **User-driven training**: data → domain detect → create/update `tiny-{domain}` → queue
 
-### 8. Tokenizer Enhancements
-- [x] `word_freq` cache: `save_word_freq(path)`, `load_word_freq(path)`
-- [ ] Streaming corpus: `CorpusIterator(folder, pattern)` — yields chunks
-- [ ] `extend()` uses cache, merges incrementally
-- [ ] Vocab growth triggers `sync_vocab()` on all loaded models
+### 8. Tokenizer
+- [x] `word_freq` cache
+- [ ] Streaming `CorpusIterator`; cached incremental `extend()`; vocab growth triggers `sync_vocab` on all loaded models
 
-### 9. Generation Improvements
-- [x] Top-k sampling: `sample_top_k(logits, k)` (implemented in `_sample_next_token`)
-- [x] Top-p (nucleus) sampling: `sample_top_p(logits, p)` (implemented in `_sample_next_token`)
-- [x] Repetition penalty: `apply_repetition_penalty(logits, generated, penalty)` (implemented in `_sample_next_token`)
-- [x] Unified `generate(model, prompt, config)` with all options
-- [x] **Generation speed optimizations**: optimized `_sample_next_token` with cached softmax, efficient sorting, in-place operations
-- [x] **Variable generation with autostop**: `stop_token_ids`, `stop_strings`, `min_tokens`, `max_tokens` parameters
-- [x] **UI tokens/sec display**: live tokens/sec in status bar during generation
-- [x] **Live token preview**: streaming token output with "Generate with Preview" button showing tokens/sec
-- [x] `generate_with_preview()`: detailed timing stats and console output
-- [x] **Stream callback early stop**: callback can return `False` to stop generation early
-- [x] **ModelRuntime integration**: all new parameters wired through ModelRuntime.generate() and generate_with_preview()
-- [x] **Chat stays conversation-only**: system/admin/training/vocab/config/rating logs go to Logs/Training monitor only; model-switch notices remain in chat
-- [x] **Use-selected-model chat option**: "Use selected model (bypass router)" checkbox in Chat tab (Tk + PySide6), snapshotted on main thread
+### 9. Generation
+- [x] Top-k / top-p / repetition penalty, unified `generate()`, speed opts, tokens/sec + live preview UI, `generate_with_preview()`, stream-callback early stop, `ModelRuntime` wiring, conversation-only chat, use-selected-model option, autostop (`stop_token_ids`/`stop_strings`/`min/max_tokens`)
 
 ### 10. Checkpointing
-- [x] `Checkpoint` class: `model_state`, `optimizer_state`, `step`, `config`
-- [x] `save_checkpoint(path, checkpoint)`, `load_checkpoint(path)`
-- [x] Auto-save callback: `every_n_steps(n, callback)` (via `checkpoint_every` parameter)
-- [x] Resume: `train(model, data, steps, resume_from=path)` (via `resume_from_checkpoint`)
+- [x] `Checkpoint`, save/load, auto-save callback, resume
 
-### 11. Harness (Automation Engine) — **System Interaction Layer**
-> The Harness is the **automation engine** that lets models interact with external systems: running code, calling APIs, executing shell commands, using MCP tools, and orchestrating complex workflows. It's the bridge between model reasoning and real-world actions (coding, file ops, web search, etc.).
+### 11. Harness (automation engine: code/APIs/shell/MCP/workflows)
+- [ ] Protection layer (allowlists, policy validation, audit log); MCP client (`mcp call/read`); `parse_tlm` → AST; `HarnessRuntime` + variables; commands (`prompt/task/assert/loop/branch/parallel/retry/save/load`); system commands (`code_run/shell/file_read/file_write/http_request/git/search`); assertions; `${var}` interpolation; parallel join; retry w/ backoff; `on_pass/on_fail/on_timeout` hooks; JSON/Markdown reporters; CLI `tinylm harness run`
 
-- [ ] **Protection layer**: Anti-circumvention guard — enforces command restrictions, prevents AI from bypassing allowlists/blocklists, validates all tool calls against policy, audit logging of all executions
-- [ ] **MCP support**: Model Context Protocol client — connect to MCP servers, discover tools/resources, call tools, read resources, use in `.tlm` scripts via `mcp call` / `mcp read` commands
-- [ ] **Parser**: `parse_tlm(script)` → AST (commands, assertions, control flow)
-- [ ] **Runtime**: `HarnessRuntime` — executes AST, manages variables, models
-- [ ] **Commands**: `prompt`, `task`, `assert`, `loop`, `branch`, `parallel`, `retry`, `save`, `load`
-- [ ] **System interaction commands**: `code_run`, `shell`, `file_read`, `file_write`, `http_request`, `git`, `search`
-- [ ] **Assertions**: `contains`, `matches`, `json_valid`, `python_runs`, `loss_lt`, `latency_lt`
-- [ ] **Variables**: `$var = capture(command)`, `${var}` interpolation
-- [ ] **Parallel**: `parallel [cmd1, cmd2]` → concurrent execution, join results
-- [ ] **Retry**: `retry N { cmd }` — exponential backoff, max attempts
-- [ ] **Hooks**: `on_pass`, `on_fail`, `on_timeout` — user callbacks
-- [ ] **Reporter**: `JSONReporter`, `MarkdownReporter` — summary + details
-- [ ] **CLI**: `tinylm harness run script.tlm --reporter json --output report.json`
-
-### 11a. Skill System — **Executable Helper Scripts**
-> Skills are **small helper scripts** (Python, shell, anything executable) that extend what the AI can do: format code, query a local database, fetch a URL, post-process model output, generate reports. Unlike MCP tools, skills live in the repo as plain files, are discoverable, and run locally with a captured result. (Conceptually similar to Claude-style "skills".)
-
-- [ ] **Skill definition**: `skills/<name>/` folder — `skill.yaml` manifest (`name`, `description`, `args` schema, `timeout`, `privilege`, `entry`) + the script itself (`main.py`, `run.sh`, …)
-- [ ] **Skill discovery**: auto-scan `skills/` on startup → `SkillRegistry` (name → manifest + path), hot-reload on folder change
-- [ ] **Skill runner**: `run_skill(name, args, timeout)` — subprocess execution, JSON args in / JSON+stdout+stderr+exit code out, never passes `Value` objects across the boundary
-- [ ] **Safety**: privilege levels shared with Harness (default read-only), timeout + output-size limits, allowlist per privilege, audit log (`skills_audit.jsonl`)
-- [ ] **CLI**: `tinylm skill list`, `tinylm skill info <name>`, `tinylm skill run <name> --args '{...}'`, `tinylm skill create <name>`
-- [ ] **UI integration**: Skills section (PySide6 + Tkinter fallback) — skill list, generated arg form from manifest, Run button, output viewer, "insert result into chat" action
-- [ ] **Model invocation**: router/specialized models can request skill execution during generation (skill-calling within the 100K param budget); results are fed back into the model context
-- [ ] **Harness integration**: `skill run <name>` command in `.tlm` scripts; skills usable in assertions and as pipeline steps
-- [ ] **Scaffolding**: `tinylm skill create <name>` generates a starter folder (manifest template + example script + README)
+### 11a. Skill System (local helper scripts, `skills/<name>/` + `skill.yaml`)
+- [ ] Manifest spec; auto-discovery + hot-reload; `run_skill()` sandbox (JSON IO, timeouts, no `Value` crossing); privilege levels + `skills_audit.jsonl`; CLI (`list/info/run/create`); UI section + arg forms + insert-into-chat; model-invoked skills; harness `skill run`; scaffolding
 
 ### 12. CLI / API
-- [x] `tinylm` entry point (argparse subcommands) - basic implementation in main.py
-- [x] `tinylm router train` - pretrain router on corpus
-- [x] `tinylm model list/info/create` - model management
-- [x] `tinylm autotrain status/enable/disable/config` - auto-training control
-- [x] `tinylm autotrain low-rated/review/avoidance` - low-rating handler
-- [x] `tinylm generate` - generate text from prompt
-- [x] `tinylm train` - train model on data
-- [x] `tinylm eval --checkpoint path --data val.jsonl`
-- [x] `tinylm serve --port 8080` — HTTP `/generate`, `/embed`, `/route`
-- [x] `tinylm "prompt"` — interactive, auto-plans via router + tasks
+- [x] `tinylm` entry (main.py): router train, model mgmt, autotrain, `generate/train/eval/serve`, interactive prompt
 
 ### 13. Testing & Validation
-- [x] Unit tests: autograd, tokenizer, model forward/backward, quantize/dequantize (`test_all.py`)
-- [x] Integration tests: train → save → load → generate (`test_all.py`)
-- [ ] Harness tests: run `.tlm` scripts, verify assertions
-- [x] Benchmark script: `bench_train()`, `bench_generate()`, `bench_router()` (in `benchmark.py`)
-- [ ] CI: GitHub Actions (lint, test, bench)
+- [x] Unit + integration tests (`test_all.py`); benchmarks (`benchmark.py`)
+- [ ] Harness tests (`.tlm` scripts + assertions); CI via GitHub Actions (lint/test/bench)
 
 ### 14. Documentation (HIGH PRIORITY)
-- [x] `README.md` — quickstart, architecture, constraints
-- [x] `CONFIG.md` — all config options
-- [ ] `HARNESS.md` — script DSL reference, examples
-- [ ] `MODELS.md` — adding custom specialized models
-- [ ] `API.md` — Python API, HTTP API
+- [x] `README.md`, `CONFIG.md`
+- [ ] `HARNESS.md`, `MODELS.md`, `API.md`
 
 ### 15. Build & Distribution (HIGH PRIORITY)
-- [x] `main.py` — entry point: no args → GUI boot, `--cli` → CLI, `--mcp` → MCP system
-- [x] `main.py --cli` — CLI implemented (router train, model mgmt, autotrain, generate, train)
-- [ ] `main.py --mcp` — implement MCP system → section 11 (MCP support)
-- [x] `build.sh` — build script for optional C extensions
-- [x] C source for training hot path: `csrc/train_kernel.c` + `accel.py` (ctypes) — fused sampled-softmax fwd/bwd + SGD with gradient clipping (`max_norm`), ~14x faster, pure-Python fallback
-- [ ] C source for remaining modules (tokenizer BPE, quantize/dequantize)
-- [ ] `setup.py` / `pyproject.toml` for pip installable package
-- [ ] Optional C extension: `tinylm._c` with `bpe_train`, `quantize`, `dequantize`
-- [x] Fallback to pure Python when C not available (training; enforced by `accel.AVAILABLE` check)
+- [x] `main.py` entry (GUI/CLI/MCP), `build.sh`, C train kernel (~14x, pure-Python fallback)
+- [ ] `main.py --mcp`; C tokenizer/quantize modules (`bpe_train`, quantize/dequantize); `setup.py`/`pyproject.toml`; `tinylm._c` extension
 
 ### 16. Code Structure (module splits)
-- [x] **Split `ai.py` into `tinylm/` package**: `autograd`, `serialization`, `models_tiny`, `transformer`, `router`, `runtime`, `specialized`, `router_data`, `data_clean`, `sched`, `checkpoint`, `training`, `parallel`, `generation` (+ `__init__` re-exports); demo moved to `tinylm/__main__.py` (`python3 -m tinylm`)
-- [x] **Split `ui.py` / `ui_qt.py`**: `uitk/` package (Tk: `core`, `shell`, per-tab `tab_*`, `history`, `worker`, per-feature `act_*`, `result`, `info`, `const`, `app.py: App`) and `uiqt/` package (Qt: same layout + `widgets` for chat bubbles, `logging`, `window.py: MainWindow` + `run_qt_app`)
-- [x] **Remove `ai.py` / `ui.py` / `ui_qt.py` shims**: all `from ai import ...` rewired to `from tinylm import ...`, `App` → `uitk.app`, `MainWindow`/`run_qt_app` → `uiqt.window`; `main.py` remains the sole entry point (CLI + GUI boot)
-- [ ] **Split `test_all.py`**: one test module per package area (e.g. `tests/test_training.py`, `tests/test_generation.py`)
+- [x] `tinylm/`, `uitk/`, `uiqt/` packages; shims removed (`main.py` sole entry); low-token docs restructure (this task)
+- [ ] **Split `test_all.py`**: one module per area (e.g. `tests/test_training.py`)
 
 ---
 
 ## Constraints (hard)
-- [ ] Zero external dependencies (stdlib only)
-- [ ] No folder corpus loader in UI
-- [ ] Never renumber token IDs
-- [ ] Never recreate model on vocab growth (use `sync_vocab`)
-- [ ] Tkinter calls only on main thread
-- [ ] Never send `Value` objects to subprocesses
-- [ ] In-place updates only (`p.data -= ...`)
-- [ ] All models 4-bit quantized (save/load via `save_model`/`load_model`)
-- [ ] Max 100K parameters per specialized model (enforced at init)
-- [ ] Router model: 300K params, pretrained, frozen by default
-- [ ] Single shared tokenizer — all models use same vocab
-- [ ] No fixed context length — dynamic positional embeddings
-- [ ] Variable model count — register/unregister at runtime
+
+Same as AGENTS.md — stdlib only; never renumber IDs; `sync_vocab` on growth; main-thread UI only; multiprocessing under `__main__`; floats (never `Value`) to workers; in-place updates; 4-bit I/O; ≤100K specialized / 300K router; shared tokenizer; no fixed ctx; variable model count; no folder loader in UI.
 
 ---
 
 ## AI Scratchpad (internal)
-- [x] `scratchpad = []` — list of `{step, thought, result, model}`
-- [x] `model.think(prompt, steps=3)` → final answer + trace (ThinkEngine)
-- [x] Used by `code`, `analyze`, `reason` tasks (TaskPad with TaskType)
-- [x] Shared across models during collaborative generation (global SCRATCHPAD)
-- [x] **Scratchpad CLI**: `tinylm scratchpad show/clear/add`
-- [x] **TaskPad**: task management with dependencies, status tracking
-- [x] **TaskPad CLI**: `tinylm taskpad list/create/execute/run-all`
+
+Done: global `SCRATCHPAD`, `ThinkEngine` (`model.think`), TaskPad, scratchpad/taskpad CLIs.

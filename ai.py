@@ -848,9 +848,13 @@ class Router:
         """Fast forward pass for inference."""
         # Embed
         x = []
+        vocab_size = len(self.C)
         for i, tok in enumerate(context):
             if i >= self.config.ctx:
                 break
+            # Clamp token ID to valid range to handle vocab mismatch gracefully
+            if tok >= vocab_size:
+                tok = 0
             tok_emb = [v.data for v in self.C[tok]]
             pos_emb = [v.data for v in self.pos_emb[i]]
             x.extend([tok_emb[j] + pos_emb[j] for j in range(self.config.emb)])
@@ -2548,8 +2552,12 @@ def fast_logits(model, context):
     """
     # Embed context
     C = model.C
+    vocab_size = len(C)
     x = []
     for tok in context:
+        # Clamp token ID to valid range to handle vocab mismatch gracefully
+        if tok >= vocab_size:
+            tok = 0  # Use padding token as fallback
         x.extend(v.data for v in C[tok])
     
     # Fused: h = tanh(W1 @ x + b1)

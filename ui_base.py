@@ -151,6 +151,11 @@ def qss_theme(theme: str = "light") -> str:
     QProgressBar {{ border: 1px solid {p['border']}; border-radius: 4px; text-align: center;
                     background: {p['surface']}; min-height: 18px; color: {p['text']}; }}
     QProgressBar::chunk {{ background: {p['accent']}; border-radius: 3px; }}
+    QScrollArea {{ background: {p['bg']}; border: none; }}
+    QScrollArea > QWidget > QWidget {{ background: {p['bg']}; }}
+    QScrollArea QWidget {{ background: {p['bg']}; }}
+    QAbstractScrollArea {{ background: {p['bg']}; }}
+    QAbstractScrollArea > QWidget {{ background: {p['bg']}; }}
     QScrollBar:vertical {{ width: 12px; background: {p['bg']}; margin: 0; }}
     QScrollBar::handle:vertical {{ background: {p['muted']}; border-radius: 6px; min-height: 24px; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}

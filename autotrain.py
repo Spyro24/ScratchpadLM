@@ -371,6 +371,181 @@ def create_autotrain_system(model_loader_factory: Callable[[], Any],
     return collector, auto_trainer
 
 
+# =============================================================================
+# ModelSelector: Selects the best model for a given input prompt
+# =============================================================================
+
+class ModelSelector:
+    """Selects the best model for a given input prompt using router + catalog."""
+
+    def __init__(self, router, catalog, tokenizer_manager=None):
+        """Initialize the model selector.
+
+        Args:
+            router: Router model instance with route() and route_multi() methods
+            catalog: ModelCatalog instance
+            tokenizer_manager: Optional TokenizerManager (uses global if not provided)
+        """
+        self.router = router
+        self.catalog = catalog
+        if tokenizer_manager is None:
+            from registry import TOKENIZER_MANAGER
+            self.tokenizer_manager = TOKENIZER_MANAGER
+        else:
+            self.tokenizer_manager = tokenizer_manager
+
+    def select_model_for_input(self, prompt: str, max_candidates: int = 3) -> List[Dict[str, Any]]:
+        """Select the best model(s) for a given input prompt.
+
+        Uses the router's routing capabilities combined with catalog metadata
+        (domain_keywords, model metrics) to determine the best model.
+
+        Args:
+            prompt: Input prompt to route
+            max_candidates: Maximum number of model candidates to return
+
+        Returns:
+            List of dicts with keys: model, confidence, reasoning
+            Sorted by confidence descending
+        """
+        # Get router's multi-model routing decision
+        router_results = self.router.route_multi(
+            prompt, self.tokenizer_manager.tokenizer, self.catalog, max_subtasks=max_candidates
+        )
+
+        # Enhance with additional scoring
+        results = []
+        for route in router_results:
+            model_name = route["model"]
+            base_confidence = route.get("confidence", 0.5)
+
+            # Get model spec from catalog
+            spec = self.catalog.get(model_name)
+            if spec is None:
+                continue
+
+            # Calculate enhanced confidence
+            enhanced_confidence = base_confidence
+
+            # Factor 1: Model metrics (avg_rating, train_count)
+            metrics = spec.metrics or {}
+            avg_rating = metrics.get("avg_rating", 3.0)  # Default neutral
+            train_count = metrics.get("train_count", 0)
+            last_trained = metrics.get("last_trained", 0)
+
+            # Rating boost (3.0 = neutral, 5.0 = max)
+            rating_boost = (avg_rating - 3.0) * 0.1
+
+            # Training experience boost (capped)
+            exp_boost = min(train_count * 0.02, 0.2)
+
+            # Recency boost (if trained recently)
+            recency_boost = 0.0
+            if last_trained > 0:
+                days_since = (time.time() - last_trained) / 86400
+                if days_since < 7:
+                    recency_boost = 0.1 * (1 - days_since / 7)
+
+            # Domain keyword match boost
+            prompt_lower = prompt.lower()
+            domain_boost = sum(0.1 for kw in spec.domain_keywords if kw in prompt_lower)
+
+            enhanced_confidence += rating_boost + exp_boost + recency_boost + domain_boost
+            enhanced_confidence = min(max(enhanced_confidence, 0.0), 1.0)
+
+            results.append({
+                "model": model_name,
+                "confidence": enhanced_confidence,
+                "base_confidence": base_confidence,
+                "rating_boost": rating_boost,
+                "exp_boost": exp_boost,
+                "recency_boost": recency_boost,
+                "domain_boost": domain_boost,
+                "avg_rating": avg_rating,
+                "train_count": train_count,
+                "domain_keywords": spec.domain_keywords,
+                "reasoning": self._generate_reasoning(route, spec, enhanced_confidence)
+            })
+
+        # Sort by enhanced confidence
+        results.sort(key=lambda x: x["confidence"], reverse=True)
+
+        # If no results from router, fall back to keyword matching
+        if not results:
+            results = self._fallback_keyword_match(prompt, max_candidates)
+
+        return results[:max_candidates]
+
+    def _generate_reasoning(self, route: Dict, spec, confidence: float) -> str:
+        """Generate human-readable reasoning for the selection."""
+        parts = []
+        if route.get("confidence", 0) > 0.5:
+            parts.append("router confidence high")
+        if spec.metrics.get("avg_rating", 0) > 3.5:
+            parts.append(f"high avg rating ({spec.metrics['avg_rating']:.1f})")
+        if spec.metrics.get("train_count", 0) > 5:
+            parts.append(f"well-trained ({spec.metrics['train_count']} sessions)")
+        if any(kw in prompt.lower() for kw in spec.domain_keywords for prompt in [prompt]):
+            parts.append("domain keyword match")
+        return "; ".join(parts) if parts else "default selection"
+
+    def _fallback_keyword_match(self, prompt: str, max_candidates: int) -> List[Dict[str, Any]]:
+        """Fallback model selection using simple keyword matching."""
+        prompt_lower = prompt.lower()
+        scores = []
+
+        for spec in self.catalog.list():
+            if spec.name == "router":
+                continue
+            score = sum(1 for kw in spec.domain_keywords if kw in prompt_lower)
+            if score > 0:
+                metrics = spec.metrics or {}
+                avg_rating = metrics.get("avg_rating", 3.0)
+                score += avg_rating * 0.3
+                scores.append((spec.name, score))
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+
+        return [
+            {
+                "model": name,
+                "confidence": min(score / 10.0, 1.0),
+                "base_confidence": 0.0,
+                "rating_boost": 0.0,
+                "exp_boost": 0.0,
+                "recency_boost": 0.0,
+                "domain_boost": score,
+                "avg_rating": 3.0,
+                "train_count": 0,
+                "domain_keywords": [],
+                "reasoning": "fallback keyword match"
+            }
+            for name, score in scores[:max_candidates]
+        ]
+
+    def get_best_model(self, prompt: str) -> Optional[str]:
+        """Get the single best model name for a prompt."""
+        results = self.select_model_for_input(prompt, max_candidates=1)
+        return results[0]["model"] if results else None
+
+    def select_and_load(self, prompt: str, model_loader_factory: Callable[[], Any]) -> tuple:
+        """Select best model and load it.
+
+        Returns:
+            (model_name, model_instance) or (None, None) if no model found
+        """
+        best_model = self.get_best_model(prompt)
+        if best_model is None:
+            return None, None
+
+        try:
+            loader = model_loader_factory()
+            model = loader.load_model(best_model)
+            return best_model, model
+        except Exception as e:
+            return best_model, None
+
+
 if __name__ == "__main__":
     # Demo
     collector = RatingCollector()

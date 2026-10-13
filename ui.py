@@ -357,11 +357,12 @@ class App:
         progress_row = tk.Frame(tab)
         progress_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         progress_row.columnconfigure(0, weight=1)
+        progress_row.columnconfigure(1, weight=1)
 
         self.train_progress = ttk.Progressbar(progress_row, mode="determinate", maximum=100)
         self.train_progress.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.progress_label = tk.Label(progress_row, text="", font=("Consolas", 9), width=22, anchor="w")
-        self.progress_label.grid(row=0, column=1)
+        self.progress_label = tk.Label(progress_row, text="", font=("Consolas", 9), anchor="w")
+        self.progress_label.grid(row=0, column=1, sticky="ew")
 
         # Training monitor (log)
         monitor_frame = tk.LabelFrame(tab, text="Training Monitor", padx=10, pady=10)

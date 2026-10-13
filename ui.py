@@ -178,19 +178,13 @@ class App:
         self.notebook = ttk.Notebook(main)
         self.notebook.grid(row=0, column=0, sticky="nsew")
 
-        chat_tab = tk.Frame(self.notebook, padx=10, pady=10)
-        training_tab = tk.Frame(self.notebook, padx=10, pady=10)
-        info_tab = tk.Frame(self.notebook, padx=10, pady=10)
-        admin_tab = tk.Frame(self.notebook, padx=10, pady=10)
-        settings_tab = tk.Frame(self.notebook, padx=10, pady=10)
-        logs_tab = tk.Frame(self.notebook, padx=10, pady=10)
-
-        self.notebook.add(chat_tab, text="Chat")
-        self.notebook.add(training_tab, text="Training")
-        self.notebook.add(info_tab, text="Model Info")
-        self.notebook.add(admin_tab, text="Admin")
-        self.notebook.add(settings_tab, text="Settings")
-        self.notebook.add(logs_tab, text="Logs")
+        # Create scrollable tabs for tabs with lots of content
+        chat_tab = self._create_scrollable_tab(self.notebook, "Chat")
+        training_tab = self._create_scrollable_tab(self.notebook, "Training")
+        info_tab = self._create_scrollable_tab(self.notebook, "Model Info")
+        admin_tab = self._create_scrollable_tab(self.notebook, "Admin")
+        settings_tab = self._create_scrollable_tab(self.notebook, "Settings")
+        logs_tab = self._create_scrollable_tab(self.notebook, "Logs")
 
         self._build_chat_tab(chat_tab)
         self._build_training_tab(training_tab)
@@ -203,9 +197,41 @@ class App:
         self.status = tk.Label(self.root, text="Ready", anchor="w", bd=1, relief="sunken", padx=5)
         self.status.pack(fill="x", side="bottom", padx=10, pady=(0, 10))
 
+    def _create_scrollable_tab(self, notebook, title):
+        """Create a scrollable tab frame."""
+        # Outer frame for the tab
+        tab_frame = tk.Frame(notebook)
+        notebook.add(tab_frame, text=title)
+        tab_frame.rowconfigure(0, weight=1)
+        tab_frame.columnconfigure(0, weight=1)
+
+        # Canvas with scrollbar
+        canvas = tk.Canvas(tab_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, padx=10, pady=10)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        # Bind mousewheel
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
+        return scrollable_frame
+
     def _build_chat_tab(self, tab):
         """Chat tab: model selector, conversation history, prompt input."""
-        tab.rowconfigure(1, weight=1)  # History expands
         tab.columnconfigure(0, weight=1)
 
         # Model selector row
@@ -261,41 +287,37 @@ class App:
         self.send_btn = tk.Button(prompt_row, text="Send", width=10, command=self.on_send_prompt)
         self.send_btn.grid(row=0, column=1)
 
-        # Quick generation settings row
-        gen_settings = tk.Frame(prompt_frame)
-        gen_settings.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        # Quick generation settings - use grid with wrapping
+        gen_frame = tk.LabelFrame(prompt_frame, text="Generation Settings", padx=10, pady=8)
+        gen_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        gen_frame.columnconfigure(1, weight=1)
+        gen_frame.columnconfigure(3, weight=1)
+        gen_frame.columnconfigure(5, weight=1)
+        gen_frame.columnconfigure(7, weight=1)
 
-        tk.Label(gen_settings, text="Tokens:").grid(row=0, column=0, padx=(0, 5))
-        self.n_tokens_var = tk.Entry(gen_settings, width=8)
-        self.n_tokens_var.insert(0, str(self.cfg["generation"]["n_tokens"]))
-        self.n_tokens_var.grid(row=0, column=1, padx=(0, 15))
+        # Row 0: Tokens, Temp, Top-k, Top-p
+        settings_row1 = [
+            ("Tokens:", "n_tokens_var", "generation", "n_tokens", 8),
+            ("Temp:", "temp_var", "generation", "temperature", 8),
+            ("Top-k:", "top_k_var", "generation", "top_k", 8),
+            ("Top-p:", "top_p_var", "generation", "top_p", 8),
+        ]
+        for i, (label, attr, section, key, width) in enumerate(settings_row1):
+            col = i * 2
+            tk.Label(gen_frame, text=label).grid(row=0, column=col, padx=(0, 5), sticky="w")
+            entry = tk.Entry(gen_frame, width=width)
+            entry.insert(0, str(self.cfg[section][key]))
+            entry.grid(row=0, column=col+1, padx=(0, 15), sticky="ew")
+            setattr(self, attr, entry)
 
-        tk.Label(gen_settings, text="Temp:").grid(row=0, column=2, padx=(0, 5))
-        self.temp_var = tk.Entry(gen_settings, width=8)
-        self.temp_var.insert(0, str(self.cfg["generation"]["temperature"]))
-        self.temp_var.grid(row=0, column=3, padx=(0, 15))
-
-        tk.Label(gen_settings, text="Top-k:").grid(row=0, column=4, padx=(0, 5))
-        self.top_k_var = tk.Entry(gen_settings, width=8)
-        self.top_k_var.insert(0, str(self.cfg["generation"]["top_k"]))
-        self.top_k_var.grid(row=0, column=5, padx=(0, 15))
-
-        tk.Label(gen_settings, text="Top-p:").grid(row=0, column=6, padx=(0, 5))
-        self.top_p_var = tk.Entry(gen_settings, width=8)
-        self.top_p_var.insert(0, str(self.cfg["generation"]["top_p"]))
-        self.top_p_var.grid(row=0, column=7, padx=(0, 15))
-
-        # Second row for repetition penalty
-        gen_settings2 = tk.Frame(prompt_frame)
-        gen_settings2.grid(row=2, column=0, sticky="ew", pady=(4, 0))
-
-        tk.Label(gen_settings2, text="Rep. Penalty:").grid(row=0, column=0, padx=(0, 5))
-        self.rep_penalty_var = tk.Entry(gen_settings2, width=8)
+        # Row 1: Repetition penalty, Clear button
+        tk.Label(gen_frame, text="Rep. Penalty:").grid(row=1, column=0, padx=(0, 5), sticky="w", pady=(4, 0))
+        self.rep_penalty_var = tk.Entry(gen_frame, width=8)
         self.rep_penalty_var.insert(0, str(self.cfg["generation"]["repetition_penalty"]))
-        self.rep_penalty_var.grid(row=0, column=1, padx=(0, 15))
+        self.rep_penalty_var.grid(row=1, column=1, padx=(0, 15), sticky="ew", pady=(4, 0))
 
-        self.clear_btn = tk.Button(gen_settings2, text="Clear History", command=self.on_clear_history)
-        self.clear_btn.grid(row=0, column=2, padx=10)
+        self.clear_btn = tk.Button(gen_frame, text="Clear History", command=self.on_clear_history)
+        self.clear_btn.grid(row=1, column=2, columnspan=6, sticky="w", pady=(4, 0), padx=10)
 
     def _build_training_tab(self, tab):
         """Training tab: data input, controls, training log monitor."""
@@ -493,50 +515,60 @@ class App:
 
         self._settings_entries = {}  # (section, key) -> (Entry, type)
 
+        # Use two-column layout for settings
+        tab.columnconfigure(1, weight=1)
+        tab.columnconfigure(3, weight=1)
+
         row = 0
+        col = 0
         current_section = None
-        for section, key, label, cast in settings:
+        for idx, (section, key, label, cast) in enumerate(settings):
+            # Switch to right column halfway through
+            if idx == len(settings) // 2 + 1:
+                col = 2
+                row = 0
+
             if section != current_section:
                 current_section = section
                 tk.Label(tab, text=section.upper(), font=("Consolas", 10, "bold")).grid(
-                    row=row, column=0, columnspan=2, sticky="w", pady=(10 if row else 0, 2)
+                    row=row, column=col, columnspan=2, sticky="w", pady=(10 if row else 0, 2)
                 )
                 row += 1
-            tk.Label(tab, text=label + ":").grid(row=row, column=0, sticky="w", padx=(10, 5))
+            tk.Label(tab, text=label + ":").grid(row=row, column=col, sticky="w", padx=(10, 5))
             entry = tk.Entry(tab, width=12)
             entry.insert(0, str(self.cfg[section][key]))
-            entry.grid(row=row, column=1, sticky="w", pady=1)
+            entry.grid(row=row, column=col + 1, sticky="ew", pady=1)
             self._settings_entries[(section, key)] = (entry, cast)
             row += 1
 
-        # ---- Tokenizer Manager Section ----
-        row += 1
+        # ---- Tokenizer Manager Section (spans both columns) ----
+        tokenizer_row = max(row, len(settings) // 2 + 5)  # Start after the longest column
         tk.Label(tab, text="TOKENIZER MANAGER", font=("Consolas", 10, "bold")).grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(10, 2)
+            row=tokenizer_row, column=0, columnspan=4, sticky="w", pady=(15, 2)
         )
-        row += 1
+        tokenizer_row += 1
 
         # Vocab size display
-        tk.Label(tab, text="Current Vocab Size:").grid(row=row, column=0, sticky="w", padx=(10, 5))
+        tk.Label(tab, text="Current Vocab Size:").grid(row=tokenizer_row, column=0, sticky="w", padx=(10, 5))
         self.tok_vocab_label = tk.Label(tab, text=str(len(self.tok.vocab)), font=("Consolas", 9, "bold"))
-        self.tok_vocab_label.grid(row=row, column=1, sticky="w", pady=1)
-        row += 1
+        self.tok_vocab_label.grid(row=tokenizer_row, column=1, sticky="w", pady=1)
+        tokenizer_row += 1
 
         # Number of learned merges
-        tk.Label(tab, text="Learned Merges:").grid(row=row, column=0, sticky="w", padx=(10, 5))
+        tk.Label(tab, text="Learned Merges:").grid(row=tokenizer_row, column=0, sticky="w", padx=(10, 5))
         self.tok_merges_label = tk.Label(tab, text=str(len(self.tok.merges)), font=("Consolas", 9, "bold"))
-        self.tok_merges_label.grid(row=row, column=1, sticky="w", pady=1)
-        row += 1
+        self.tok_merges_label.grid(row=tokenizer_row, column=1, sticky="w", pady=1)
+        tokenizer_row += 1
 
         # Extend vocab text area
-        tk.Label(tab, text="Extend with text:").grid(row=row, column=0, sticky="nw", padx=(10, 5))
-        self.tok_extend_text = scrolledtext.ScrolledText(tab, wrap="word", width=40, height=4, font=("Consolas", 9))
-        self.tok_extend_text.grid(row=row, column=1, sticky="ew", pady=2)
-        row += 1
+        tk.Label(tab, text="Extend with text:").grid(row=tokenizer_row, column=0, sticky="nw", padx=(10, 5))
+        self.tok_extend_text = scrolledtext.ScrolledText(tab, wrap="word", width=50, height=4, font=("Consolas", 9))
+        self.tok_extend_text.grid(row=tokenizer_row, column=1, columnspan=3, sticky="ew", pady=2)
+        tokenizer_row += 1
 
         # Extend vocab controls
         extend_row = tk.Frame(tab)
-        extend_row.grid(row=row, column=1, sticky="w", pady=2)
+        extend_row.grid(row=tokenizer_row, column=1, columnspan=3, sticky="w", pady=2)
         tk.Label(extend_row, text="Target vocab size:").pack(side="left", padx=(0, 5))
         self.tok_target_vocab_var = tk.Entry(extend_row, width=10)
         self.tok_target_vocab_var.insert(0, str(self.cfg["tokenizer"]["vocab_size"]))
@@ -546,21 +578,21 @@ class App:
         self.tok_min_freq_var.insert(0, str(self.cfg["tokenizer"]["min_frequency"]))
         self.tok_min_freq_var.pack(side="left", padx=(0, 10))
         tk.Button(extend_row, text="Extend Vocab", command=self.on_extend_vocab).pack(side="left", padx=5)
-        row += 1
+        tokenizer_row += 1
 
         # Learned patterns viewer
-        tk.Label(tab, text="Learned Patterns (sample):").grid(row=row, column=0, sticky="nw", padx=(10, 5))
-        self.tok_patterns_text = scrolledtext.ScrolledText(tab, wrap="word", width=40, height=8, font=("Consolas", 9), state="disabled")
-        self.tok_patterns_text.grid(row=row, column=1, sticky="ew", pady=2)
-        row += 1
+        tk.Label(tab, text="Learned Patterns (sample):").grid(row=tokenizer_row, column=0, sticky="nw", padx=(10, 5))
+        self.tok_patterns_text = scrolledtext.ScrolledText(tab, wrap="word", width=50, height=8, font=("Consolas", 9), state="disabled")
+        self.tok_patterns_text.grid(row=tokenizer_row, column=1, columnspan=3, sticky="ew", pady=2)
+        tokenizer_row += 1
 
         tk.Button(tab, text="Refresh Patterns", command=self.refresh_tokenizer_patterns).grid(
-            row=row, column=1, sticky="w", pady=(2, 0)
+            row=tokenizer_row, column=1, sticky="w", pady=(2, 0)
         )
-        row += 1
+        tokenizer_row += 1
 
         tk.Button(tab, text="Save Config", command=self.on_save_config, width=15).grid(
-            row=row + 1, column=0, columnspan=2, pady=(15, 0)
+            row=tokenizer_row, column=0, columnspan=4, pady=(15, 0)
         )
 
         # Initial pattern refresh

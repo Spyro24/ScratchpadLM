@@ -96,7 +96,7 @@ MONO.setStyleHint(QFont.StyleHint.TypeWriter)
 class MessageBubble(QWidget):
     """Base chat message bubble (user / assistant / system / error)."""
 
-    def __init__(self, role: str, text: str):
+    def __init__(self, role: str, text: str, palette: dict = None):
         super().__init__()
         self.role = role
         self.text_label = QLabel(text)
@@ -112,7 +112,7 @@ class MessageBubble(QWidget):
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
 
-        p = PALETTE
+        p = palette or PALETTE
         if role == "user":
             self.text_label.setStyleSheet(
                 f"background: {p['accent']}; color: white; padding: 8px 12px;"
@@ -142,9 +142,9 @@ class MessageBubble(QWidget):
 class AssistantBubble(MessageBubble):
     """Assistant bubble with thumbs up/down feedback (rating 5 / 1)."""
 
-    def __init__(self, text: str = ""):
-        super().__init__("assistant", text)
-        p = PALETTE
+    def __init__(self, text: str = "", palette: dict = None):
+        super().__init__("assistant", text, palette)
+        p = palette or PALETTE
 
         self.feedback_row = QWidget()
         fb = QHBoxLayout(self.feedback_row)
@@ -854,8 +854,9 @@ class MainWindow(QMainWindow):
         return msg
 
     def _add_bubble(self, msg: dict, save: bool):
+        current_palette = get_palette(self.current_theme)
         if msg["role"] == "assistant":
-            bubble = AssistantBubble(msg["text"])
+            bubble = AssistantBubble(msg["text"], palette=current_palette)
             prompt = msg.get("prompt")
             if prompt:
                 bubble.show_feedback()
@@ -868,7 +869,7 @@ class MainWindow(QMainWindow):
                 if msg.get("rating"):
                     bubble.set_rated(msg["rating"])
         else:
-            bubble = MessageBubble(msg["role"], msg["text"])
+            bubble = MessageBubble(msg["role"], msg["text"], palette=current_palette)
         # Keep the trailing stretch last
         self._chat_vbox.insertWidget(self._chat_vbox.count() - 1, bubble)
         self._last_bubble = bubble

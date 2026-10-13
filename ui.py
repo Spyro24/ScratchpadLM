@@ -753,14 +753,20 @@ class App:
         # Create a frame for rating buttons
         rating_frame = tk.Frame(self.history)
         
-        tk.Label(rating_frame, text="Rate: ", font=("Consolas", 8), foreground="#7F8C8D").pack(side="left")
+        p = get_palette(self.current_theme)
+        tk.Label(rating_frame, text="Rate: ", font=("Consolas", 8), foreground=p["muted"]).pack(side="left")
         
         for i in range(1, 6):
+            if i <= 2:
+                bg, fg = p["bg"], p["text"]
+            elif i == 3:
+                bg, fg = p["warning"], "white"
+            else:
+                bg, fg = p["success"], "white"
             btn = tk.Button(rating_frame, text=str(i), width=2, 
                           command=lambda r=i: self._on_rate_response(r),
                           font=("Consolas", 8),
-                          bg="#ECF0F1" if i <= 2 else ("#F39C12" if i == 3 else "#27AE60"),
-                          fg="white" if i >= 4 else "black")
+                          bg=bg, fg=fg)
             btn.pack(side="left", padx=1)
         
         tk.Label(rating_frame, text="  ", font=("Consolas", 8)).pack(side="left")  # Spacer

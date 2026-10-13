@@ -48,17 +48,17 @@ PALETTE_LIGHT = {
     "border": "#D5DBDB",    # borders
 }
 
-# Dark theme
+# Dark theme - improved contrast for readability
 PALETTE_DARK = {
-    "accent": "#5DADE2",    # user / training / primary actions
-    "success": "#58D68D",   # assistant / generation
-    "muted": "#85929E",     # system messages
-    "error": "#EC7063",     # errors
-    "warning": "#F4D03F",   # warnings / middling ratings
-    "bg": "#1B2631",        # window background
-    "surface": "#2C3E50",   # card / panel background
-    "text": "#ECF0F1",      # primary text
-    "border": "#34495E",    # borders
+    "accent": "#85C1E9",      # brighter blue for buttons/links
+    "success": "#82E0AA",     # brighter green for assistant
+    "muted": "#AAB7B8",       # lighter gray for system/muted text
+    "error": "#F1948A",       # softer red for errors
+    "warning": "#F7DC6F",     # brighter yellow for warnings
+    "bg": "#1A1A2E",          # very dark navy (not pure black)
+    "surface": "#252A3E",     # dark card background
+    "text": "#F0F0F0",        # near-white primary text
+    "border": "#3D445A",      # subtle border color
 }
 
 # Default palette (light)

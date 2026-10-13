@@ -25,12 +25,18 @@
 ### 0a. Control UI (HIGH PRIORITY)
 - [x] **Prompt interface**: Text input box for prompting the AI, send button, conversation history
 - [x] **Tabbed UI layout**: Reorganize UI into tabs — **Chat** (prompt + history), **Training** (data input + controls + monitor), **Model Info** (inspector + tensor details), **Admin** (model list, create/delete, catalog mgmt), **Settings** (generation params, training config, tokenizer config)
+- [ ] **UI Toolkit Migration**: Migrate from Tkinter to **PySide6 (Qt6)** as primary UI toolkit, with Tkinter as fallback
+  - [ ] Abstract UI layer with common interface for both toolkits
+  - [ ] Implement PySide6 version of all tabs (Chat, Training, Model Info, Admin, Settings, Logs)
+  - [ ] Keep Tkinter implementation as fallback for environments without Qt
+  - [ ] Auto-detect available toolkit at startup (PySide6 preferred, Tkinter fallback)
+  - [ ] Consistent styling/theme across both toolkits
 - [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
 - [ ] **Training data provider**: User provides training data directly — file upload, text paste, URL fetch, folder watch, data preview, auto domain detection, train/val split
 - [ ] **Auto model naming**: System generates model name from training data domain — shows preview `tiny-{detected_domain}` before creation
 - [ ] **Train vs Create advisor**: Analyzes user data → "Fine-tune existing tiny-X (92% match)" vs "Create new tiny-Y (new domain)" with confidence
 - [ ] **Variable batch tokenizer**: Training batches with mixed-domain detection — routes tokens to appropriate model trainers, prevents single-model training on heterogeneous data
-- [ ] **Control panel**: Tkinter-based dashboard with model status, training controls, generation settings
+- [ ] **Control panel**: PySide6-based dashboard with model status, training controls, generation settings (Tkinter fallback)
 - [x] **Model selector**: dropdown to switch between registered models (router + specialized)
 - [x] **Training monitor**: progress bar with step counter + live loss (loss chart/LR display still open)
 - [x] **Generation controls**: temperature, top-k, top-p, repetition penalty sliders

@@ -75,6 +75,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 
 ### 11a. Skill System (local helper scripts, `skills/<name>/` + `skill.yaml`)
 - [x] `opencodeSkill/readpy.py`: Python file-structure reader skill (`tree`/`treefull`/`class`/`function` + `classfull` alias) + `SKILL.md` agent index
+- [x] Agent skill-use contract: `AGENTS.md` mandates loading the skill index first + `readpy tree` scouting before full reads (workflow step + Skills section)
 - [ ] Manifest spec; auto-discovery + hot-reload; `run_skill()` sandbox (JSON IO, timeouts, no `Value` crossing); privilege levels + `skills_audit.jsonl`; CLI (`list/info/run/create`); UI section + arg forms + insert-into-chat; model-invoked skills; harness `skill run`; scaffolding
 
 ### 12. CLI / API

@@ -1,6 +1,6 @@
 # AGENTS.md — ScratchpadLM (`tinylm` / `TinyLM`)
 
-Workflow: read STRUCTURE.md → ROADMAP.md → do ONE task → `python3 test_all.py` (must pass) → check the ROADMAP box (+ add discovered tasks) → `git add -A && git commit -m "Task: <desc>"`.
+Workflow: load skill index (`opencodeSkill/SKILL.md`) → read STRUCTURE.md → ROADMAP.md → scout with `readpy tree` → do ONE task → `python3 test_all.py` (must pass) → check the ROADMAP box (+ add discovered tasks) → `git add -A && git commit -m "Task: <desc>"`.
 Read only code needed for the task, and only after picking it. Keep replies short and factual; cite code as `path:line`.
 
 ## Files
@@ -32,6 +32,20 @@ Stdlib only. Never renumber token IDs (`extend()` keeps IDs). Never recreate a m
 - **Checkpoints**: `save/load_checkpoint()` (JSON), `resume_from_checkpoint()` restores `Value.data` in place.
 - **UI**: `uitk/app.py: App` (Tk: thread → `queue.Queue` → `root.after(100)`), `uiqt/window.py: MainWindow` (Qt: `BackgroundWorker` → `QTimer` 100ms). Training/chat/admin/vocab/config logs go to Logs/Training monitor only — chat shows conversation + model-switch notices + generation errors.
 
+## Skills (mandatory — load index first, then use)
+
+Skill index: `opencodeSkill/SKILL.md` (frontmatter `name`/`description` + triggers).
+Available: `read` (`readpy.py`) — `tree`/`treefull`/`class`/`function`; use when working in this repo, locating a class/function, or keeping context small.
+
+```bash
+python3 opencodeSkill/readpy.py tree <file>              # scout first, always
+python3 opencodeSkill/readpy.py treefull <file>          # + comments/docstrings
+python3 opencodeSkill/readpy.py class <file> <Name>      # targeted read
+python3 opencodeSkill/readpy.py function <file> <name>   # targeted read
+```
+
+Rules: `tree` before any full read; then read only needed ranges (offset/limit), preferring `function`/`class` over full files. Details: `opencodeSkill/README.md`.
+
 ## Recipes
 
 - Config: default in `Config.DEFAULTS` + rule in `Config.SCHEMA`; read via `cfg.get(sec, key)`.
@@ -39,7 +53,6 @@ Stdlib only. Never renumber token IDs (`extend()` keeps IDs). Never recreate a m
 - Tokenizer: share `TOKENIZER_MANAGER`; on growth use `extend()`, never `train()`.
 - Catalog: `ModelCatalog` JSON file; create/load/hot-swap via Creator/Loader/Updater.
 - Tasks: `TaskTemplate` + `TaskRegistry`; debug autograd by walking `Value._prev` after `backward()`.
-- Skills: read `opencodeSkill/SKILL.md`; scout unfamiliar files with `readpy.py tree` before full reads.
 - Full patterns: see STRUCTURE.md.
 
 ## Commands

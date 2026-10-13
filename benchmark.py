@@ -12,7 +12,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ai import (
+from tinylm import (
     TinyLM, Router, RouterConfig, SpecializedLM, SpecializedConfig,
     train, train_parallel, generate, generate_router_training_data,
     train_router, save_model, load_model, count_params

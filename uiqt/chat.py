@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ai import (
+from tinylm import (
     Router,
     RouterConfig,
     RouterTrainingExample,

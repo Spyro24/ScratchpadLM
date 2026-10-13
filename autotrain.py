@@ -344,7 +344,7 @@ class AutoTrainer:
 
     def _evaluate_model_loss(self, model, ids: List[int]) -> float:
         """Quick evaluation of model loss on a sample of data."""
-        from ai import evaluate
+        from tinylm import evaluate
         if len(ids) < model.ctx + 1:
             return float('inf')
         # Use a small sample for quick eval
@@ -359,7 +359,7 @@ class AutoTrainer:
     def _train_model(self, model_name: str, entries: List[FeedbackEntry]) -> Dict[str, Any]:
         """Train a model on the given feedback entries."""
         import math
-        from ai import train, sync_vocab, save_model, evaluate
+        from tinylm import train, sync_vocab, save_model, evaluate
         from registry import TOKENIZER_MANAGER
         from model_mgmt import ModelLoader, MODEL_CATALOG
 
@@ -584,7 +584,7 @@ class AutoTrainer:
         if not entries:
             return {"success": False, "error": "No low-rated entries provided"}
 
-        from ai import train, sync_vocab, save_model
+        from tinylm import train, sync_vocab, save_model
         from registry import TOKENIZER_MANAGER
         from model_mgmt import ModelLoader, MODEL_CATALOG
 

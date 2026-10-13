@@ -1,16 +1,11 @@
-"""Tkinter (stdlib fallback) GUI for ScratchpadLM.
+"""Tkinter (stdlib fallback) GUI for ScratchpadLM: the `App` class.
 
-PySide6 (Qt6) is the primary toolkit — see ``ui_qt.py``. Both toolkits are
-launched through ``ui_base.run_gui()``, which auto-detects the best toolkit
-at startup and falls back to Tkinter when Qt is unavailable, so the project
-remains usable with the standard library alone. Force a toolkit with the
-``SCRATCHPADLM_UI`` environment variable (``pyside6`` or ``tkinter``).
-
-Implementation lives in the ``uitk/`` package (one mixin module per tab /
-feature, split from the former monolithic ``ui.py``). This module keeps the
-public entry points: ``App`` and ``_write_config_yaml``.
+`App` is composed from the `uitk/` mixin modules (one per tab/feature).
+Launched through ``ui_base.run_gui()`` (or ``main.py``), which auto-detects
+the best toolkit at startup and falls back to Tkinter when Qt is
+unavailable. Force a toolkit with the ``SCRATCHPADLM_UI`` environment
+variable (``pyside6`` or ``tkinter``).
 """
-
 from uitk.act_admin import AdminActionsMixin
 from uitk.act_chat import ChatActionsMixin
 from uitk.act_settings import SettingsActionsMixin
@@ -27,7 +22,6 @@ from uitk.tab_logs import LogsTabMixin
 from uitk.tab_settings import SettingsTabMixin
 from uitk.tab_training import TrainingTabMixin
 from uitk.worker import WorkerMixin
-from ui_base import write_config_yaml as _write_config_yaml
 
 
 class App(
@@ -49,10 +43,3 @@ class App(
     InfoMixin,
 ):
     """Tkinter (stdlib fallback) GUI for ScratchpadLM."""
-
-
-if __name__ == "__main__":
-    # PySide6 (Qt6) is preferred; falls back to this Tkinter app when Qt
-    # is unavailable. Force a toolkit: SCRATCHPADLM_UI=pyside6|tkinter
-    from ui_base import run_gui
-    run_gui()

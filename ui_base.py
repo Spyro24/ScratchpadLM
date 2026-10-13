@@ -2,9 +2,9 @@
 Shared UI layer for ScratchpadLM — toolkit detection, theming, helpers.
 
 Toolkits:
-- **PySide6 (Qt6)** is the primary toolkit (``ui_qt.py``). It is an external
+- **PySide6 (Qt6)** is the primary toolkit (``uiqt/`` package). It is an external
   dependency, so it is imported lazily and never required.
-- **Tkinter** is the stdlib-only fallback (``ui.py``) — the project stays
+- **Tkinter** is the stdlib-only fallback (``uitk/`` package) — the project stays
   usable with zero external dependencies.
 
 ``detect_toolkit()`` picks the toolkit at startup (PySide6 preferred,
@@ -287,7 +287,7 @@ def run_gui() -> Any:
             )
         else:
             try:
-                from ui_qt import run_qt_app
+                from uiqt.window import run_qt_app
                 run_qt_app()
                 return "pyside6"
             except (Exception, SystemExit) as exc:  # plugin init, broken install, ...
@@ -301,7 +301,7 @@ def run_gui() -> Any:
 
     App = getattr(sys.modules.get("__main__"), "App", None)
     if App is None:
-        from ui import App  # noqa: PLC0415 — lazy: keeps this module toolkit-free
+        from uitk.app import App  # noqa: PLC0415 — lazy: keeps this module toolkit-free
     root = tk.Tk()
     App(root)
     root.mainloop()

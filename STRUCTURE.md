@@ -12,7 +12,7 @@
 | File | Purpose | Key Classes/Functions |
 |------|---------|----------------------|
 | `tokenizer.py` | Byte-level BPE tokenizer | `BPETokenizer`, `extend()`, `train()`, `encode()`, `decode()`, `save()`, `load()` |
-| `ai.py` | Backward-compatible shim re-exporting the `tinylm/` package | Same public API as before (`Value`, `TinyLM`, `Router`, `train()`, `generate()`, …) |
+| `tinylm/__main__.py` | Train-from-scratch demo (`python3 -m tinylm`) | `main()` |
 | `tinylm/autograd.py` | Minimal scalar autograd | `Value`, `dot()`, `matvec_dot()`, `softmax_cross_entropy()` |
 | `tinylm/serialization.py` | 4-bit model I/O, vocab growth, param counting | `save_model()`, `load_model()`, `sync_vocab()`, `count_params()`, `enforce_param_limit()`, `load_corpus()` |
 | `tinylm/models_tiny.py` | TinyLM model | `TinyLM` |
@@ -32,9 +32,9 @@
 | `config.py` | Config system (YAML/JSON, validation, defaults) | `Config`, `load_yaml()`, `model_config()`, `training_config()`, `merge_configs()` |
 | `registry.py` | Model/Task registries, Tokenizer singleton | `ModelRegistry`, `TaskRegistry`, `TokenizerManager`, `TaskTemplate` |
 | `model_mgmt.py` | Dynamic model management | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`, `MODEL_CATALOG` |
-| `ui.py` | Tkinter GUI shim (stdlib fallback): `App` composed from `uitk/` mixins + entry point | `App`, background thread via `queue.Queue`, `_append_history()` with role-based styling |
+| `uitk/app.py` | Tkinter app (stdlib fallback): `App` composed from `uitk/` mixins | `App`, background thread via `queue.Queue`, `_append_history()` with role-based styling |
 | `uitk/` | Tkinter implementation (one mixin module per tab/feature) | `core` (init/backend), `shell` + `tab_*` (6 tabs), `history`, `worker`, `act_*` (chat/training/admin/settings), `result`, `info`, `const` |
-| `ui_qt.py` | PySide6 (Qt6) GUI shim — primary UI toolkit: `MainWindow`, `run_qt_app()` + entry point | `MainWindow`, `AssistantBubble` (thumbs up/down → RatingCollector), `run_qt_app()` |
+| `uiqt/window.py` | PySide6 (Qt6) app — primary UI toolkit: `MainWindow`, `run_qt_app()` | `MainWindow`, `AssistantBubble` (thumbs up/down → RatingCollector), `run_qt_app()` |
 | `uiqt/` | PySide6 implementation (one mixin module per tab/feature) | `widgets` (bubbles), `core`, `shell` + `tab_*` (6 tabs), `chat`, `worker`, `logging`, `result`, `act_*` |
 | `ui_base.py` | Shared UI layer (no toolkit imports) | `detect_toolkit()`, `qt_platform_check()` (QApplication preflight — Qt aborts instead of raising on broken platform plugins), `run_gui()`, `PALETTE`, `qss_theme()`, `BackgroundWorker`, `write_config_yaml()`, `parse_bool()`, `get_available_models()` |
 | `main.py` | CLI + GUI entry point (`tinylm` subcommands, `run_gui`) | `run_gui()`, `run_cli()` |
@@ -47,7 +47,7 @@
 ## Module Dependencies
 
 ```
-uitk/ (Tkinter mixins behind ui.App) / uiqt/ (Qt mixins behind ui_qt.MainWindow)
+uitk/app.py (`App`) / uiqt/window.py (`MainWindow`, `run_qt_app`)
   ├─ uitk/core.py + uiqt/core.py (init, backend model loading/switching)
   ├─ uitk/shell.py + uiqt/shell.py (tab shell) + uitk/tab_* + uiqt/tab_* (per-tab builders)
   ├─ uitk/history.py + uiqt/chat.py + uiqt/logging.py (conversation, rating, logs)
@@ -56,14 +56,18 @@ uitk/ (Tkinter mixins behind ui.App) / uiqt/ (Qt mixins behind ui_qt.MainWindow)
   ├─ uitk/result.py + uiqt/result.py (worker result dispatch)
   └─ uitk/const.py (shared Tk constants) / uiqt/widgets.py (chat bubbles)
 
-ui.py (Tkinter shim: App) / ui_qt.py (Qt shim: MainWindow, run_qt_app)
+uitk/app.py (`App`)
   ├─ ui_base.py (shared layer: detect_toolkit, run_gui, PALETTE, BackgroundWorker, helpers)
   ├─ tokenizer.py (BPETokenizer)
-  ├─ ai.py (TinyLM, Router, SpecializedLM, train, generate, load_model, save_model, sync_vocab, train_parallel)
+  ├─ tinylm (TinyLM, Router, SpecializedLM, train, generate, load_model, save_model, sync_vocab, train_parallel)
   ├─ config.py (Config)
   └─ registry.py (TokenizerManager, MODEL_REGISTRY, TASK_REGISTRY)
 
-ai.py (shim → tinylm/*)
+uiqt/window.py (`MainWindow`, `run_qt_app`)
+  ├─ ui_base.py, tokenizer.py, tinylm, config.py, registry.py (same as above)
+  └─ PySide6 (Qt6 widgets)
+
+tinylm/
   ├─ tinylm/autograd.py (Value, dot, matvec_dot, softmax_cross_entropy)
   ├─ tinylm/serialization.py (save/load_model, sync_vocab, count_params)
   ├─ tinylm/models_tiny.py (TinyLM) + tinylm/transformer.py (TransformerBlock)
@@ -73,16 +77,16 @@ ai.py (shim → tinylm/*)
   ├─ tinylm/sched.py (LR_Scheduler, AutoAdjust, EarlyStopping) + tinylm/checkpoint.py
   ├─ tinylm/training.py (train, _train_c) + tinylm/parallel.py (train_parallel)
   ├─ tinylm/generation.py (generate, fast_logits, _sample_next_token)
-  ├─ tokenizer.py (BPETokenizer)  ← only in __main__ demo
+  ├─ tokenizer.py (BPETokenizer)  ← only in __main__ demo (`python3 -m tinylm`)
   └─ accel.py (optional C kernel; falls back to pure Python when missing)
 
 registry.py
   ├─ tokenizer.py (BPETokenizer)
-  ├─ ai.py (TinyLM, Router, SpecializedLM)  ← only in __main__ demo
+  ├─ tinylm (TinyLM, Router, SpecializedLM)  ← only in __main__ demo
   └─ config.py (Config)  ← for future config-driven registration
 
 model_mgmt.py
-  ├─ ai.py (TinyLM, Router, SpecializedLM, save_model, load_model, count_params)
+  ├─ tinylm (TinyLM, Router, SpecializedLM, save_model, load_model, count_params)
   ├─ registry.py (TokenizerManager)
   └─ config.py (Config)
 
@@ -171,7 +175,7 @@ config.py
 - `encode(text)`, `decode(ids)`, `vocab_size`, `vocab`, `merges`
 - Global instance: `TOKENIZER_MANAGER`
 
-### `App` (ui.py)
+### `App` (uitk/app.py, mixins in `uitk/`)
 - **Layout**: `ttk.Notebook` with 5 tabs — **Chat** (model selector + conversation history + prompt input + quick gen settings), **Training** (training data ScrolledText + steps entry + Train button + training monitor log), **Model Info** (inspector labels + tensor details popup + refresh), **Admin** (catalog Listbox + create model name/domains + delete selected + refresh catalog), **Settings** (generation/training/tokenizer/model config entries + Save Config → writes `config.yaml` via `_write_config_yaml()`)
 - **Threading**: `_run_in_background(label, func, *args)` → daemon thread → `queue.Queue` → `root.after(100, _poll_queue)`
 - **History**: `_append_history(role, text)` with tags: "user" (blue bold), "assistant" (green bold), "system" (gray italic), "error" (red bold)
@@ -249,7 +253,7 @@ generate(model, tok, prompt, n_tokens, temperature)
 
 ---
 
-## 4-bit Quantization (ai.py)
+## 4-bit Quantization (tinylm/serialization.py)
 
 ```
 save_model(model, path)
@@ -276,12 +280,12 @@ load_model(path) → TinyLM
 
 ---
 
-## UI Threading Model (ui.py / ui_qt.py)
+## UI Threading Model (uitk/app.py / uiqt/window.py, mixins in `uitk/` / `uiqt/`)
 
 - **Main thread**: GUI toolkit only (Tkinter or Qt)
 - **Background**: `threading.Thread` → `queue.Queue` → main-thread timer
-  - Tkinter (`ui.py`): `_run_in_background(label, func, *args)` → `root.after(100, _poll_queue)`
-  - PySide6 (`ui_qt.py`): `ui_base.BackgroundWorker.submit(label, func, *args)` → `QTimer` (100 ms) → `_poll_worker`
+  - Tkinter (`uitk/worker.py`): `_run_in_background(label, func, *args)` → `root.after(100, _poll_queue)`
+  - PySide6 (`uiqt/worker.py`): `ui_base.BackgroundWorker.submit(label, func, *args)` → `QTimer` (100 ms) → `_poll_worker`
 - Both dispatch `("ok"/"error"/"progress"/"log"/"stream_token", label, payload)` messages to `_handle_result` / progress handlers on the main thread
 - Workers never touch widgets — they only enqueue (e.g. `worker.post(...)`)
 - **UI Layout**: 6 tabs — Chat, Training, Model Info, Admin, Settings, Logs
@@ -293,7 +297,7 @@ load_model(path) → TinyLM
 
 ---
 
-## Multiprocessing Rules (ai.py)
+## Multiprocessing Rules (tinylm/parallel.py)
 
 - All `Pool` code under `if __name__ == "__main__":`
 - Workers receive **flat floats** (`_flat_params`), never `Value` objects
@@ -333,13 +337,13 @@ load_model(path) → TinyLM
 
 ```bash
 # GUI (auto-detects PySide6 vs Tkinter fallback)
-python3 ui.py
+python3 main.py
 
 # CLI (router train, model mgmt, autotrain, generate, train, serve)
 python3 main.py --cli
 
-# Train from scratch (in ai.py __main__)
-python3 ai.py
+# Train from scratch demo (tinylm/__main__.py)
+python3 -m tinylm
 ```
 
 ---

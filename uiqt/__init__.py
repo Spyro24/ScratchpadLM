@@ -13,3 +13,4 @@ from uiqt.logging import LoggingMixin
 from uiqt.act_training import TrainingActionsMixin
 from uiqt.act_admin import AdminActionsMixin
 from uiqt.act_settings import SettingsActionsMixin
+from uiqt.window import MainWindow, run_qt_app

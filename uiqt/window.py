@@ -1,23 +1,10 @@
+"""PySide6 (Qt6) primary GUI for ScratchpadLM: `MainWindow` + `run_qt_app`.
+
+`MainWindow` is composed from the `uiqt/` mixin modules (one per
+tab/feature). This is the primary UI toolkit; Tkinter remains available as
+a stdlib-only fallback (``uitk``); both share the same colors
+(``ui_base.PALETTE``), helpers, and background-thread model.
 """
-PySide6 (Qt6) primary GUI for ScratchpadLM.
-
-This is the primary UI toolkit (roadmap 0a: "UI Toolkit Migration"). Tkinter
-remains available as a stdlib-only fallback (``ui.py``); both toolkits share
-the same colors (``ui_base.PALETTE``), helpers, and background-thread model.
-
-Tabs: **Chat**, **Training**, **Model Info**, **Admin**, **Settings**, **Logs**.
-
-Threading rules (same as the Tkinter app):
-- Qt widgets are touched only on the main thread.
-- Jobs run in daemon threads via ``ui_base.BackgroundWorker``.
-- Worker results are delivered by posting on the queue; a ``QTimer`` drains
-  the queue on the main thread every 100 ms.
-
-Implementation lives in the ``uiqt/`` package (one mixin module per tab /
-feature, split from the former monolithic ``ui_qt.py``). This module keeps
-the public entry points: ``MainWindow`` and ``run_qt_app``.
-"""
-
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from ui_base import CONFIG_PATH, qss_theme
@@ -77,7 +64,3 @@ def run_qt_app() -> int:
     window = MainWindow()
     window.show()
     return app.exec()
-
-
-if __name__ == "__main__":
-    raise SystemExit(run_qt_app())

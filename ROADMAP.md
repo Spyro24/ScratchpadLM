@@ -267,8 +267,9 @@
 - [x] Fallback to pure Python when C not available (training; enforced by `accel.AVAILABLE` check)
 
 ### 16. Code Structure (module splits)
-- [x] **Split `ai.py` into `tinylm/` package**: `autograd`, `serialization`, `models_tiny`, `transformer`, `router`, `runtime`, `specialized`, `router_data`, `data_clean`, `sched`, `checkpoint`, `training`, `parallel`, `generation` (+ `__init__` re-exports); `ai.py` kept as backward-compatible shim so all `from ai import ...` imports keep working
-- [x] **Split `ui.py` / `ui_qt.py`**: `uitk/` package (Tk: `core`, `shell`, per-tab `tab_*`, `history`, `worker`, per-feature `act_*`, `result`, `info`, `const`) and `uiqt/` package (Qt: same layout + `widgets` for chat bubbles, `logging`); `ui.py` / `ui_qt.py` kept as thin shims (`App`, `MainWindow`, `run_qt_app`, entry points) so all imports keep working
+- [x] **Split `ai.py` into `tinylm/` package**: `autograd`, `serialization`, `models_tiny`, `transformer`, `router`, `runtime`, `specialized`, `router_data`, `data_clean`, `sched`, `checkpoint`, `training`, `parallel`, `generation` (+ `__init__` re-exports); demo moved to `tinylm/__main__.py` (`python3 -m tinylm`)
+- [x] **Split `ui.py` / `ui_qt.py`**: `uitk/` package (Tk: `core`, `shell`, per-tab `tab_*`, `history`, `worker`, per-feature `act_*`, `result`, `info`, `const`, `app.py: App`) and `uiqt/` package (Qt: same layout + `widgets` for chat bubbles, `logging`, `window.py: MainWindow` + `run_qt_app`)
+- [x] **Remove `ai.py` / `ui.py` / `ui_qt.py` shims**: all `from ai import ...` rewired to `from tinylm import ...`, `App` → `uitk.app`, `MainWindow`/`run_qt_app` → `uiqt.window`; `main.py` remains the sole entry point (CLI + GUI boot)
 - [ ] **Split `test_all.py`**: one test module per package area (e.g. `tests/test_training.py`, `tests/test_generation.py`)
 
 ---

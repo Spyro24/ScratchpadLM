@@ -9,7 +9,7 @@ from tkinter import scrolledtext, messagebox, ttk, filedialog
 from pathlib import Path
 
 from tokenizer import BPETokenizer
-from ai import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample
+from tinylm import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample
 from registry import MODEL_REGISTRY, TASK_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
 from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, MODEL_CATALOG
 from config import Config
@@ -121,7 +121,7 @@ class TrainingActionsMixin:
 
     def _train_router_job(self, steps):
         """Background job to train the Router."""
-        from ai import train_router, generate_router_training_data
+        from tinylm import train_router, generate_router_training_data
         from tokenizer import BPETokenizer
         
         # Load training data

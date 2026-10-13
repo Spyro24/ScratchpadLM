@@ -12,14 +12,14 @@ Do only one task.
 | Component | File | Description |
 |-----------|------|-------------|
 | Tokenizer | `tokenizer.py` | Byte-level BPE. `extend()` adds tokens without changing existing IDs. |
-| Model & Autograd | `ai.py` | `Value` (autograd), `TinyLM`, `Router`, `SpecializedLM`, training (SGD + sampled softmax), generation, 4-bit save/load. Training extras: `LR_Scheduler`, `clip_grads`, `evaluate`, `EarlyStopping`, `Checkpoint`, `AutoAdjust`. Router training: `train_router()`, `generate_router_training_data()`. |
+| Model & Autograd | `tinylm/` package (`autograd`, `models_tiny`, `router`, `specialized`, `training`, `parallel`, `generation`, `serialization`, …) | `Value` (autograd), `TinyLM`, `Router`, `SpecializedLM`, training (SGD + sampled softmax), generation, 4-bit save/load. Training extras: `LR_Scheduler`, `clip_grads`, `evaluate`, `EarlyStopping`, `Checkpoint`, `AutoAdjust`. Router training: `train_router()`, `generate_router_training_data()`. Import via `from tinylm import ...`. |
 | Config | `config.py` | YAML/JSON config with validation, defaults, merging. Stdlib only. |
 | Registries | `registry.py` | `ModelRegistry`, `TaskRegistry`, `TokenizerManager` (singleton). |
 | Model Management | `model_mgmt.py` | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`. |
 | C Acceleration | `accel.py` + `csrc/train_kernel.c` | Optional fused C kernel (ctypes). Supports LR-per-step and gradient clipping (`max_norm`). Built via `./build.sh`. |
 | Tests | `test_all.py` | Fast unit test suite (stdlib only). Run `python3 test_all.py` after every change. |
-| UI | `ui.py` + `ui_qt.py` + `ui_base.py` | Tkinter app (stdlib fallback), PySide6 app (primary), shared layer (toolkit detection, theme palette, background worker, config helpers). Launch via `ui_base.run_gui()` — PySide6 preferred, Tkinter fallback (`SCRATCHPADLM_UI=pyside6\|tkinter` to force) |
-| Legacy Demo | `main.py` | N-gram model demo (not used by main app). |
+| UI | `uitk/` + `uiqt/` + `ui_base.py` | Tkinter app (`uitk/app.py: App`, stdlib fallback), PySide6 app (`uiqt/window.py: MainWindow`, primary), shared layer (toolkit detection, theme palette, background worker, config helpers). Launch via `main.py` / `ui_base.run_gui()` — PySide6 preferred, Tkinter fallback (`SCRATCHPADLM_UI=pyside6\|tkinter` to force) |
+| Entry Point | `main.py` | CLI (`tinylm` subcommands) + GUI boot. Train-from-scratch demo: `python3 -m tinylm`. |
 
 **Saved artifacts** (keep together, do not delete):
 - `tinyLM` — 4-bit quantized model weights
@@ -93,7 +93,7 @@ train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16,
 
 ### Resume from Checkpoint
 ```python
-from ai import load_checkpoint, resume_from_checkpoint
+from tinylm import load_checkpoint, resume_from_checkpoint
 ckpt = load_checkpoint("checkpoints/checkpoint_final.json")
 resume_from_checkpoint(model, ckpt)  # in-place restore of Value.data
 ```
@@ -122,7 +122,7 @@ model = load_model("tinyLM")  # Rebuilds TinyLM, dequantizes into Value.data
 - `train()`: Parallel word counting, sequential merge learning
 - Multiprocessing in `train()` under `if __name__ == "__main__":`
 
-### `ai.py`
+### `tinylm/` package (split from the former monolithic `ai.py`)
 - `Value`: Minimal autograd scalar with `__slots__ = ("data", "grad", "_prev", "_back")`
 - `matvec_dot()`: Fused matrix-vector + bias as single autograd node
 - `softmax_cross_entropy()`: Single node, gradient = probs - one_hot(target)
@@ -140,13 +140,13 @@ model = load_model("tinyLM")  # Rebuilds TinyLM, dequantizes into Value.data
 - Schema validation in `_validate()`: type + custom predicate per key
 - Helpers: `model_config()`, `training_config()`, `generation_config()`, `tokenizer_config()`, `merge_configs()`
 
-### `ui.py`
+### `uitk/app.py` (Tkinter fallback UI; mixins in `uitk/`)
 - `App._run_in_background(label, func, *args)`: Starts daemon thread, puts result on `self.queue`
 - `App._poll_queue()`: Called via `root.after(100, ...)`, processes queue on main thread
 - `_train_job()`: `tok.extend()` → `tok.save()` → `sync_vocab()` → `train_parallel()`
 - `_generate_job()`: `generate(model, tok, prompt)`
 
-### `ui_qt.py` (PySide6 primary UI)
+### `uiqt/window.py` (PySide6 primary UI; mixins in `uiqt/`)
 - `MainWindow`: same 6 tabs as Tkinter (Chat, Training, Model Info, Admin, Settings, Logs) + chat sidebar
 - Uses `ui_base.BackgroundWorker` + `QTimer` (100 ms) to drain the queue on the main thread
 - Thumbs up/down on assistant bubbles → `RatingCollector.collect(..., rating=5|1)`
@@ -169,7 +169,7 @@ model = load_model("tinyLM")  # Rebuilds TinyLM, dequantizes into Value.data
 3. Use `cfg.get("section", "key")` or `cfg["section"]["key"]` in code
 
 ### Add a New Model Type
-1. Create new class in `ai.py` (or new file) inheriting pattern from `TinyLM`
+1. Create new class in `tinylm/` (e.g. `tinylm/models_tiny.py`) inheriting pattern from `TinyLM`
 2. Ensure `params` property returns flat list of `Value` in consistent order
 3. Add `save_model`/`load_model` support (or extend existing)
 4. Register in `ModelRegistry` (roadmap task)
@@ -177,7 +177,7 @@ model = load_model("tinyLM")  # Rebuilds TinyLM, dequantizes into Value.data
 ### Register a Model
 ```python
 from registry import register_model, create_model, list_models
-from ai import TinyLM
+from tinylm import TinyLM
 
 register_model("my-model",
     lambda: TinyLM(vocab_size=1000, ctx=50, emb=64, hidden=128),
@@ -189,7 +189,7 @@ print(list_models())  # ['my-model', ...]
 
 ### Save/Load Model (4-bit, works for any architecture)
 ```python
-from ai import save_model, load_model, count_params, enforce_param_limit
+from tinylm import save_model, load_model, count_params, enforce_param_limit
 
 # Model must implement get_config() and get_tensors()
 save_model(model, "my_model.tlm")  # Small binary file (~4 bits/param)
@@ -308,7 +308,7 @@ python3 test_all.py tokenizer          # filter by name substring
 python3 test_all.py "c kernel"         # spaces OK in filter
 
 # Run GUI
-python3 ui.py
+python3 main.py
 
 # Test config
 python3 config.py
@@ -316,8 +316,8 @@ python3 config.py
 # Test tokenizer
 python3 tokenizer.py
 
-# Test model train/generate (from ai.py __main__)
-python3 ai.py
+# Test model train/generate (tinylm/__main__.py demo)
+python3 -m tinylm
 
 # Rebuild C kernel after editing csrc/train_kernel.c
 ./build.sh                             # -> libtinylm_accel.so (accel.AVAILABLE)
@@ -368,17 +368,17 @@ python3 ai.py
 
 ```bash
 # Find all Value operations
-grep -n "class Value\|def __add__\|def __mul__\|def backward" ai.py
+grep -n "class Value\|def __add__\|def __mul__\|def backward" tinylm/autograd.py
 
 # Find training loops
-grep -n "def train\|for step in range\|loss.backward" ai.py
+grep -n "def train\|for step in range\|loss.backward" tinylm/training.py tinylm/parallel.py
 
 # Find vocab growth
-grep -n "sync_vocab\|\.extend\|vocab_size" *.py
+grep -n "sync_vocab\|\.extend\|vocab_size" tinylm/*.py uitk/*.py uiqt/*.py
 
 # Find multiprocessing
-grep -n "Pool\|_WorkerState\|_init_worker\|_worker_grads" ai.py
+grep -n "Pool\|_WorkerState\|_init_worker\|_worker_grads" tinylm/parallel.py
 
 # Find UI threading
-grep -n "queue\|_poll_queue\|_run_in_background\|threading" ui.py
+grep -n "queue\|_poll_queue\|_run_in_background\|threading" uitk/worker.py
 ```

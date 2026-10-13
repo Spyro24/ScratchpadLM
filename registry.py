@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from tokenizer import BPETokenizer
-from ai import TinyLM, Router, RouterConfig, SpecializedLM, SpecializedConfig
+from tinylm import TinyLM, Router, RouterConfig, SpecializedLM, SpecializedConfig
 
 
 # =============================================================================
@@ -201,7 +201,7 @@ class TokenizerManager:
 
 
 # Register built-in model factories (run on import)
-from ai import TinyLM, Router, RouterConfig, SpecializedLM, SpecializedConfig
+from tinylm import TinyLM, Router, RouterConfig, SpecializedLM, SpecializedConfig
 
 # Global tokenizer manager instance
 TOKENIZER_MANAGER = TokenizerManager()
@@ -262,7 +262,7 @@ register_model("SpecializedLM", lambda **kw: SpecializedLM(SpecializedConfig(**k
 
 if __name__ == "__main__":
     # Demo
-    from ai import TinyLM
+    from tinylm import TinyLM
 
     # Register some models
     register_model("tiny-base", lambda: TinyLM(vocab_size=1000, ctx=50, emb=50, hidden=50),

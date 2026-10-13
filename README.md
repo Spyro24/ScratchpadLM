@@ -81,7 +81,7 @@ python3 -m main --cli autotrain enable
 ### Python API
 
 ```python
-from ai import TinyLM, generate, train, save_model, load_model
+from tinylm import TinyLM, generate, train, save_model, load_model
 from tokenizer import BPETokenizer
 
 # Create tokenizer and model
@@ -107,15 +107,17 @@ loaded = load_model("my_model.tlm")
 
 ```
 scratchpadlm/
-├── ai.py              # Core: Value autograd, TinyLM, Router, SpecializedLM, training
+├── tinylm/            # Core package: autograd, TinyLM, Router, SpecializedLM, training, generation
+├── uitk/              # Tkinter GUI (stdlib fallback): App mixins + app.py
+├── uiqt/              # PySide6 GUI (primary): MainWindow mixins + window.py
 ├── tokenizer.py       # Byte-level BPE tokenizer with vocab extension
 ├── config.py          # YAML/JSON config with validation
 ├── registry.py        # Model/Task registries, TokenizerManager singleton
 ├── model_mgmt.py      # ModelSpec, Catalog, Loader, Creator, Updater
 ├── autotrain.py       # RatingCollector, AutoTrainer, ModelSelector, PriorityQueue
 ├── scratchpad.py      # Scratchpad, ThinkEngine, TaskPad
-├── ui.py              # Tkinter GUI (stdlib fallback)
-├── ui_qt.py           # PySide6 GUI (primary)
+├── uitk/app.py        # Tkinter App (stdlib fallback)
+├── uiqt/window.py     # PySide6 MainWindow (primary)
 ├── ui_base.py         # Shared UI layer (theming, workers, config)
 ├── accel.py           # C acceleration wrapper (ctypes)
 ├── csrc/train_kernel.c# Fused C training kernel

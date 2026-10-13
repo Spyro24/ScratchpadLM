@@ -183,7 +183,7 @@ def run_cli(argv=None):
 
 def cmd_router_train(args):
     """Train router model on corpus."""
-    from ai import Router, RouterConfig, train_router, generate_router_training_data
+    from tinylm import Router, RouterConfig, train_router, generate_router_training_data
     from tokenizer import BPETokenizer
     import time
 
@@ -238,7 +238,7 @@ def cmd_router_train(args):
     print(f"Training completed in {elapsed:.1f}s")
 
     # Save
-    from ai import save_model
+    from tinylm import save_model
     save_model(router, args.output)
     print(f"Router saved to {args.output}")
 
@@ -361,7 +361,7 @@ def cmd_autotrain(args):
 
 def cmd_generate(args):
     """Generate text from prompt."""
-    from ai import generate, load_model
+    from tinylm import generate, load_model
     from registry import TOKENIZER_MANAGER
 
     tokenizer = TOKENIZER_MANAGER.tokenizer
@@ -381,7 +381,7 @@ def cmd_generate(args):
 
 def cmd_train(args):
     """Train a model on data."""
-    from ai import train, load_model, save_model, sync_vocab
+    from tinylm import train, load_model, save_model, sync_vocab
     from registry import TOKENIZER_MANAGER
 
     tokenizer = TOKENIZER_MANAGER.tokenizer
@@ -420,7 +420,7 @@ def cmd_train(args):
 
 def cmd_eval(args):
     """Evaluate a model checkpoint."""
-    from ai import evaluate, load_checkpoint, load_model, resume_from_checkpoint
+    from tinylm import evaluate, load_checkpoint, load_model, resume_from_checkpoint
     from registry import TOKENIZER_MANAGER
 
     tokenizer = TOKENIZER_MANAGER.tokenizer
@@ -461,7 +461,7 @@ def cmd_serve(args):
 
 def cmd_prompt(args):
     """Interactive prompt - generate text from prompt (allows: tinylm "prompt")."""
-    from ai import generate, load_model
+    from tinylm import generate, load_model
     from registry import TOKENIZER_MANAGER
 
     tokenizer = TOKENIZER_MANAGER.tokenizer

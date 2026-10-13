@@ -14,3 +14,4 @@ from uitk.act_admin import AdminActionsMixin
 from uitk.act_settings import SettingsActionsMixin
 from uitk.result import ResultMixin
 from uitk.info import InfoMixin
+from uitk.app import App

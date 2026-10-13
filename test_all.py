@@ -69,7 +69,7 @@ def tiny_tok_and_ids(corpus="the quick brown fox jumps over the lazy dog. " * 40
 
 
 def tiny_model(vocab=400, ctx=6, emb=8, hidden=16):
-    from ai import TinyLM
+    from tinylm import TinyLM
     return TinyLM(vocab_size=vocab, ctx=ctx, emb=emb, hidden=hidden)
 
 
@@ -102,7 +102,7 @@ def t_config_defaults():
 @test("config: yaml round trip via _write_config_yaml")
 def t_config_yaml_roundtrip():
     from config import Config
-    from ui import _write_config_yaml
+    from ui_base import write_config_yaml as _write_config_yaml
     data = Config.from_dict({"generation": {"top_k": 7, "top_p": 0.95}}).to_dict()
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
         path = f.name
@@ -151,7 +151,7 @@ def t_tokenizer_saveload():
 
 @test("autograd: grads match finite differences")
 def t_autograd():
-    from ai import Value
+    from tinylm import Value
     a, b = Value(2.0), Value(-3.0)
     out = (a * b + a.tanh()) * (b * b + 1.0)
     out.backward()
@@ -169,7 +169,7 @@ def t_autograd():
 
 @test("model: loss decreases after training step")
 def t_model_train_step():
-    from ai import train
+    from tinylm import train
     tok, ids = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     random.seed(0)
@@ -189,7 +189,7 @@ def t_model_train_step():
 
 @test("sync_vocab grows model in place")
 def t_sync_vocab():
-    from ai import TinyLM, sync_vocab
+    from tinylm import TinyLM, sync_vocab
     model = TinyLM(vocab_size=50, ctx=4, emb=8, hidden=16)
     ref = model
     check(sync_vocab(model, 80) is True)
@@ -204,7 +204,7 @@ def t_sync_vocab():
 
 @test("quantization: save/load roundtrip within 4-bit error")
 def t_quantize():
-    from ai import save_model, load_model, count_params, enforce_param_limit
+    from tinylm import save_model, load_model, count_params, enforce_param_limit
     tok, _ = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     with tempfile.TemporaryDirectory() as d:
@@ -232,7 +232,7 @@ def t_quantize():
 
 @test("generation: top-k confines candidates")
 def t_sample_topk():
-    from ai import _sample_next_token
+    from tinylm import _sample_next_token
     random.seed(1)
     logits = [1.0, 2.0, 3.0, 4.0, 5.0]
     seen = set()
@@ -245,7 +245,7 @@ def t_sample_topk():
 
 @test("generation: repetition penalty suppresses seen token")
 def t_sample_reppen():
-    from ai import _sample_next_token
+    from tinylm import _sample_next_token
     random.seed(2)
     logits = [1.0, 1.0, 1.0, 1.0, 1.0]
     hits = 0
@@ -258,7 +258,7 @@ def t_sample_reppen():
 
 @test("generation: top-p confines nucleus")
 def t_sample_topp():
-    from ai import _sample_next_token
+    from tinylm import _sample_next_token
     random.seed(3)
     logits = [0.0, 0.0, 0.0, 10.0]  # token 3 dominates
     seen = set()
@@ -270,7 +270,7 @@ def t_sample_topp():
 
 @test("generation: generate() runs with all options")
 def t_generate():
-    from ai import generate
+    from tinylm import generate
     tok, _ = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     out = generate(model, tok, "the quick", max_tokens=8, temperature=0.7,
@@ -280,7 +280,7 @@ def t_generate():
 
 @test("generation: autostop with stop_token_ids")
 def t_autostop_token_ids():
-    from ai import generate
+    from tinylm import generate
     tok, _ = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     # Use token ID 1 as stop token
@@ -293,7 +293,7 @@ def t_autostop_token_ids():
 
 @test("generation: autostop with stop_strings")
 def t_autostop_strings():
-    from ai import generate
+    from tinylm import generate
     tok, _ = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     # Use "END" as stop string
@@ -309,7 +309,7 @@ def t_autostop_strings():
 
 @test("lr scheduler: cosine_warmup / linear / constant")
 def t_lr_scheduler():
-    from ai import LR_Scheduler
+    from tinylm import LR_Scheduler
     s = LR_Scheduler(0.1, 1000, "cosine_warmup", 100, 0.01)
     check(abs(s.get_lr(0) - 0.001) < 1e-9)     # warmup ramps from base/N
     check(abs(s.get_lr(99) - 0.1) < 1e-9)      # full lr at end of warmup
@@ -323,7 +323,7 @@ def t_lr_scheduler():
 
 @test("grad clip: global norm capped in place")
 def t_grad_clip():
-    from ai import clip_grads
+    from tinylm import clip_grads
     tok, _ = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     for p in model.params:
@@ -336,7 +336,7 @@ def t_grad_clip():
 
 @test("evaluate: returns finite perplexity")
 def t_evaluate():
-    from ai import evaluate
+    from tinylm import evaluate
     tok, ids = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     ppl = evaluate(model, ids[:200], batch_size=8, n_negatives=32)
@@ -345,7 +345,7 @@ def t_evaluate():
 
 @test("early stopping: stops after patience and restores best")
 def t_early_stop():
-    from ai import EarlyStopping
+    from tinylm import EarlyStopping
     tok, _ = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     es = EarlyStopping(patience=2, min_delta=1e-3)
@@ -361,7 +361,7 @@ def t_early_stop():
 
 @test("checkpoint: save/load/resume roundtrip")
 def t_checkpoint():
-    from ai import Checkpoint, save_checkpoint, load_checkpoint, resume_from_checkpoint
+    from tinylm import Checkpoint, save_checkpoint, load_checkpoint, resume_from_checkpoint
     tok, _ = tiny_tok_and_ids()
     m1 = tiny_model(vocab=len(tok.vocab))
     ckpt = Checkpoint(step=42, model_state=[p.data for p in m1.params],
@@ -379,7 +379,7 @@ def t_checkpoint():
 
 @test("train: full pipeline with val split + checkpointing")
 def t_train_full():
-    from ai import train, load_checkpoint
+    from tinylm import train, load_checkpoint
     tok, ids = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     d = tempfile.mkdtemp()
@@ -404,7 +404,7 @@ def t_train_full():
 
 @test("train: resume from checkpoint continues training")
 def t_train_resume():
-    from ai import train, load_checkpoint, resume_from_checkpoint
+    from tinylm import train, load_checkpoint, resume_from_checkpoint
     tok, ids = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     d = tempfile.mkdtemp()
@@ -430,7 +430,7 @@ def t_train_resume():
 
 @test("auto adjust: lr reduced on plateau, multiplier applied")
 def t_auto_adjust():
-    from ai import AutoAdjust
+    from tinylm import AutoAdjust
     adj = AutoAdjust(enabled=True, factor=0.5, patience=3, min_delta=1e-2,
                      warmup_ignore=0)
     # improving loss -> no reduction
@@ -455,7 +455,7 @@ def t_auto_adjust():
 
 @test("auto adjust: warmup steps ignored")
 def t_auto_adjust_warmup():
-    from ai import AutoAdjust
+    from tinylm import AutoAdjust
     adj = AutoAdjust(enabled=True, factor=0.5, patience=1, min_delta=0.5,
                      warmup_ignore=10)
     for i in range(1, 11):
@@ -467,7 +467,7 @@ def t_auto_adjust_warmup():
 
 @test("auto adjust: disabled is inert")
 def t_auto_adjust_off():
-    from ai import AutoAdjust
+    from tinylm import AutoAdjust
     adj = AutoAdjust(enabled=False)
     for i in range(100):
         adj.check(i, 5.0)
@@ -476,7 +476,7 @@ def t_auto_adjust_off():
 
 @test("auto adjust: clip relaxation widens chronic clipping")
 def t_auto_adjust_clip():
-    from ai import AutoAdjust
+    from tinylm import AutoAdjust
     adj = AutoAdjust(enabled=True, max_grad_clip=1.0, clip_relax_after=3,
                      clip_relax_factor=2.0)
     check(adj.grad_clip_now() == 1.0)
@@ -491,7 +491,7 @@ def t_auto_adjust_clip():
 
 @test("train: auto_adjust wired into training loop")
 def t_train_auto_adjust():
-    from ai import train, AutoAdjust
+    from tinylm import train, AutoAdjust
     tok, ids = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     import io, contextlib
@@ -512,7 +512,7 @@ def t_train_c_auto_adjust():
     if not accel.AVAILABLE:
         print("    (accel not built - run ./build.sh - skipping)")
         return
-    from ai import train
+    from tinylm import train
     tok, ids = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     import io, contextlib
@@ -533,7 +533,7 @@ def t_train_c_auto_adjust():
 
 @test("train_parallel: runs with grad clip")
 def t_train_parallel():
-    from ai import train_parallel
+    from tinylm import train_parallel
     tok, ids = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
     import io, contextlib
@@ -547,7 +547,7 @@ def t_train_parallel():
 
 @test("train: immediate cancel leaves weights unchanged")
 def t_train_cancel_immediate():
-    from ai import train, train_parallel
+    from tinylm import train, train_parallel
     import io, contextlib
     tok, ids = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
@@ -576,7 +576,7 @@ def t_c_parity():
     if not accel.AVAILABLE:
         print("    (accel not built - run ./build.sh - skipping)")
         return
-    from ai import TinyLM, train
+    from tinylm import TinyLM, train
     tok, ids = tiny_tok_and_ids()
     random.seed(7)
     m1 = tiny_model(vocab=len(tok.vocab))
@@ -605,8 +605,8 @@ def t_c_gradclip():
         return
     # huge lr + no clip => huge param delta; with clip => bounded update
     tok, ids = tiny_tok_and_ids()
-    from ai import TinyLM, _flat_data, _flat_params
-    from ai import random as ai_random
+    from tinylm import TinyLM, _flat_data, _flat_params
+    import random as ai_random
     dims = None
     random.seed(11)
     m1 = tiny_model(vocab=len(tok.vocab))
@@ -634,7 +634,7 @@ def t_c_gradclip():
 @test("registry: model registry + task registry")
 def t_registry():
     from registry import MODEL_REGISTRY, TASK_REGISTRY, TaskTemplate, TOKENIZER_MANAGER
-    from ai import TinyLM
+    from tinylm import TinyLM
     if not MODEL_REGISTRY.has("test-tiny"):
         MODEL_REGISTRY.register("test-tiny",
                                 lambda: TinyLM(vocab_size=64, ctx=4, emb=8, hidden=16),
@@ -653,7 +653,7 @@ def t_registry():
 
 @test("router: training data format encode/decode")
 def t_router_training_format():
-    from ai import RouterTrainingExample, encode_router_example, decode_router_sequence, create_router_training_data
+    from tinylm import RouterTrainingExample, encode_router_example, decode_router_sequence, create_router_training_data
     from tokenizer import BPETokenizer
     
     tok = BPETokenizer()
@@ -686,7 +686,7 @@ def t_router_training_format():
 
 @test("router: train_router runs and reduces loss")
 def t_router_train():
-    from ai import Router, RouterConfig, train_router, generate_router_training_data
+    from tinylm import Router, RouterConfig, train_router, generate_router_training_data
     from tokenizer import BPETokenizer
     
     tok = BPETokenizer()
@@ -717,7 +717,7 @@ def t_router_train():
 
 @test("specialized: model creation, training, save/load")
 def t_specialized_model():
-    from ai import SpecializedLM, SpecializedConfig, create_specialized_model, get_specialized_presets, count_params, save_model, load_model
+    from tinylm import SpecializedLM, SpecializedConfig, create_specialized_model, get_specialized_presets, count_params, save_model, load_model
     from tokenizer import BPETokenizer
     
     tok = BPETokenizer()
@@ -753,7 +753,7 @@ def t_specialized_model():
         check(count_params(preset_model) < 100_000)
     
     # Test generation
-    from ai import generate
+    from tinylm import generate
     text = generate(model, tok, "hello", max_tokens=10, temperature=0.8)
     check(isinstance(text, str) and len(text) > 0)
 
@@ -791,7 +791,7 @@ def t_ui_smoke():
         print("    (no display - skipping)")
         return
     try:
-        from ui import App
+        from uitk.app import App
         app = App(root)
         check(app.top_k_var.get() == str(app.cfg["generation"]["top_k"]))
         check(app.top_p_var.get() == str(app.cfg["generation"]["top_p"]))
@@ -872,7 +872,7 @@ def t_ui_qt_smoke():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     try:
         from PySide6.QtWidgets import QApplication
-        from ui_qt import MainWindow
+        from uiqt.window import MainWindow
     except Exception as exc:
         print(f"    (PySide6 unavailable: {exc} - skipping)")
         return

@@ -9,7 +9,7 @@ from tkinter import scrolledtext, messagebox, ttk, filedialog
 from pathlib import Path
 
 from tokenizer import BPETokenizer
-from ai import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample
+from tinylm import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample
 from registry import MODEL_REGISTRY, TASK_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
 from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, MODEL_CATALOG
 from config import Config
@@ -195,7 +195,7 @@ class ChatActionsMixin:
 
     def _generate_preview_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings, use_selected=False, selected_name=None):
         """Background job for generate_with_preview (always uses the selected model)."""
-        from ai import generate_with_preview
+        from tinylm import generate_with_preview
         result = generate_with_preview(self.model, self.tok, prompt,
                                       max_tokens=max_tokens, min_tokens=min_tokens, temperature=temperature,
                                       top_k=top_k, top_p=top_p,

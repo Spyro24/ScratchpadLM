@@ -1,7 +1,9 @@
 """ScratchpadLM core package (stdlib only).
 
-Split of the former monolithic `ai.py` into focused modules.
-`ai.py` remains as a backward-compatible shim re-exporting this API.
+Focused modules (split from the former monolithic `ai.py`, since removed):
+autograd, serialization, models, transformer, router, runtime, specialized,
+router_data, data_clean, sched, checkpoint, training, parallel, generation.
+Import via `from tinylm import ...`.
 """
 from tinylm.autograd import Value, dot, matvec_dot, softmax_cross_entropy
 from tinylm.serialization import (

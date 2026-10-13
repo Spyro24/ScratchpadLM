@@ -8,7 +8,7 @@ import shutil
 import sys
 import tempfile
 
-from ai import load_model, count_params, save_model, TinyLM
+from tinylm import load_model, count_params, save_model, TinyLM
 from registry import get_model_factory
 
 
@@ -426,7 +426,7 @@ def catalog_cli():
         domain_keywords = sys.argv[5:] if len(sys.argv) > 5 else []
 
         # Load config from model file
-        from ai import load_model
+        from tinylm import load_model
         model = load_model(path)
         config = model.get_config()
 
@@ -478,7 +478,7 @@ MODEL_CATALOG = ModelCatalog()
 if __name__ == "__main__":
     # Demo
     import tempfile
-    from ai import TinyLM, save_model, count_params
+    from tinylm import TinyLM, save_model, count_params
 
     with tempfile.TemporaryDirectory() as tmpdir:
         catalog = ModelCatalog(f"{tmpdir}/catalog.json")

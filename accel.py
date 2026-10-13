@@ -51,11 +51,15 @@ if LIB_PATH.exists():
             ctypes.c_int,    # hidden
             ctypes.c_int,    # n_negatives
             ctypes.c_double, # lr
+            ctypes.c_double, # momentum
             ctypes.c_ulonglong,  # seed
             _dbl_p,          # out_loss
             ctypes.c_double, # max_norm
         ]
         _lib.tl_train_step.restype = ctypes.c_int
+
+        _lib.tl_reset_velocity.argtypes = []
+        _lib.tl_reset_velocity.restype = None
 
         AVAILABLE = True
     except OSError:
@@ -119,10 +123,14 @@ def batch_loss_grads(flat: List[float], windows: List[int],
 def train_step(flat: List[float], windows: List[int],
                dims: Tuple[int, int, int, int], n_negatives: int,
                lr: float, seed: int = 0,
+               momentum: float = 0.0,
                max_norm: float = 0.0) -> Tuple[float, List[float]]:
-    """One fused step: forward + backward + in-place SGD on a copy of `flat`.
+    """One fused step: forward + backward + SGD on a copy of `flat`.
     Returns (mean_loss, updated_flat).
-    If max_norm > 0, gradients are clipped by global norm before SGD."""
+    If max_norm > 0, the batch-averaged gradient is clipped by global norm
+    before the update. `momentum` enables SGD with momentum (velocity is kept
+    inside the kernel across steps; call reset_momentum() to start a new run).
+    """
     vocab, ctx, emb, hidden = dims
     batch = len(windows) // (ctx + 1)
     if batch < 1:
@@ -135,10 +143,21 @@ def train_step(flat: List[float], windows: List[int],
     rc = _lib.tl_train_step(
         arr_flat, arr_win,
         batch, ctx, vocab, emb, hidden,
-        n_negatives, lr, seed,
+        n_negatives, lr, momentum, seed,
         ctypes.byref(arr_loss),
         ctypes.c_double(max_norm),
     )
     if rc != 0:
         raise CAccelError(f"tl_train_step failed: {_ERR.get(rc, rc)}")
     return arr_loss.value, list(arr_flat)
+
+
+def reset_momentum() -> None:
+    """Zero the C kernel's momentum state for the calling thread.
+
+    Call once at the start of a training run (see `_train_c`) so a new model
+    never starts with velocity left over from an earlier run.
+    """
+    if _lib is None:
+        return
+    _lib.tl_reset_velocity()

@@ -47,7 +47,7 @@ tokenizer, config: stdlib only
 - `Router`: embeddings + 2 `TransformerBlock` + LM head (~300K); `split`/`route`/`route_multi` use catalog `domain_keywords`.
 - `SpecializedLM`: embeddings + 1 block + head (≤100K, enforced); 8 presets via `get_specialized_presets()`.
 - Serialization: `TLM4` binary, per-row scale, 2×4-bit/byte; models need `get_config()` (with `arch`) + `get_tensors()`.
-- Training step: sample `batch_size` windows → `sampled_loss` → average → `backward()` → clip → in-place SGD. Parallel: `Pool` + persistent `_WorkerState`, flat floats only, sum grads, one update.
+- Training step: sample `batch_size` windows → `sampled_loss` → average → `backward()` → clip (mean gradient) → in-place SGD with momentum. Parallel: `Pool` + persistent `_WorkerState`, flat floats only, sum grads, one momentum step in the parent.
 - Generation: `window = last ctx ids (0-padded)` → `fast_logits` (floats, vocab-clamped) → temp/top-k/top-p/penalty → sample; autostop on `stop_token_ids`/`stop_strings`/`max_tokens`.
 - Vocab growth: `extend` (keeps IDs) → `save` → `sync_vocab` (grows `C/W2/b2` in place).
 - UI: main thread owns widgets; jobs post to queue, timer drains (`root.after(100)` / `QTimer` 100ms); messages `ok/error/progress/log/stream_token` → `_handle_result`. Chat shows conversation + model-switch notices + generation errors only.

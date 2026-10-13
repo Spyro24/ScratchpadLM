@@ -114,6 +114,7 @@ class SettingsTabMixin:
             ("training", "auto_factor", "Auto LR factor", float),
             ("training", "auto_patience", "Auto LR patience", int),
             ("training", "auto_clip_relax", "Auto clip relax", parse_bool),
+            ("training", "momentum", "Momentum", float),
             ("tokenizer", "vocab_size", "Tokenizer vocab size", int),
             ("tokenizer", "min_frequency", "Min frequency", int),
             ("model", "vocab_size", "Model vocab size", int),

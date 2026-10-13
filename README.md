@@ -92,7 +92,7 @@ model = TinyLM(vocab_size=len(tok.vocab), ctx=50, emb=64, hidden=128)
 
 # Train
 ids = tok.encode("your training text " * 50)
-train(model, ids, steps=200, lr=0.05, batch_size=16)
+train(model, ids, steps=200, lr=0.05, batch_size=16)   # momentum=0.9 by default
 
 # Generate
 text = generate(model, tok, "Once upon a time", n_tokens=60, temperature=0.8)
@@ -146,6 +146,7 @@ training:
   lr_scheduler: "cosine_warmup"
   warmup_steps: 100
   grad_clip: 1.0
+  momentum: 0.9      # SGD momentum; 0 = plain SGD
   early_stopping: true
 
 generation:
@@ -167,7 +168,8 @@ See [CONFIG.md](CONFIG.md) for all options.
 2. **Vocab Extension** - Tokenizer learns new patterns from data
 3. **Model Sync** - `sync_vocab()` grows embeddings in-place
 4. **Sampled Softmax** - Target + random negatives for efficient training
-5. **LR Scheduling** - Cosine warmup, linear, or constant
+5. **SGD with Momentum** - `momentum=0.9` (config `training.momentum`); the fast loss drop, `0` = plain SGD
+6. **LR Scheduling** - Cosine warmup, linear, or constant
 6. **Auto-Adjust** - Plateau LR reduction + grad clip relaxation
 7. **Validation** - Perplexity evaluation with early stopping
 8. **Checkpointing** - Auto-save every N steps, resume supported

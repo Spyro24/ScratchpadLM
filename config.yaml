@@ -28,6 +28,7 @@ training:
   auto_factor: 0.5
   auto_patience: 10
   auto_clip_relax: true
+  momentum: 0.9
 
 generation:
   n_tokens: 60

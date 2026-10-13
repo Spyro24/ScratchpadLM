@@ -86,11 +86,14 @@ def t_config_defaults():
     check(cfg["generation"]["repetition_penalty"] == 1.0)
     check(cfg["training"]["lr_scheduler"] == "cosine_warmup")
     check(cfg["training"]["grad_clip"] == 1.0)
+    check(cfg["training"]["momentum"] == 0.9)
     check(cfg["training"]["early_stopping"] is True)
     for bad in ({"generation": {"top_k": -1}},
                 {"generation": {"top_p": 1.5}},
                 {"generation": {"repetition_penalty": 0.5}},
                 {"training": {"lr_scheduler": "nope"}},
+                {"training": {"momentum": 1.0}},
+                {"training": {"momentum": -0.5}},
                 {"training": {"val_split": 1.0}}):
         try:
             Config.from_dict(bad)
@@ -527,11 +530,61 @@ def t_train_c_auto_adjust():
     check(len(losses) == 20 and all(math.isfinite(l) for l in losses))
 
 
+@test("train: update uses the batch-averaged gradient")
+def t_train_grad_no_double_scaling():
+    from tinylm import train
+    tok, ids = tiny_tok_and_ids()
+    import io, contextlib
+
+    def weight_movement(batch_size):
+        model = tiny_model(vocab=len(tok.vocab))
+        before = [p.data for p in model.params]
+        with contextlib.redirect_stdout(io.StringIO()):
+            train(model, ids, steps=3, lr=0.05, batch_size=batch_size, n_negatives=32,
+                  lr_scheduler="constant", warmup_steps=0, grad_clip=0.0, momentum=0.0,
+                  auto_adjust=False, early_stopping=False, checkpoint_every=0,
+                  eval_every=0, use_c=False)
+        after = [p.data for p in model.params]
+        return sum(abs(b - a) for a, b in zip(before, after))
+
+    # Each micro-batch loss is already averaged over batch_size, so a bigger
+    # batch must not shrink the step (it used to be divided by batch_size twice,
+    # making the effective LR 16x too small at batch_size=16).
+    mv1, mv16, mv64 = weight_movement(1), weight_movement(16), weight_movement(64)
+    check(mv16 > 0.4 * mv1 and mv64 > 0.4 * mv1,
+          f"batch-averaged updates should be batch-size independent: {mv1:.4f} {mv16:.4f} {mv64:.4f}")
+
+
+@test("train: momentum converges faster than plain SGD")
+def t_train_momentum():
+    from tinylm import train
+    tok, ids = tiny_tok_and_ids()
+    import io, contextlib
+
+    def final_loss(use_c, momentum):
+        model = tiny_model(vocab=len(tok.vocab))
+        random.seed(0)
+        losses = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            train(model, ids, steps=40, lr=0.05, batch_size=16, n_negatives=32,
+                  lr_scheduler="constant", warmup_steps=0, grad_clip=0.0,
+                  momentum=momentum, auto_adjust=False,
+                  early_stopping=False, checkpoint_every=0, eval_every=0,
+                  use_c=use_c, progress_cb=lambda d, t, l, *a: losses.append(l))
+        return losses[0], losses[-1]
+
+    for use_c in (False, True):
+        first, plain = final_loss(use_c, 0.0)
+        _, mom = final_loss(use_c, 0.9)
+        check(mom < 0.7 * plain,
+              f"momentum should converge faster (use_c={use_c}): {plain:.3f} -> {mom:.3f}")
+
+
 # ---------------------------------------------------------------------------
 # parallel training + gradient clipping
 # ---------------------------------------------------------------------------
 
-@test("train_parallel: runs with grad clip")
+@test("train_parallel: runs with grad clip + momentum")
 def t_train_parallel():
     from tinylm import train_parallel
     tok, ids = tiny_tok_and_ids()
@@ -540,7 +593,7 @@ def t_train_parallel():
     losses = []
     with contextlib.redirect_stdout(io.StringIO()):
         train_parallel(model, ids, steps=4, lr=0.05, batch_size=8,
-                       n_negatives=32, workers=2, grad_clip=1.0,
+                       n_negatives=32, workers=2, grad_clip=1.0, momentum=0.9,
                        progress_cb=lambda d, t, l, *a: losses.append(l))
     check(len(losses) == 4 and all(math.isfinite(l) for l in losses))
 
@@ -603,7 +656,7 @@ def t_c_gradclip():
     if not accel.AVAILABLE:
         print("    (accel not built - run ./build.sh - skipping)")
         return
-    # huge lr + no clip => huge param delta; with clip => bounded update
+    # clip bounds the batch-AVERAGED gradient: |delta_i| <= lr * max_norm
     tok, ids = tiny_tok_and_ids()
     from tinylm import TinyLM, _flat_data, _flat_params
     import random as ai_random
@@ -618,13 +671,50 @@ def t_c_gradclip():
         windows.append(ids[i + m1.ctx])
     import accel
     flat0 = _flat_data(m1)
-    _, flat_noclip = accel.train_step(list(flat0), windows, dims, 32, 0.5, 5, 0.0)
-    _, flat_clip = accel.train_step(list(flat0), windows, dims, 32, 0.5, 5, 1.0)
+    lr, max_norm = 0.5, 0.05
+    accel.reset_momentum()
+    _, flat_noclip = accel.train_step(list(flat0), windows, dims, 32, lr, 5, max_norm=0.0)
+    accel.reset_momentum()
+    _, flat_clip = accel.train_step(list(flat0), windows, dims, 32, lr, 5, max_norm=max_norm)
     delta_noclip = max(abs(a - b) for a, b in zip(flat0, flat_noclip))
     delta_clip = max(abs(a - b) for a, b in zip(flat0, flat_clip))
+    check(delta_clip > 0, "clip path should still update params")
+    check(delta_clip <= lr * max_norm + 1e-12,
+          f"clip should bound the update: {delta_clip} > {lr * max_norm}")
     check(delta_clip <= delta_noclip + 1e-12,
           f"clip should not increase update: {delta_clip} vs {delta_noclip}")
-    check(delta_clip > 0, "clip path should still update params")
+
+
+@test("c kernel: momentum matches plain SGD when disabled")
+def t_c_momentum_zero():
+    import accel
+    if not accel.AVAILABLE:
+        print("    (accel not built - run ./build.sh - skipping)")
+        return
+    tok, ids = tiny_tok_and_ids()
+    from tinylm import _flat_data
+    random.seed(5)
+    m = tiny_model(vocab=len(tok.vocab))
+    dims = (len(m.C), m.ctx, len(m.C[0]), len(m.b1))
+    windows = []
+    for _ in range(8):
+        i = random.randrange(len(ids) - m.ctx - 1)
+        windows.extend(ids[i:i + m.ctx])
+        windows.append(ids[i + m.ctx])
+    flat0 = _flat_data(m)
+    # momentum=0 twice -> identical updates (no state carried between calls)
+    accel.reset_momentum()
+    _, a = accel.train_step(list(flat0), windows, dims, 32, 0.05, 7, momentum=0.0)
+    accel.reset_momentum()
+    _, b = accel.train_step(list(flat0), windows, dims, 32, 0.05, 7, momentum=0.0)
+    check(max(abs(x - y) for x, y in zip(a, b)) == 0.0, "momentum=0 must be plain SGD")
+    # a second step with momentum keeps moving (velocity is stateful)
+    accel.reset_momentum()
+    _, s1 = accel.train_step(list(flat0), windows, dims, 32, 0.05, 7, momentum=0.9)
+    _, s2 = accel.train_step(s1, windows, dims, 32, 0.05, 7, momentum=0.9)
+    d1 = max(abs(x - y) for x, y in zip(flat0, s1))
+    d2 = max(abs(x - y) for x, y in zip(s1, s2))
+    check(d2 > 0.5 * d1, "momentum should keep the step size up (velocity)")
 
 
 # ---------------------------------------------------------------------------

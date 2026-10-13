@@ -131,6 +131,7 @@ class Config:
             "auto_factor": 0.5,
             "auto_patience": 10,
             "auto_clip_relax": True,
+            "momentum": 0.9,
         },
         "generation": {
             "max_tokens": 60,
@@ -179,6 +180,7 @@ class Config:
             "auto_factor": (float, lambda x: 0.0 < x < 1.0, "auto_factor must be in (0.0, 1.0)"),
             "auto_patience": (int, lambda x: x > 0, "auto_patience must be > 0"),
             "auto_clip_relax": (bool, lambda x: True, "auto_clip_relax must be boolean"),
+            "momentum": (float, lambda x: 0.0 <= x < 1.0, "momentum must be in [0.0, 1.0)"),
         },
         "generation": {
             "max_tokens": (int, lambda x: x > 0, "max_tokens must be > 0"),
@@ -291,7 +293,8 @@ def training_config(steps: int = 100, lr: float = 0.05, batch_size: int = 16,
                     min_delta: float = 1e-4, checkpoint_every: int = 100,
                     checkpoint_dir: str = "checkpoints",
                     auto_adjust: bool = True, auto_factor: float = 0.5,
-                    auto_patience: int = 10, auto_clip_relax: bool = True) -> Dict[str, Any]:
+                    auto_patience: int = 10, auto_clip_relax: bool = True,
+                    momentum: float = 0.9) -> Dict[str, Any]:
     """Create a training config dict."""
     return {"training": {"steps": steps, "lr": lr, "batch_size": batch_size,
                          "n_negatives": n_negatives, "workers": workers,
@@ -302,7 +305,8 @@ def training_config(steps: int = 100, lr: float = 0.05, batch_size: int = 16,
                          "min_delta": min_delta, "checkpoint_every": checkpoint_every,
                          "checkpoint_dir": checkpoint_dir,
                          "auto_adjust": auto_adjust, "auto_factor": auto_factor,
-                         "auto_patience": auto_patience, "auto_clip_relax": auto_clip_relax}}
+                         "auto_patience": auto_patience, "auto_clip_relax": auto_clip_relax,
+                         "momentum": momentum}}
 
 
 def generation_config(max_tokens: int = 60, min_tokens: int = 0, temperature: float = 0.8, 

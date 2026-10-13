@@ -50,8 +50,10 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 
 ### 7. Training Pipeline
 - [x] Generic `train()`, efficiency (pre-sampled negatives, grad accumulation, batched), data cleaning/sorting by domain, model selection with confidence, LR schedule, grad clipping, validation, early stopping, auto-adjust (plateau LR + clip relaxation), priority queue, cancel-with-save-if-improved
+- [x] SGD with momentum in all training paths (`train()`, `_train_c()`, `train_parallel()`) + batch-averaged gradient updates (was divided by `batch_size` twice -> effective LR 16x too small) + C-kernel clip-after-averaging
 - [ ] Data loaders (`CodeDataset/ReasoningDataset/ProseDataset/EmbeddingDataset/SQLDataset/ShellDataset/DataAnalysisDataset/AutoDataset`)
 - [ ] **Variable batch token router** (per-model trainers, no contamination)
+- [ ] `gradient_accumulation` is accepted but ignored on the C kernel path (`_train_c` uses the fused per-batch step); make it effective or reject it there
 - [ ] Router fine-tune (`train_router` on decomposition data)
 - [ ] **User-driven training**: data → domain detect → create/update `tiny-{domain}` → queue
 
@@ -73,6 +75,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 
 ### 12. CLI / API
 - [x] `tinylm` entry (main.py): router train, model mgmt, autotrain, `generate/train/eval/serve`, interactive prompt
+- [ ] `python3 -m tinylm` demo crashes with `IndexError` when `len(ids) <= model.ctx` (the saved `tinyLM` has ctx=2000, the demo corpus yields fewer tokens) — guard the demo / clamp ctx on load
 
 ### 13. Testing & Validation
 - [x] Unit + integration tests (`test_all.py`); benchmarks (`benchmark.py`)

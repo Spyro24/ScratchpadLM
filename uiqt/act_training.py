@@ -133,6 +133,7 @@ class TrainingActionsMixin:
             self.model, ids, steps=steps, lr=training_cfg["lr"],
             batch_size=training_cfg["batch_size"], n_negatives=training_cfg["n_negatives"],
             workers=training_cfg["workers"], progress_cb=on_progress,
+            momentum=training_cfg.get("momentum", 0.9),
             cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel,
         )
         return prompt, steps, result
@@ -183,6 +184,7 @@ class TrainingActionsMixin:
             steps=steps, lr=training_cfg["lr"],
             batch_size=training_cfg["batch_size"],
             n_negatives=training_cfg["n_negatives"],
+            momentum=training_cfg.get("momentum", 0.9),
             progress_cb=on_progress,
             cancel_callback=cancel_check,
         )

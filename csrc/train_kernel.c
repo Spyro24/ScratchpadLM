@@ -32,17 +32,21 @@
      double *dh;
      double *logit;
      int *cand;
+     double *vel;      /* momentum velocity, one entry per param */
      size_t xlen;
      size_t n_cand;
      size_t hidden;
      size_t vocab;
      size_t emb;
      size_t ctx;
+     size_t vel_len;
      int initialized;
  } tl_Buffers;
  
  static __thread tl_Buffers tl_buffers = {0};
  
+ static size_t count_params(int vocab, int ctx, int emb, int hidden);
+
  static void tl_ensure_buffers(int ctx, int vocab, int emb, int hidden, int n_negatives) {
      tl_Buffers *b = &tl_buffers;
      size_t xlen = (size_t)ctx * emb;
@@ -57,7 +61,9 @@
      // Free old buffers if sizes changed
      if (b->initialized) {
          free(b->x); free(b->dx); free(b->h); free(b->dh);
-         free(b->logit); free(b->cand);
+         free(b->logit); free(b->cand); free(b->vel);
+         b->vel = NULL;
+         b->vel_len = 0;
      }
      
      b->xlen = (size_t)ctx * emb;
@@ -73,7 +79,10 @@
      b->dh = malloc((size_t)hidden * sizeof(double));
      b->logit = malloc(((size_t)n_negatives + 1) * sizeof(double));
      b->cand = malloc(((size_t)n_negatives + 1) * sizeof(int));
-     
+     /* momentum velocity: zero-initialised, spans every parameter */
+     b->vel_len = count_params(vocab, ctx, emb, hidden);
+     b->vel = calloc(b->vel_len, sizeof(double));
+
      b->initialized = 1;
  }
  
@@ -261,12 +270,25 @@ int tl_batch_loss_grads(const double *params, const int *windows,
     return rc;
 }
 
+/* Exported: drop momentum state (velocity) for the calling thread.
+ * Called once per training run so a freshly-created model never inherits
+ * velocity left over from a previous run with the same dimensions. */
+void tl_reset_velocity(void) {
+    tl_Buffers *b = &tl_buffers;
+    if (b->initialized && b->vel) {
+        memset(b->vel, 0, b->vel_len * sizeof(double));
+    }
+}
+
 /* Exported: one fused training step with optional gradient clipping
- * params[i] -= lr * grad[i] / batch (with clipping if max_norm > 0)
+ * Steps on the batch-averaged gradient (matching ai.py's train()):
+ *   g = grad_sum / batch                       (optionally clipped by global norm)
+ *   v = momentum * v + g ; params -= lr * v    (momentum == 0 -> plain SGD)
  * Negatives are sampled internally. Returns 0 on success, see codes above. */
 int tl_train_step(double *params, const int *windows,
                   int batch, int ctx, int vocab, int emb, int hidden,
-                  int n_negatives, double lr, unsigned long long seed,
+                  int n_negatives, double lr, double momentum,
+                  unsigned long long seed,
                   double *out_loss, double max_norm)
 {
     if (!out_loss) return -1;
@@ -279,6 +301,10 @@ int tl_train_step(double *params, const int *windows,
                   n_negatives, &rng, out_loss, grads);
     if (rc == 0) {
         *out_loss /= batch;
+        /* average before clipping so max_norm bounds the mean gradient
+         * (the Python path clips the batch-averaged gradient) */
+        double inv_batch = 1.0 / (double)batch;
+        for (size_t i = 0; i < n_params; i++) grads[i] *= inv_batch;
         if (max_norm > 0.0) {
             double norm = compute_grad_norm(grads, n_params);
             if (norm > max_norm && norm > 0.0) {
@@ -286,7 +312,18 @@ int tl_train_step(double *params, const int *windows,
                 for (size_t i = 0; i < n_params; i++) grads[i] *= scale;
             }
         }
-        for (size_t i = 0; i < n_params; i++) params[i] -= lr * grads[i] / batch;
+        tl_Buffers *buf = &tl_buffers;
+        double *vel = (buf->initialized && buf->vel && buf->vel_len == n_params)
+                    ? buf->vel : NULL;
+        if (momentum > 0.0 && vel != NULL) {
+            for (size_t i = 0; i < n_params; i++) {
+                double v = momentum * vel[i] + grads[i];
+                vel[i] = v;
+                params[i] -= lr * v;
+            }
+        } else {
+            for (size_t i = 0; i < n_params; i++) params[i] -= lr * grads[i];
+        }
     }
     free(grads);
     return rc;

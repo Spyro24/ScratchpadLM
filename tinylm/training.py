@@ -38,10 +38,11 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
              auto_adjust: bool = True, auto_factor: float = 0.5,
              auto_patience: int = 10, auto_clip_relax: bool = True,
              cancel_callback=None, save_on_cancel_callback=None,
-             gradient_accumulation: int = 1, neg_sample_seed: int = 0):
+             gradient_accumulation: int = 1, neg_sample_seed: int = 0,
+             momentum: float = 0.9):
     """train() via the fused C kernel with gradient clipping support.
 
-    C kernel supports: LR per step, gradient clipping.
+    C kernel supports: LR per step, gradient clipping, SGD momentum.
     Python handles: LR scheduling, validation, early stopping, checkpointing,
     automatic adjustment (plateau LR reduction, clip relaxation).
     `cancel_callback()` is checked before each step; on cancel the improved
@@ -58,6 +59,9 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
     flat = _flat_data(model)
     params = model.params
 
+    # Fresh momentum state per run (kernel keeps velocity across steps).
+    accel.reset_momentum()
+
     # Snapshot initial weights so a cancelled run without improvement can be reverted.
     initial_params_snapshot = [p.data for p in params]
 
@@ -71,7 +75,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
     adjuster = AutoAdjust(
         enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
         min_delta=min_delta, warmup_ignore=warmup_steps,
-        max_grad_clip=grad_clip if (auto_adjust and auto_clip_relax) else 0.0,
+        max_grad_clip=grad_clip,
     )
 
     # Setup checkpoint directory
@@ -112,6 +116,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
         # C kernel with gradient clipping
         loss, flat = accel.train_step(flat, windows, dims, n_negatives,
                                       rate, random.randrange(1 << 62),
+                                      momentum=momentum,
                                       max_norm=adjuster.grad_clip_now())
         # In-place update of the existing Value objects
         for p, x in zip(params, flat):
@@ -210,6 +215,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
           auto_adjust: bool = True, auto_factor: float = 0.5,
           auto_patience: int = 10, auto_clip_relax: bool = True,
           gradient_accumulation: int = 1, neg_sample_seed: int = 0,
+          momentum: float = 0.9,
           cancel_callback=None, save_on_cancel_callback=None):
     """Mini-batch SGD with sampled softmax and advanced training features.
 
@@ -218,7 +224,13 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     the whole vocabulary. This cuts the output-layer cost by roughly
     vocab_size / (n_negatives + 1).
 
+    The optimizer is SGD with momentum: `v = momentum * v + g`, then
+    `p -= lr * v`, where `g` is the batch-averaged (optionally gradient-
+    clipped) gradient. `momentum=0` falls back to plain SGD. Momentum is what
+    makes the loss drop quickly - plain SGD crawls on this architecture.
+
     New features:
+    - SGD with momentum (0 -> plain SGD)
     - LR scheduling: cosine_warmup, linear, constant
     - Gradient clipping by global norm
     - Validation evaluation with perplexity
@@ -265,7 +277,8 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
                  auto_adjust=auto_adjust, auto_factor=auto_factor,
                  auto_patience=auto_patience, auto_clip_relax=auto_clip_relax,
                  cancel_callback=cancel_callback, save_on_cancel_callback=save_on_cancel_callback,
-                 gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed)
+                 gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed,
+                 momentum=momentum)
 
     ctx = model.ctx
     starts = range(len(ids) - ctx)
@@ -307,7 +320,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     adjuster = AutoAdjust(
         enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
         min_delta=min_delta, warmup_ignore=warmup_steps,
-        max_grad_clip=grad_clip if (auto_adjust and auto_clip_relax) else 0.0,
+        max_grad_clip=grad_clip, clip_relax=auto_clip_relax,
     )
 
     # Setup checkpoint directory
@@ -327,6 +340,9 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     # Gradient accumulation buffer
     accumulated_grads = [0.0] * len(params)
     accumulation_counter = 0
+
+    # Momentum (SGD) velocity
+    velocity = [0.0] * len(params)
 
     for step in range(steps):
         # Check for cancellation before starting the next step.
@@ -379,10 +395,15 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
             accumulated_grads[i] += p.grad
 
         if accumulation_counter >= gradient_accumulation:
-            # Apply accumulated gradients
-            scale = 1.0 / (gradient_accumulation * batch_size)
+            # Apply accumulated gradients with SGD momentum:
+            # v = momentum * v + g ; p -= lr * v (momentum == 0 -> plain SGD)
+            # `p.grad` is the gradient of the batch-AVERAGED loss, so only
+            # average across accumulation steps - dividing by batch_size again
+            # would silently shrink the effective LR by batch_size.
+            scale = 1.0 / gradient_accumulation
             for i, p in enumerate(params):
-                p.data -= rate * accumulated_grads[i] * scale
+                velocity[i] = momentum * velocity[i] + accumulated_grads[i] * scale
+                p.data -= rate * velocity[i]
                 accumulated_grads[i] = 0.0
             accumulation_counter = 0
 

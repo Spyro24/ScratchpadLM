@@ -77,10 +77,14 @@ def _worker_grads_v2(args):
 
 def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, workers=None,
                    progress_cb=None, grad_clip: float = 0.0, cancel_callback=None,
-                   save_on_cancel_callback=None):
+                   save_on_cancel_callback=None, momentum: float = 0.9):
     """Data-parallel version of train. Uses persistent worker pool to avoid
     rebuilding the model each step. The batch is split across processes and
-    the gradients are summed before one SGD update.
+    the gradients are summed before one SGD update (with momentum).
+
+    Matches `train()`: gradients are averaged over the batch, clipped once by
+    global norm, then applied as `v = momentum * v + g ; p -= lr * v`
+    (`momentum=0` -> plain SGD).
 
     `progress_cb(done, total, loss)` is called after every step if given
     (runs in the main process; safe for queue-based UI updates).
@@ -108,14 +112,17 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
     last_loss = None
     cancelled = False
     steps_done = 0
+    velocity = [0.0] * len(params)
 
-    # Pre-create initial flat params for worker initialization
+    # Pre-create initial flat params for worker initialization.
+    # Workers only compute gradients: clipping is applied once in the parent
+    # on the batch-averaged gradient, so the in-worker clip stays off.
     init_flat = _flat_params(model)
 
     with Pool(
         workers,
         initializer=_init_worker,
-        initargs=(init_flat, cfg, vocab, n_negatives, grad_clip),
+        initargs=(init_flat, cfg, vocab, n_negatives, 0.0),
     ) as pool:
         for step in range(steps):
             # Check for cancellation before starting the next step.
@@ -139,6 +146,8 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
             for _, g in results:
                 for k, x in enumerate(g):
                     grad[k] += x
+            # Average the summed gradients over the batch (one update per step)
+            grad = [g / batch_size for g in grad]
 
             # Track initial and best loss (pre-update loss)
             step_loss = total_loss / batch_size
@@ -150,17 +159,18 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
             last_loss = step_loss
             steps_done = step + 1
 
-            # Apply gradient clipping on main process (after summing)
+            # Gradient clipping on the mean gradient (same rule as train())
             if grad_clip > 0:
                 import math
                 total_norm = math.sqrt(sum(g * g for g in grad))
                 if total_norm > grad_clip and total_norm > 0:
                     scale = grad_clip / total_norm
-                    for k in range(len(grad)):
-                        grad[k] *= scale
+                    grad = [g * scale for g in grad]
 
-            for p, g in zip(params, grad):
-                p.data -= rate * g / batch_size
+            # SGD with momentum: v = momentum * v + g ; p -= rate * v
+            for i, p in enumerate(params):
+                velocity[i] = momentum * velocity[i] + grad[i]
+                p.data -= rate * velocity[i]
 
             if progress_cb is not None:
                 progress_cb(step + 1, steps, step_loss)

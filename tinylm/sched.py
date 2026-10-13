@@ -73,7 +73,8 @@ class AutoAdjust:
                  patience: int = 10, min_delta: float = 1e-3,
                  floor: float = 1e-4, warmup_ignore: int = 0,
                  check_every: int = 1, clip_relax_after: int = 5,
-                 clip_relax_factor: float = 2.0, max_grad_clip: float = 0.0):
+                 clip_relax_factor: float = 2.0, max_grad_clip: float = 0.0,
+                 clip_relax: bool = True):
         self.enabled = enabled
         self.factor = factor
         self.patience = patience
@@ -83,7 +84,8 @@ class AutoAdjust:
         self.check_every = check_every
         self.clip_relax_after = clip_relax_after   # consecutive clipped steps
         self.clip_relax_factor = clip_relax_factor
-        self.max_grad_clip = max_grad_clip   # 0 = no auto clip relaxation
+        self.max_grad_clip = max_grad_clip   # 0 = no clipping at all
+        self.clip_relax = clip_relax   # allow the clip limit to grow when it keeps firing
 
         self.multiplier = 1.0
         self.best_loss = None
@@ -123,7 +125,7 @@ class AutoAdjust:
 
     def note_grad_clip(self, norm: float) -> None:
         """Track whether gradient clipping is firing, relax limit if chronic."""
-        if not self.enabled or self.max_grad_clip <= 0:
+        if not self.enabled or not self.clip_relax or self.max_grad_clip <= 0:
             return
         if norm > self._clip_limit:
             self._clip_streak += 1

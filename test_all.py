@@ -308,6 +308,27 @@ def t_autostop_strings():
     # Should stop when "END" is generated
 
 
+@test("generation: unbounded until EOS marker")
+def t_generate_marker_stop():
+    from tinylm import TinyLM, generate
+    from tinylm.data_clean import marker_id
+    tok, _ = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    V = len(tok.vocab)
+    EOS = marker_id("EOS", V)
+    if EOS < 0 or EOS >= len(model.C):
+        return  # tiny vocab: marker IDs out of range, nothing to stop on
+    model.b2[EOS].data = 1e6  # force the EOS marker
+    out = generate(model, tok, "hello", max_tokens=None, top_k=1)
+    check(out == tok.decode(tok.encode("hello") + [EOS]))
+    # Explicit caps still bound generation
+    model.b2[EOS].data = -1e6  # never emit EOS
+    seen = []
+    generate(model, tok, "hello", max_tokens=4, top_k=1,
+             stream_callback=lambda s, i, total, tps: seen.append(s))
+    check(len(seen) == 4)
+
+
 # ---------------------------------------------------------------------------
 # training pipeline: LR scheduler, grad clip, evaluate, early stop, checkpoint
 # ---------------------------------------------------------------------------

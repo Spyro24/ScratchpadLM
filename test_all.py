@@ -1119,6 +1119,23 @@ def t_run_cycle():
         check(len(pad2.list_tasks(status=TaskStatus.PENDING)) == 1)
 
 
+@test("taskpad cli: default executors run tasks end to end")
+def t_taskpad_executors():
+    from scratchpad import TaskPad, TaskStatus, TaskType
+    from main import _default_task_executors
+    executors = _default_task_executors()
+    check(TaskType.GENERATE in executors and TaskType.CODE in executors)
+    with tempfile.TemporaryDirectory() as d:
+        pad = TaskPad(path=os.path.join(d, "taskpad.jsonl"))
+        for ttype, fn in executors.items():
+            pad.register_executor(ttype, fn)
+        task = pad.create_task(TaskType.GENERATE, "hello world",
+                               parameters={"max_tokens": 5})
+        done = pad.execute_task(task.id)
+        check(done.status == TaskStatus.COMPLETED)
+        check(isinstance(done.result, str) and len(done.result) > 0)
+
+
 @test("router: train_router runs and reduces loss")
 def t_router_train():
     from tinylm import Router, RouterConfig, train_router, generate_router_training_data

@@ -90,6 +90,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 
 ### 12. CLI / API
 - [x] `tinylm` entry (main.py): router train, model mgmt, autotrain, `generate/train/eval/serve`, interactive prompt
+- [x] `taskpad execute`/`run-all` actually execute via default generate-backed executors (task model → catalog → `./tinyLM` fallback; per-task `max_tokens`); graceful error when no model files are present
 - [x] `python3 -m tinylm` demo guards `len(ids) <= model.ctx` (saved `tinyLM` ctx=2000 vs ~1802-token corpus): falls back to a fresh small-ctx model + `train()`/`_train_c()` raise `ValueError` instead of `IndexError`
 - [ ] `train_parallel()`/`train_multicore()` still lack the `len(ids) <= ctx` `ValueError` guard (same `IndexError` via `random.choice` on empty `starts`)
 

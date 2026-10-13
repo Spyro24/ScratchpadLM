@@ -495,11 +495,52 @@ def cmd_scratchpad(args):
         print(f"Added entry for model '{args.model}'")
 
 
+def _default_task_executors():
+    """Generate-backed executors so `taskpad execute`/`run-all` work from the CLI.
+
+    Each task runs on its own `model_name` via `ModelRuntime` (catalog lookup),
+    falling back to `./tinyLM` when the model is missing or unlisted. Text task
+    types share one runner; `max_tokens` may be overridden per task via
+    `task.parameters`.
+    """
+    from scratchpad import TaskPad, TaskType
+    from tinylm import ModelRuntime, generate, load_model
+    from registry import TOKENIZER_MANAGER
+
+    tokenizer = TOKENIZER_MANAGER.tokenizer
+    if os.path.exists("bpe_merges.txt"):
+        tokenizer.load("bpe_merges.txt")
+    runtime = ModelRuntime(tokenizer=tokenizer)
+
+    def _model_for(task):
+        if task.model_name:
+            try:
+                return runtime.load_model(task.model_name)
+            except Exception:
+                pass
+        if os.path.exists("tinyLM"):
+            return load_model("tinyLM")
+        return None
+
+    def _run(task):
+        model = _model_for(task)
+        if model is None:
+            raise RuntimeError(
+                "No model available (catalog lookup failed and ./tinyLM missing)")
+        max_tokens = (task.parameters or {}).get("max_tokens", 60)
+        return generate(model, tokenizer, task.prompt, max_tokens=max_tokens)
+
+    return {t: _run for t in (TaskType.GENERATE, TaskType.CODE, TaskType.ANALYZE,
+                              TaskType.REASON, TaskType.SEARCH, TaskType.CUSTOM)}
+
+
 def cmd_taskpad(args):
     """Taskpad commands."""
     from scratchpad import TaskPad, TaskType
-    
+
     taskpad = TaskPad()
+    for task_type, executor in _default_task_executors().items():
+        taskpad.register_executor(task_type, executor)
     
     if args.taskpad_command == "list":
         tasks = taskpad.list_tasks()
@@ -527,13 +568,26 @@ def cmd_taskpad(args):
             print("Error: task_id required")
             return
         print(f"Executing task {args.task_id}...")
-        # In a real implementation, this would use registered executors
-        print("Note: Task executors need to be registered. Use Python API for full execution.")
-    
+        try:
+            task = taskpad.execute_task(args.task_id)
+        except (KeyError, ValueError) as e:
+            print(f"Error: {e}")
+            return
+        print(f"Status: {task.status.value}")
+        if task.status.value == "completed":
+            print(task.result)
+        else:
+            print(f"Error: {task.error}")
+
     elif args.taskpad_command == "run-all":
         print("Running all pending tasks...")
         executed = taskpad.execute_all_pending()
         print(f"Executed {len(executed)} tasks")
+        for task in executed:
+            state = task.status.value
+            detail = task.result if state == "completed" else task.error
+            preview = (detail[:80] + "...") if detail and len(detail) > 80 else (detail or "")
+            print(f"  {task.id} [{state}] {preview}")
 
 
 def run_mcp():

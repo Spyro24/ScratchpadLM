@@ -966,6 +966,21 @@ def t_router_training_multi():
     check(all(len(ex.subtasks) == 1 for ex in singles))
 
 
+@test("router: output depends on the full context window")
+def t_router_context():
+    from tinylm import Router, RouterConfig
+    r = Router(RouterConfig(vocab_size=200, ctx=8, emb=8, hidden=16,
+                            n_layers=1, d_ff=16), seed=0)
+    base = [5, 10, 15, 20, 25, 30, 35, 40]
+    l0 = r.fast_logits(base)
+    # Same first token, rest differ → output must differ
+    l1 = r.fast_logits([5, 99, 98, 97, 96, 95, 94, 93])
+    check(max(abs(a - b) for a, b in zip(l0, l1)) > 1e-9,
+          "router ignores context past position 0")
+    # Graph path matches fast path in shape
+    check(len(r.logits(base)) == 200)
+
+
 @test("planner: router.split creates TaskPad tasks")
 def t_planner():
     from scratchpad import TaskPad, TaskType, model_to_task_type, plan

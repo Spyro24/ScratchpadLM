@@ -30,6 +30,8 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 ### 1. Router (300K, pretrained, frozen)
 - [x] `RouterConfig`, 2-layer transformer, forward + fast inference, sampled-loss training, `(prompt,[subtasks])` data, pretraining script → `router.tlm`, `split()` heuristic, 4-bit I/O, UI + CLI training, interaction data collection
 - [x] Inference usage: `Router.decompose()` autoregressively emits the decomposition with the trained weights (`decode_router_sequence`, `tiny-prose` fallback); `plan()` prefers it over heuristic `split()`
+- [x] Context fix: blocks read only the first `emb` inputs, so concat-embedding left positions 1+ unread (proven: 0.0 output change) → mean-pooled window in `_embed_context`/`fast_logits` (shapes unchanged, old `router.tlm` files load)
+- [ ] Same unread-context flaw exists in `SpecializedLM._embed_context` (`specialized.py:115`) → apply the same pooling there
 - [x] Multi-subtask training data: `generate_router_training_data()` adds composite examples from consecutive sentences spanning distinct domains (`max_subtasks`, 1 = singles only)
 - [ ] **MCP tool use**: tool-calling head, schema awareness, multi-step chains, result→context
 

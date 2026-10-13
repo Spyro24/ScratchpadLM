@@ -94,18 +94,27 @@ class Router:
         return tensors
     
     def _embed_context(self, context: List[int]) -> List[Value]:
-        """Embed tokens with positional embeddings."""
-        x = []
+        """Mean-pool token + positional embeddings over the window.
+
+        Returns `emb` Values (not `ctx * emb`): the transformer blocks below
+        consume exactly `d_model == emb` inputs, so concatenating would leave
+        every position past the first unread — the router would be blind to
+        most of its context window. Shapes are unchanged, so saved models
+        still load.
+        """
+        emb = self.config.emb
+        acc = [Value(0.0) for _ in range(emb)]
+        n = 0
         for i, tok in enumerate(context):
             if i >= self.config.ctx:
                 break
             tok_emb = self.C[tok]
             pos_emb = self.pos_emb[i]
-            x.extend([tok_emb[j] + pos_emb[j] for j in range(self.config.emb)])
-        # Pad if needed
-        while len(x) < self.config.ctx * self.config.emb:
-            x.append(Value(0.0))
-        return x
+            for j in range(emb):
+                acc[j] = acc[j] + tok_emb[j] + pos_emb[j]
+            n += 1
+        inv = 1.0 / max(1, n)
+        return [a * inv for a in acc]
     
     def logits(self, context: List[int]) -> List[Value]:
         x = self._embed_context(context)
@@ -132,21 +141,25 @@ class Router:
         return softmax_cross_entropy(logits, 0)
     
     def fast_logits(self, context: List[int]) -> List[float]:
-        """Fast forward pass for inference."""
-        # Embed
-        x = []
+        """Fast forward pass for inference (mean-pooled, mirrors `_embed_context`)."""
+        # Embed: mean-pool token + positional embeddings over the window
+        emb = self.config.emb
         vocab_size = len(self.C)
+        acc = [0.0] * emb
+        n = 0
         for i, tok in enumerate(context):
             if i >= self.config.ctx:
                 break
             # Clamp token ID to valid range to handle vocab mismatch gracefully
             if tok >= vocab_size:
                 tok = 0
-            tok_emb = [v.data for v in self.C[tok]]
-            pos_emb = [v.data for v in self.pos_emb[i]]
-            x.extend([tok_emb[j] + pos_emb[j] for j in range(self.config.emb)])
-        while len(x) < self.config.ctx * self.config.emb:
-            x.append(0.0)
+            tok_emb = self.C[tok]
+            pos_emb = self.pos_emb[i]
+            for j in range(emb):
+                acc[j] += tok_emb[j].data + pos_emb[j].data
+            n += 1
+        inv = 1.0 / max(1, n)
+        x = [a * inv for a in acc]
         
         # Transformer blocks
         for block in self.blocks:

@@ -39,7 +39,8 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
              auto_patience: int = 10, auto_clip_relax: bool = True,
              cancel_callback=None, save_on_cancel_callback=None,
              gradient_accumulation: int = 1, neg_sample_seed: int = 0,
-             momentum: float = 0.9, rollback_window: int = 0):
+             momentum: float = 0.9, rollback_window: int = 0,
+             rollback_callback=None):
     """train() via the fused C kernel with gradient clipping support.
 
     C kernel supports: LR per step, gradient clipping, SGD momentum.
@@ -49,6 +50,8 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
     weights are kept when loss improved, otherwise initial weights are restored.
     `rollback_window` snapshots every step and restores the lowest-loss step
     in the window when the current loss spikes above it (0 disables).
+    `rollback_callback(step, loss, best_loss)` fires on every rollback where
+    `best_loss` is the smallest loss seen so far in the run (gap = loss - best).
     Returns a dict with `cancelled`, `initial_loss`, `best_loss`,
     `final_loss`, `steps_done`, `rollbacks`.
     """
@@ -140,6 +143,8 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
                 last_loss = loss
                 steps_done = step + 1
                 print(f"step {step:5d}  rollback: loss {loss:.3f} > best {best_entry[0]:.3f} in window {rollback_window} -> restored")
+                if rollback_callback is not None and best_loss != float('inf'):
+                    rollback_callback(step + 1, loss, best_loss)
                 if progress_cb is not None:
                     progress_cb(step + 1, steps, loss, val_loss, rate)
                 continue
@@ -244,7 +249,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
           auto_patience: int = 10, auto_clip_relax: bool = True,
           gradient_accumulation: int = 1, neg_sample_seed: int = 0,
           momentum: float = 0.9, rollback_window: int = 0,
-          cancel_callback=None, save_on_cancel_callback=None):
+          rollback_callback=None, cancel_callback=None, save_on_cancel_callback=None):
     """Mini-batch SGD with sampled softmax and advanced training features.
 
     Each step averages the loss over `batch_size` windows. For each target, the
@@ -270,7 +275,8 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     - Cancel training with optional save if loss improved
     - Loss-spike rollback: snapshots every step and restores the lowest-loss
       step in `rollback_window` when the current loss spikes above it
-      (0 disables; config default 2)
+      (0 disables; config default 2). `rollback_callback(step, loss, best_loss)`
+      fires on every rollback with the run's smallest loss so far.
 
     `progress_cb(done, total, loss, val_loss=None, lr=None)` is called after every step if given.
     `use_c` forces the optional C kernel on/off; default: on when available.
@@ -309,7 +315,8 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
                  auto_patience=auto_patience, auto_clip_relax=auto_clip_relax,
                  cancel_callback=cancel_callback, save_on_cancel_callback=save_on_cancel_callback,
                  gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed,
-                 momentum=momentum, rollback_window=rollback_window)
+                 momentum=momentum, rollback_window=rollback_window,
+                 rollback_callback=rollback_callback)
 
     ctx = model.ctx
     starts = range(len(ids) - ctx)
@@ -422,6 +429,8 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
                 last_loss = loss.data
                 steps_done = step + 1
                 print(f"step {step:5d}  rollback: loss {loss.data:.3f} > best {best_entry[0]:.3f} in window {rollback_window} -> restored")
+                if rollback_callback is not None and best_loss != float('inf'):
+                    rollback_callback(step + 1, loss.data, best_loss)
                 if progress_cb is not None:
                     progress_cb(step + 1, steps, loss.data, val_loss, rate)
                 continue

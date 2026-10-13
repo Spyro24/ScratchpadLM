@@ -78,7 +78,8 @@ def _worker_grads_v2(args):
 def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, workers=None,
                    progress_cb=None, grad_clip: float = 0.0, cancel_callback=None,
                    save_on_cancel_callback=None, momentum: float = 0.9,
-                   rollback_window: int = 0, rollback_tol: float = 1e-4):
+                   rollback_window: int = 0, rollback_tol: float = 1e-4,
+                   rollback_callback=None):
     """Data-parallel version of train. Uses persistent worker pool to avoid
     rebuilding the model each step. The batch is split across processes and
     the gradients are summed before one SGD update (with momentum).
@@ -89,7 +90,8 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
 
     `rollback_window` snapshots every step and restores the lowest-loss step
     in the window when the current loss spikes above it by more than
-    `rollback_tol` (0 disables).
+    `rollback_tol` (0 disables). `rollback_callback(step, loss, best_loss)`
+    fires on every rollback with the run's smallest loss so far.
 
     `progress_cb(done, total, loss)` is called after every step if given
     (runs in the main process; safe for queue-based UI updates).
@@ -170,6 +172,8 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
                     last_loss = step_loss
                     steps_done = step + 1
                     print(f"step {step:5d}  rollback: loss {step_loss:.3f} > best {best_entry[0]:.3f} in window {rollback_window} -> restored")
+                    if rollback_callback is not None and best_loss != float('inf'):
+                        rollback_callback(step + 1, step_loss, best_loss)
                     if progress_cb is not None:
                         progress_cb(step + 1, steps, step_loss)
                     continue

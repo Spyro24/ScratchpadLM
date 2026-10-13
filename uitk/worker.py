@@ -1,5 +1,6 @@
 """Tkinter UI mixin (stdlib fallback). Part of the `uitk/` package split from `ui.py`."""
 import json
+import math
 import os
 import queue
 import threading
@@ -64,6 +65,8 @@ class WorkerMixin:
                 kind, label, payload = self.queue.get_nowait()
                 if kind == "progress":
                     self._handle_progress(label, payload)
+                elif kind == "rollback":
+                    self._handle_rollback(label, payload)
                 elif kind == "log":
                     # Direct log to unified log (runs on main thread)
                     self._log_unified(label, payload)
@@ -87,6 +90,23 @@ class WorkerMixin:
         done, total, loss = payload
         self.train_progress.configure(maximum=max(total, 1), value=done)
         self.progress_label.configure(text=f"Step {done}/{total}  loss {loss:.3f}")
+
+    def _handle_rollback(self, label, payload):
+        """Log a loss-spike rollback in the training monitor and show the gap
+        (current loss minus smallest loss in the run) in the training tab."""
+        if label != "Training":
+            return
+        step, loss, best, gap = payload
+        count = getattr(self, "_rollback_count", 0) + 1
+        self._rollback_count = count
+        gap_txt = f"{gap:+.3f}" if math.isfinite(gap) else str(gap)
+        self._log_train(f"Rollback at step {step}: loss {loss:.3f} > run best {best:.3f} "
+                        f"(gap {gap_txt}) -> restored best weights")
+        try:
+            self.rollback_label.configure(
+                text=f"Last rollback gap: {gap_txt} (step {step}, #{count})")
+        except Exception:
+            pass
 
     def _handle_stream_token(self, token_str, token_idx, total_tokens, tps):
         """Handle streaming token from generation (runs on main thread).

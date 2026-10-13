@@ -82,6 +82,8 @@ class TrainingTabMixin:
         self.train_progress.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.progress_label = tk.Label(progress_row, text="", font=("Consolas", 9), anchor="w")
         self.progress_label.grid(row=0, column=1, sticky="ew")
+        self.rollback_label = tk.Label(progress_row, text="Last rollback gap: —", font=("Consolas", 9), anchor="w")
+        self.rollback_label.grid(row=1, column=0, columnspan=2, sticky="ew")
 
         # Training monitor (log)
         monitor_frame = tk.LabelFrame(tab, text="Training Monitor", padx=10, pady=10)

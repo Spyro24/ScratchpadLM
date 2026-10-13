@@ -1,6 +1,4 @@
 # TinyLM Configuration
-# All values can be overridden via config.yaml or config.json
-
 model:
   vocab_size: 10000
   ctx: 2000
@@ -32,12 +30,19 @@ training:
   rollback_window: 2
 
 generation:
-  n_tokens: 60
+  max_tokens: 60
+  min_tokens: 0
   temperature: 0.8
   top_k: 0
   top_p: 0.0
   repetition_penalty: 1.0
+  stop_token_ids: []
+  stop_strings: []
+  n_tokens: 60
 
 tokenizer:
   vocab_size: 1000
   min_frequency: 2
+
+ui:
+  theme: dark

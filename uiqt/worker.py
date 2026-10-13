@@ -1,5 +1,6 @@
 """PySide6 UI mixin. Part of the `uiqt/` package split from `ui_qt.py`."""
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -81,6 +82,8 @@ class WorkerMixin:
                     self.train_progress.setMaximum(max(total, 1))
                     self.train_progress.setValue(done)
                     self.progress_label.setText(f"Step {done}/{total}  loss {loss:.3f}")
+            elif kind == "rollback":
+                self._handle_rollback(label, payload)
             elif kind == "log":
                 self.log_unified(label, payload)
             elif kind == "stream_token":
@@ -91,6 +94,23 @@ class WorkerMixin:
                 self._handle_stream_token(token_str, token_idx, total_tokens, tps)
             else:
                 self._handle_result(kind, label, payload)
+
+    def _handle_rollback(self, label, payload):
+        """Log a loss-spike rollback in the training monitor and show the gap
+        (current loss minus smallest loss in the run) in the training tab."""
+        if label != "Training":
+            return
+        step, loss, best, gap = payload
+        count = getattr(self, "_rollback_count", 0) + 1
+        self._rollback_count = count
+        gap_txt = f"{gap:+.3f}" if math.isfinite(gap) else str(gap)
+        self._log_train(f"Rollback at step {step}: loss {loss:.3f} > run best {best:.3f} "
+                        f"(gap {gap_txt}) -> restored best weights")
+        try:
+            self.rollback_label.setText(
+                f"Last rollback gap: {gap_txt} (step {step}, #{count})")
+        except Exception:
+            pass
 
     def _handle_stream_token(self, token_str, token_idx, total_tokens, tps):
         if self._stream_bubble is None:

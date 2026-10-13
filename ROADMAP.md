@@ -52,6 +52,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 - [x] Generic `train()`, efficiency (pre-sampled negatives, grad accumulation, batched), data cleaning/sorting by domain, model selection with confidence, LR schedule, grad clipping, validation, early stopping, auto-adjust (plateau LR + clip relaxation), priority queue, cancel-with-save-if-improved
 - [x] SGD with momentum in all training paths (`train()`, `_train_c()`, `train_parallel()`) + batch-averaged gradient updates (was divided by `batch_size` twice -> effective LR 16x too small) + C-kernel clip-after-averaging
 - [x] Loss-spike rollback (`rollback_window`, config default 2, 0=off): snapshots every step, restores lowest-loss step in window on spike, skips bad update (`rollbacks` in result; `RollbackGuard` in `sched.py`; wired into `train()`/`_train_c()`/`train_parallel()` + Config/UI)
+- [x] Rollback monitor: `rollback_callback(step,loss,best)` in all training paths → training monitor logs each rollback and the Training tab shows the gap (current loss − smallest loss in run); completion/cancel summaries include the rollback count (Tk + Qt)
 - [ ] Data loaders (`CodeDataset/ReasoningDataset/ProseDataset/EmbeddingDataset/SQLDataset/ShellDataset/DataAnalysisDataset/AutoDataset`)
 - [ ] **Variable batch token router** (per-model trainers, no contamination)
 - [ ] `gradient_accumulation` is accepted but ignored on the C kernel path (`_train_c` uses the fused per-batch step); make it effective or reject it there

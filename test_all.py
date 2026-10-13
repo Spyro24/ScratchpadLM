@@ -596,6 +596,43 @@ def t_train_rollback():
           "disabled run should keep the poisoned (non-finite) weights")
 
 
+@test("train: rollback_callback reports gap vs run best")
+def t_train_rollback_callback():
+    from tinylm import train
+    import io, contextlib
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    random.seed(0)
+    seen = []
+    losses = []
+
+    def poison_cb(done, total, loss, *a):
+        losses.append(loss)
+        if done == 2:
+            for p in model.params:
+                p.data = float("nan")
+
+    def rb_cb(step, loss, best):
+        seen.append((step, loss, best))
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        r = train(model, ids, steps=6, lr=0.05, batch_size=8, n_negatives=32,
+                  lr_scheduler="constant", warmup_steps=0, grad_clip=0.0,
+                  momentum=0.0, auto_adjust=False, early_stopping=False,
+                  checkpoint_every=0, eval_every=0, use_c=False,
+                  rollback_window=2, rollback_callback=rb_cb,
+                  progress_cb=poison_cb)
+    check(r["rollbacks"] >= 1 and len(seen) == r["rollbacks"],
+          f"callback must fire once per rollback, got {r} {seen}")
+    step, loss, best = seen[0]
+    check(step == 3, f"poisoned step 3 must trigger, got step {step}")
+    check(math.isfinite(best), f"run best must be finite, got {best}")
+    check(abs(best - min(losses[:2])) < 1e-9,
+          f"callback best {best} must equal smallest loss so far {losses[:2]}")
+    gap = loss - best  # the value the training tab displays
+    check(not math.isfinite(gap) or gap > 0, f"gap must be positive, got {gap}")
+
+
 @test("train: update uses the batch-averaged gradient")
 def t_train_grad_no_double_scaling():
     from tinylm import train

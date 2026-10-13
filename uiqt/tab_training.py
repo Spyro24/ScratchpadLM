@@ -124,6 +124,9 @@ class TrainingTabMixin:
         prow.addWidget(self.progress_label)
         v.addLayout(prow)
 
+        self.rollback_label = QLabel("Last rollback gap: —")
+        v.addWidget(self.rollback_label)
+
         monitor = QGroupBox("Training Monitor")
         mg = QVBoxLayout(monitor)
         self.train_log = QPlainTextEdit()

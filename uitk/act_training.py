@@ -53,6 +53,8 @@ class TrainingActionsMixin:
         self._log_train(f"Training started: {len(prompt)} chars, {steps} steps, model={self.model_var.get()}")
         self.train_progress.configure(maximum=steps, value=0)
         self.progress_label.configure(text=f"Step 0/{steps}")
+        self._rollback_count = 0
+        self.rollback_label.configure(text="Last rollback gap: —")
         self._run_in_background("Training", self._train_job, prompt, steps)
 
     def _train_job(self, prompt, steps):
@@ -74,6 +76,11 @@ class TrainingActionsMixin:
         def on_progress(done, total, loss):
             self.queue.put(("progress", "Training", (done, total, loss)))
 
+        # Rollback callback: report (step, spiked loss, run-best loss) to the
+        # main thread so the training monitor logs it and the tab shows the gap.
+        def on_rollback(step, loss, best):
+            self.queue.put(("rollback", "Training", (step, loss, best, loss - best)))
+
         # Cancel callback checks the flag
         def cancel_check():
             return self._cancel_training
@@ -89,6 +96,7 @@ class TrainingActionsMixin:
                        momentum=training_cfg.get("momentum", 0.9),
                        grad_clip=training_cfg.get("grad_clip", 0.0),
                        rollback_window=training_cfg.get("rollback_window", 2),
+                       rollback_callback=on_rollback,
                        cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel)
         return prompt, steps, result
 

@@ -75,7 +75,8 @@ class ResultMixin:
             if cancelled:
                 info = result or {}
                 self._log_train(f"Training cancelled after {info.get('steps_done', steps)} steps "
-                                f"(initial_loss={info.get('initial_loss')}, best_loss={info.get('best_loss')})")
+                                f"(initial_loss={info.get('initial_loss')}, best_loss={info.get('best_loss')}, "
+                                f"rollbacks={info.get('rollbacks', 0)})")
                 self._log_unified("system", "Training cancelled by user.")
                 self.train_progress.configure(maximum=max(steps, 1), value=info.get("steps_done", 0))
                 self.progress_label.configure(text=f"Cancelled ({info.get('steps_done', 0)} steps)")
@@ -83,8 +84,10 @@ class ResultMixin:
             else:
                 save_model(self.model, MODEL_PATH)
                 self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
+                info = result if isinstance(result, dict) else {}
                 # Training logs only go to training tab / unified logs, not chat
-                self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}")
+                self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}, "
+                                f"rollbacks={info.get('rollbacks', 0)}")
                 self._log_unified("system", f"Training done: {steps} steps, model saved.")
                 self.train_progress.configure(maximum=max(steps, 1), value=steps)
                 self.progress_label.configure(text=f"Done ({steps} steps)")

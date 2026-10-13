@@ -26,19 +26,19 @@
 - [x] **Prompt interface**: Text input box for prompting the AI, send button, conversation history
 - [x] **Tabbed UI layout**: Reorganize UI into tabs — **Chat** (prompt + history), **Training** (data input + controls + monitor), **Model Info** (inspector + tensor details), **Admin** (model list, create/delete, catalog mgmt), **Settings** (generation params, training config, tokenizer config)
 - [ ] **UI Toolkit Migration**: Migrate from Tkinter to **PySide6 (Qt6)** as primary UI toolkit, with Tkinter as fallback
-  - [ ] Abstract UI layer with common interface for both toolkits
-  - [ ] Implement PySide6 version of all tabs (Chat, Training, Model Info, Admin, Settings, Logs)
-  - [ ] Keep Tkinter implementation as fallback for environments without Qt
-  - [ ] Auto-detect available toolkit at startup (PySide6 preferred, Tkinter fallback)
-  - [ ] Consistent styling/theme across both toolkits
+  - [x] Abstract UI layer with common interface for both toolkits (`ui_base.py`: toolkit detection, `BackgroundWorker`, shared `PALETTE` theme, config helpers)
+  - [x] Implement PySide6 version of all tabs (Chat, Training, Model Info, Admin, Settings, Logs) — `ui_qt.py`
+  - [x] Keep Tkinter implementation as fallback for environments without Qt (`ui.py` unchanged API; `main.py`/`ui.py` launch via `ui_base.run_gui()`)
+  - [x] Auto-detect available toolkit at startup (PySide6 preferred, Tkinter fallback; override with `SCRATCHPADLM_UI=pyside6|tkinter`)
+  - [x] Consistent styling/theme across both toolkits (shared `ui_base.PALETTE` drives Tk tags + Qt stylesheet)
 - [ ] **Chat Layout (PySide6)**: Modern chat interface layout
-  - [ ] **Tabs at top**: Main navigation tabs (Chat, Training, Model Info, Admin, Settings, Logs, **Harness**)
-  - [ ] **Chats list at left**: Sidebar with conversation list/sessions
-  - [ ] **Chat area center**: Main chat display with messages
-  - [ ] **Chat input at bottom**: Text input area at bottom of chat
-  - [ ] **Send button right of chat input**: Send button positioned to the right of input field
-  - [ ] **Thumbs up/down on each answer**: Every AI response has thumbs up/down buttons for reinforcement learning feedback
-  - [ ] **Reinforcement Learning integration**: Thumbs up/down feeds into auto-training system (RatingCollector → AutoTrainer)
+  - [x] **Tabs at top**: Main navigation tabs (Chat, Training, Model Info, Admin, Settings, Logs — Harness tab still pending)
+  - [x] **Chats list at left**: Sidebar with conversation list/sessions (multi-session, auto-named from first prompt)
+  - [x] **Chat area center**: Main chat display with messages (styled bubbles: user/assistant/system/error)
+  - [x] **Chat input at bottom**: Text input area at bottom of chat
+  - [x] **Send button right of chat input**: Send button positioned to the right of input field
+  - [x] **Thumbs up/down on each answer**: Every AI response has thumbs up/down buttons for reinforcement learning feedback
+  - [x] **Reinforcement Learning integration**: Thumbs up/down feeds into auto-training system (RatingCollector → AutoTrainer)
 - [ ] **Harness Tab (PySide6)**: Harness configuration and control
   - [ ] **Privilege Level Selector**: Dropdown/combo box to select AI privilege level (Read-only, Read-Write, Full Access, Admin)
   - [ ] **Harness Root Path**: Text input with browse button to set harness root directory path

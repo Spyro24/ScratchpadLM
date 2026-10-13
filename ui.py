@@ -1,3 +1,12 @@
+"""Tkinter (stdlib fallback) GUI for ScratchpadLM.
+
+PySide6 (Qt6) is the primary toolkit — see ``ui_qt.py``. Both toolkits are
+launched through ``ui_base.run_gui()``, which auto-detects the best toolkit
+at startup and falls back to Tkinter when Qt is unavailable, so the project
+remains usable with the standard library alone. Force a toolkit with the
+``SCRATCHPADLM_UI`` environment variable (``pyside6`` or ``tkinter``).
+"""
+
 import os
 import queue
 import threading
@@ -13,67 +22,24 @@ from registry import MODEL_REGISTRY, TASK_REGISTRY, TOKENIZER_MANAGER, get_token
 from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, MODEL_CATALOG
 from config import Config
 from autotrain import RatingCollector, FeedbackEntry, create_autotrain_system
-
-MODEL_PATH = "tinyLM"
-TOKENIZER_PATH = "bpe_merges.txt"
-CONFIG_PATH = "config.yaml"
+from ui_base import (
+    CONFIG_PATH,
+    MODEL_PATH,
+    PALETTE,
+    TOKENIZER_PATH,
+    get_available_models,
+    load_config,
+)
+from ui_base import parse_bool as _parse_bool
+from ui_base import write_config_yaml as _write_config_yaml
 
 # Load configuration
-try:
-    cfg = Config.from_file(CONFIG_PATH)
-except Exception:
-    cfg = Config.from_dict({})  # Use defaults
+cfg = load_config(CONFIG_PATH)
 
 VOCAB_SIZE = cfg["model"]["vocab_size"]
 CTX = cfg["model"]["ctx"]
 EMB = cfg["model"]["emb"]
 HIDDEN = cfg["model"]["hidden"]
-
-# Available models from registry (updated dynamically)
-def get_available_models():
-    """Get list of available model names from registry, catalog, and local files."""
-    models = list(MODEL_REGISTRY.list())
-    # Add models from catalog that have valid files
-    try:
-        for spec in MODEL_CATALOG.list():
-            if spec.name not in models and Path(spec.path).exists():
-                models.append(spec.name)
-    except Exception:
-        pass
-    # Add built-in if not present
-    if "TinyLM" not in models:
-        models.insert(0, "TinyLM")
-    return models
-
-
-def _write_config_yaml(path, data):
-    """Write a 2-level config dict as YAML (matches config.py's parser)."""
-    lines = ["# TinyLM Configuration"]
-    for section, values in data.items():
-        lines.append(f"{section}:")
-        for key, value in values.items():
-            if value is None:
-                rendered = "null"
-            elif isinstance(value, bool):
-                rendered = "true" if value else "false"
-            else:
-                rendered = str(value)
-            lines.append(f"  {key}: {rendered}")
-        lines.append("")
-    Path(path).write_text("\n".join(lines), encoding="utf-8")
-
-
-def _parse_bool(raw: str) -> bool:
-    """Parse a Settings entry as a boolean (for early_stopping)."""
-    s = str(raw).strip().lower()
-    if s in ("true", "1", "yes", "on"):
-        return True
-    if s in ("false", "0", "no", "off"):
-        return False
-    raise ValueError(f"expected boolean, got '{raw}'")
-
-
-_parse_bool.__name__ = "bool"
 
 
 class App:
@@ -96,10 +62,12 @@ class App:
         # Rating collector for auto-training feedback
         self.rating_collector = RatingCollector()
         self._last_assistant_response = None  # (prompt, response, model_name)
+        self._stream_active = False  # True while streamed tokens land in history
 
         self._catalog_names = []  # names shown in Admin listbox (parallel order)
 
         self._build_ui()
+        self._model_name = self.model_var.get()  # main-thread snapshot for worker jobs
         self.update_model_inspector()
         self.refresh_catalog_list()
         self.root.after(100, self._poll_queue)
@@ -143,11 +111,13 @@ class App:
         self.model_combo["values"] = models
         if self.model_var.get() not in models:
             self.model_var.set(models[0] if models else "TinyLM")
+        self._model_name = self.model_var.get()
         self._append_history("system", f"[Refreshed model list: {', '.join(models)}]")
 
     def on_model_change(self, event=None):
         """Handle model selection change."""
         model_name = self.model_var.get()
+        self._model_name = model_name  # main-thread snapshot for worker jobs
         self._switch_model(model_name)
 
     def _switch_model(self, model_name):
@@ -283,11 +253,12 @@ class App:
         )
         self.history.grid(row=0, column=0, sticky="nsew")
 
-        # Configure tags for styling
-        self.history.tag_configure("user", foreground="#2E86C1", font=("Consolas", 10, "bold"))
-        self.history.tag_configure("assistant", foreground="#27AE60", font=("Consolas", 10, "bold"))
-        self.history.tag_configure("system", foreground="#7F8C8D", font=("Consolas", 9, "italic"))
-        self.history.tag_configure("error", foreground="#E74C3C", font=("Consolas", 10, "bold"))
+        # Configure tags for styling (colors from shared ui_base.PALETTE,
+        # identical to the PySide6 theme)
+        self.history.tag_configure("user", foreground=PALETTE["accent"], font=("Consolas", 10, "bold"))
+        self.history.tag_configure("assistant", foreground=PALETTE["success"], font=("Consolas", 10, "bold"))
+        self.history.tag_configure("system", foreground=PALETTE["muted"], font=("Consolas", 9, "italic"))
+        self.history.tag_configure("error", foreground=PALETTE["error"], font=("Consolas", 10, "bold"))
 
         # Prompt input
         prompt_frame = tk.LabelFrame(tab, text="Prompt", padx=10, pady=10)
@@ -399,8 +370,8 @@ class App:
             monitor_frame, wrap="word", state="disabled", height=8, font=("Consolas", 9)
         )
         self.train_log.grid(row=0, column=0, sticky="nsew")
-        self.train_log.tag_configure("ts", foreground="#7F8C8D")
-        self.train_log.tag_configure("err", foreground="#E74C3C")
+        self.train_log.tag_configure("ts", foreground=PALETTE["muted"])
+        self.train_log.tag_configure("err", foreground=PALETTE["error"])
 
     def _build_model_info_tab(self, tab):
         """Model Info tab: inspector + tensor details."""
@@ -678,10 +649,10 @@ class App:
         self.unified_log.grid(row=0, column=0, sticky="nsew")
 
         # Configure tags for different log types
-        self.unified_log.tag_configure("training", foreground="#2E86C1")
-        self.unified_log.tag_configure("generation", foreground="#27AE60")
-        self.unified_log.tag_configure("system", foreground="#7F8C8D", font=("Consolas", 9, "italic"))
-        self.unified_log.tag_configure("error", foreground="#E74C3C", font=("Consolas", 9, "bold"))
+        self.unified_log.tag_configure("training", foreground=PALETTE["accent"])
+        self.unified_log.tag_configure("generation", foreground=PALETTE["success"])
+        self.unified_log.tag_configure("system", foreground=PALETTE["muted"], font=("Consolas", 9, "italic"))
+        self.unified_log.tag_configure("error", foreground=PALETTE["error"], font=("Consolas", 9, "bold"))
         self.unified_log.tag_configure("timestamp", foreground="#95A5A6")
         self.unified_log.tag_configure("hidden", elide=True)  # For filtering
 
@@ -894,70 +865,24 @@ class App:
         self.progress_label.configure(text=f"Step {done}/{total}  loss {loss:.3f}")
 
     def _handle_stream_token(self, token_str, token_idx, total_tokens, tps):
-        """Handle streaming token from generation (runs on main thread)."""
-        # Append token to history
+        """Handle streaming token from generation (runs on main thread).
+
+        Appends to the end of the history only — rewriting the whole widget
+        would strip the role-tag styling from earlier messages.
+        """
         self.history.configure(state="normal")
-        # Find the last "AI: " position and append token
-        content = self.history.get("1.0", "end")
-        if content.endswith("\n\n"):
-            content = content[:-2]
-        self.history.configure(state="normal")
-        self.history.delete("1.0", "end")
-        self.history.insert("1.0", content + token_str)
+        if not self._stream_active:
+            # Open the assistant block once: "AI: " label + streamed body
+            if self.history.get("end-2c", "end-1c") != "\n":
+                self.history.insert("end", "\n")
+            self.history.insert("end", "AI: ", "assistant")
+            self._stream_active = True
+        self.history.insert("end", token_str)
         self.history.see("end")
         self.history.configure(state="disabled")
-        
+
         # Update status bar with tokens/sec
         self.status.configure(text=f"Generating... {token_idx}/{total_tokens} tokens ({tps:.1f} tok/s)")
-
-    def _handle_result(self, kind, label, payload):
-        if kind == "error":
-            self._set_busy(False, "Error")
-            self._append_history("error", f"Error: {payload}")
-            if label == "Training":
-                self._log_train(f"{label} failed: {payload}", is_error=True)
-                self.progress_label.configure(text="Failed")
-            messagebox.showerror("Error", f"{label} failed:\n{payload}")
-            return
-
-        if label == "Training":
-            prompt, steps = payload
-            save_model(self.model, MODEL_PATH)
-            self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
-            self._append_history("system", f"[Trained on {len(prompt)} chars, {steps} steps, model saved. Vocab: {len(self.tok.vocab)}]")
-            self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}")
-            self.train_progress.configure(maximum=max(steps, 1), value=steps)
-            self.progress_label.configure(text=f"Done ({steps} steps)")
-            self._set_busy(False, "Training done")
-            self.update_model_inspector()
-        elif label.startswith("Loading "):
-            self.model = payload
-            model_name = label.replace("Loading ", "")
-            self._append_history("system", f"[Loaded model: {model_name} ({len(self.model.C)} vocab, {self.model.ctx} ctx)]")
-            self._set_busy(False, "Ready")
-            self.update_model_inspector()
-        elif label == "Generating (Preview)":
-            prompt, result = payload
-            # Result already printed to console by generate_with_preview
-            # Just add to history if not already there
-            self._append_history("assistant", result["text"])
-            self._set_busy(False, "Ready")
-            self.status.configure(text=f"Ready ({result['tokens_per_sec']:.1f} tok/s)")
-        elif label == "Creating model":
-            spec = payload
-            self._append_history("system", f"[Created model '{spec.name}' ({spec.param_count:,} params, domains: {', '.join(spec.domain_keywords)})]")
-            self.refresh_catalog_list()
-            self.refresh_models()
-            self._set_busy(False, "Model created")
-        elif label == "Deleting model":
-            name, removed = payload
-            if removed:
-                self._append_history("system", f"[Deleted model '{name}' from catalog]")
-            else:
-                self._append_history("system", f"[Model '{name}' was not in catalog]")
-            self.refresh_catalog_list()
-            self.refresh_models()
-            self._set_busy(False, "Model deleted")
 
     # ---- actions -----------------------------------------------------------
 
@@ -1080,6 +1005,7 @@ class App:
             repetition_penalty = float(self.rep_penalty_var.get())
         except ValueError:
             n_tokens, temperature, top_k, top_p, repetition_penalty = 60, 0.8, 0, 0.0, 1.0
+        self._stream_active = False  # streamed tokens open a fresh "AI:" block
         self._run_in_background("Generating", self._generate_job, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty)
 
     def _generate_job(self, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty):
@@ -1107,7 +1033,7 @@ class App:
         self.queue.put(("log", "generation", f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}"))
         self.queue.put(("log", "generation", f"Routed to: {model_name}"))
         self.queue.put(("log", "generation", f"Response: {text[:200]}{'...' if len(text) > 200 else ''}"))
-        return prompt, text
+        return prompt, text, model_name
 
     def _store_routing_example(self, example):
         """Store routing example for Router training."""
@@ -1123,26 +1049,30 @@ class App:
             pass
 
     def _route_prompt(self, prompt):
-        """Route prompt using the Router model."""
+        """Route prompt using the Router model (runs on a worker thread)."""
+        # Snapshot the selected model on the main thread — Tk vars must not
+        # be read from background threads.
+        current_name = getattr(self, "_model_name", "TinyLM")
         try:
             routes = self.router.route_multi(prompt, self.tok, MODEL_CATALOG, max_subtasks=3)
             if not routes:
                 # Fallback to default model
-                return self.model, self.model_var.get()
+                return self.model, current_name
             
             # Use the top route
             best_route = routes[0]
             model_name = best_route["model"]
             
             # Load the model if different from current
-            if model_name != self.model_var.get():
+            if model_name != current_name:
                 loader = ModelLoader(MODEL_CATALOG, tokenizer_manager=TOKENIZER_MANAGER)
                 model = loader.load_model(model_name)
                 return model, model_name
-            return self.model, self.model_var.get()
+            return self.model, current_name
         except Exception as e:
-            self._log_unified("error", f"Routing failed: {e}, falling back to current model")
-            return self.model, self.model_var.get()
+            # Log via the queue (thread-safe) instead of touching widgets
+            self.queue.put(("log", "error", f"Routing failed: {e}, falling back to current model"))
+            return self.model, current_name
 
     def _collect_routing_data(self, prompt, model_name, response):
         """Collect routing training data from user interaction."""
@@ -1185,7 +1115,8 @@ class App:
         
         # Show user message
         self._append_history("user", prompt)
-        
+        self._stream_active = False
+
         # Run in background with preview
         self._run_in_background("Generating (Preview)", self._generate_preview_job, 
                                prompt, n_tokens, temperature, top_k, top_p, repetition_penalty)
@@ -1410,6 +1341,7 @@ class App:
 
     def _handle_result(self, kind, label, payload):
         if kind == "error":
+            self._stream_active = False
             self._set_busy(False, "Error")
             self._append_history("error", f"Error: {payload}")
             if label == "Training":
@@ -1430,12 +1362,36 @@ class App:
             self.progress_label.configure(text=f"Done ({steps} steps)")
             self._set_busy(False, "Training done")
             self.update_model_inspector()
+        elif label == "Training Router":
+            steps = payload
+            self._log_train(f"Router training done: {steps} steps")
+            self.train_progress.configure(maximum=max(steps, 1), value=steps)
+            self.progress_label.configure(text=f"Done ({steps} steps)")
+            self._set_busy(False, "Router training done")
         elif label.startswith("Loading "):
             self.model = payload
             model_name = label.replace("Loading ", "")
             self._append_history("system", f"[Loaded model: {model_name} ({len(self.model.C)} vocab, {self.model.ctx} ctx)]")
             self._set_busy(False, "Ready")
             self.update_model_inspector()
+        elif label == "Generating":
+            # Plain generation finished (tokens may have been streamed live)
+            prompt, text, routed_model = payload
+            if self._stream_active:
+                # Close the streamed block and attach rating buttons
+                self.history.configure(state="normal")
+                self.history.insert("end", "\n\n")
+                self._add_rating_buttons(text)
+                self.history.see("end")
+                self.history.configure(state="disabled")
+                self._last_assistant_response = (prompt, text, routed_model)
+                self._stream_active = False
+            else:
+                # Nothing streamed (e.g. empty output); show the full response
+                self._append_history("assistant", text)
+                self._last_assistant_response = (prompt, text, routed_model)
+            self._set_busy(False, "Ready")
+            self.status.configure(text="Ready")
         elif label == "Generating (Preview)":
             prompt, result = payload
             # Result already printed to console by generate_with_preview
@@ -1563,6 +1519,7 @@ class App:
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
+    # PySide6 (Qt6) is preferred; falls back to this Tkinter app when Qt
+    # is unavailable. Force a toolkit: SCRATCHPADLM_UI=pyside6|tkinter
+    from ui_base import run_gui
+    run_gui()

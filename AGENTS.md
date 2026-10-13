@@ -18,7 +18,7 @@ Do only one task.
 | Model Management | `model_mgmt.py` | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`. |
 | C Acceleration | `accel.py` + `csrc/train_kernel.c` | Optional fused C kernel (ctypes). Supports LR-per-step and gradient clipping (`max_norm`). Built via `./build.sh`. |
 | Tests | `test_all.py` | Fast unit test suite (stdlib only). Run `python3 test_all.py` after every change. |
-| UI | `ui.py` | Tkinter app: tabbed layout (Chat, Training, Model Info, Admin, Settings). |
+| UI | `ui.py` + `ui_qt.py` + `ui_base.py` | Tkinter app (stdlib fallback), PySide6 app (primary), shared layer (toolkit detection, theme palette, background worker, config helpers). Launch via `ui_base.run_gui()` — PySide6 preferred, Tkinter fallback (`SCRATCHPADLM_UI=pyside6\|tkinter` to force) |
 | Legacy Demo | `main.py` | N-gram model demo (not used by main app). |
 
 **Saved artifacts** (keep together, do not delete):
@@ -145,6 +145,18 @@ model = load_model("tinyLM")  # Rebuilds TinyLM, dequantizes into Value.data
 - `App._poll_queue()`: Called via `root.after(100, ...)`, processes queue on main thread
 - `_train_job()`: `tok.extend()` → `tok.save()` → `sync_vocab()` → `train_parallel()`
 - `_generate_job()`: `generate(model, tok, prompt)`
+
+### `ui_qt.py` (PySide6 primary UI)
+- `MainWindow`: same 6 tabs as Tkinter (Chat, Training, Model Info, Admin, Settings, Logs) + chat sidebar
+- Uses `ui_base.BackgroundWorker` + `QTimer` (100 ms) to drain the queue on the main thread
+- Thumbs up/down on assistant bubbles → `RatingCollector.collect(..., rating=5|1)`
+- Only touch Qt widgets on the main thread; jobs post messages via `worker.post()`
+
+### `ui_base.py` (shared UI layer)
+- `detect_toolkit()` / `run_gui()`: PySide6 preferred, Tkinter fallback; honors `SCRATCHPADLM_UI`
+- `PALETTE`: shared colors (Tk tag colors + `qss_theme()` Qt stylesheet)
+- `BackgroundWorker`: thread-safe `submit()` / `post()` / `drain()` queue
+- Shared helpers: `write_config_yaml()`, `parse_bool()`, `get_available_models()`, `load_config()`
 
 ---
 

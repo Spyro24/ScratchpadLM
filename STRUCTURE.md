@@ -18,7 +18,9 @@
 | `config.py` | Config system (YAML/JSON, validation, defaults) | `Config`, `load_yaml()`, `model_config()`, `training_config()`, `merge_configs()` |
 | `registry.py` | Model/Task registries, Tokenizer singleton | `ModelRegistry`, `TaskRegistry`, `TokenizerManager`, `TaskTemplate` |
 | `model_mgmt.py` | Dynamic model management | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`, `MODEL_CATALOG` |
-| `ui.py` | Tkinter GUI with tabbed layout (Chat, Training, Model Info, Admin, Settings) | `App`, background thread via `queue.Queue`, `_append_history()` with role-based styling |
+| `ui.py` | Tkinter GUI (stdlib fallback) with tabbed layout (Chat, Training, Model Info, Admin, Settings, Logs) | `App`, background thread via `queue.Queue`, `_append_history()` with role-based styling |
+| `ui_qt.py` | PySide6 (Qt6) GUI — primary UI toolkit | `MainWindow`, `AssistantBubble` (thumbs up/down → RatingCollector), `run_qt_app()` |
+| `ui_base.py` | Shared UI layer (no toolkit imports) | `detect_toolkit()`, `run_gui()`, `PALETTE`, `qss_theme()`, `BackgroundWorker`, `write_config_yaml()`, `parse_bool()`, `get_available_models()` |
 | `main.py` | Legacy demo script (n-gram model) | `tokenize()`, `train()`, `generate()` |
 | `AGENTS.md` | Agent guidance (this project's rules) | — |
 | `ROADMAP.md` | Task list with checkboxes | — |
@@ -29,7 +31,8 @@
 ## Module Dependencies
 
 ```
-ui.py
+ui.py (Tkinter fallback) / ui_qt.py (PySide6 primary)
+  ├─ ui_base.py (shared layer: detect_toolkit, run_gui, PALETTE, BackgroundWorker, helpers)
   ├─ tokenizer.py (BPETokenizer)
   ├─ ai.py (TinyLM, Router, SpecializedLM, train, generate, load_model, save_model, sync_vocab, train_parallel)
   ├─ config.py (Config)
@@ -240,14 +243,20 @@ load_model(path) → TinyLM
 
 ---
 
-## UI Threading Model (ui.py)
+## UI Threading Model (ui.py / ui_qt.py)
 
-- **Main thread**: Tkinter only
-- **Background**: `threading.Thread` → `queue.Queue` → `root.after(100, _poll_queue)`
-- `_run_in_background(label, func, *args)` runs `func` in thread, puts `("ok"/"error", label, result)` on queue
-- `_poll_queue` dispatches to `_handle_result` on main thread
-- **UI Layout**: `ttk.Notebook` tabs — Chat, Training, Model Info, Admin, Settings
-- **History styling**: Tags for "user" (blue bold), "assistant" (green bold), "system" (gray italic), "error" (red bold)
+- **Main thread**: GUI toolkit only (Tkinter or Qt)
+- **Background**: `threading.Thread` → `queue.Queue` → main-thread timer
+  - Tkinter (`ui.py`): `_run_in_background(label, func, *args)` → `root.after(100, _poll_queue)`
+  - PySide6 (`ui_qt.py`): `ui_base.BackgroundWorker.submit(label, func, *args)` → `QTimer` (100 ms) → `_poll_worker`
+- Both dispatch `("ok"/"error"/"progress"/"log"/"stream_token", label, payload)` messages to `_handle_result` / progress handlers on the main thread
+- Workers never touch widgets — they only enqueue (e.g. `worker.post(...)`)
+- **UI Layout**: 6 tabs — Chat, Training, Model Info, Admin, Settings, Logs
+  - Tkinter: `ttk.Notebook` + scrollable tabs
+  - PySide6: `QTabWidget`; Chat tab = sidebar (session list) + bubble chat area + input/send
+- **History styling**: colors from shared `ui_base.PALETTE`
+  - Tkinter: text tags ("user" blue bold, "assistant" green bold, "system" gray italic, "error" red bold)
+  - PySide6: `MessageBubble`/`AssistantBubble` widgets; assistant bubbles have thumbs up/down → `RatingCollector`
 
 ---
 

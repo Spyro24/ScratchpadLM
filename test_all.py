@@ -753,6 +753,84 @@ def t_ui_smoke():
         root.destroy()
 
 
+@test("ui: toolkit auto-detect prefers pyside6, tkinter fallback honors override")
+def t_ui_toolkit_detect():
+    from ui_base import detect_toolkit, has_pyside6, parse_bool, write_config_yaml
+    check(detect_toolkit() in ("pyside6", "tkinter"))
+    check(detect_toolkit() == ("pyside6" if has_pyside6() else "tkinter"))
+    # Env override forces the stdlib fallback
+    os.environ["SCRATCHPADLM_UI"] = "tkinter"
+    try:
+        check(detect_toolkit() == "tkinter")
+    finally:
+        del os.environ["SCRATCHPADLM_UI"]
+    # Shared helpers used by both toolkits
+    check(parse_bool("true") is True and parse_bool("off") is False)
+    check(parse_bool.__name__ == "bool")
+    data = {"generation": {"top_k": 7, "top_p": 0.95}}
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        path = f.name
+    try:
+        write_config_yaml(path, data)
+        from config import Config
+        cfg = Config.from_file(path)
+        check(cfg["generation"]["top_k"] == 7)
+    finally:
+        os.unlink(path)
+
+
+@test("ui: pyside6 app constructs offscreen (smoke)")
+def t_ui_qt_smoke():
+    from ui_base import has_pyside6
+    if not has_pyside6():
+        print("    (PySide6 not installed - skipping)")
+        return
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication
+        from ui_qt import MainWindow
+    except Exception as exc:
+        print(f"    (PySide6 unavailable: {exc} - skipping)")
+        return
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    try:
+        tabs = [win.tabs.tabText(i) for i in range(win.tabs.count())]
+        check(tabs == ["Chat", "Training", "Model Info", "Admin", "Settings", "Logs"], tabs)
+        # Generation controls loaded from config (parity with Tkinter app)
+        check(win.n_tokens_spin.value() == win.cfg["generation"]["n_tokens"])
+        check(win.top_k_spin.value() == win.cfg["generation"]["top_k"])
+        check(("training", "grad_clip") in win._settings_entries)
+        check(("training", "patience") in win._settings_entries)
+        # Chat session + bubble + thumbs feedback
+        win.append_history("user", "hello")
+        win._append_message("assistant", "hi there", prompt="hello", model="TinyLM")
+        msgs = win._sessions[win._current_session]["messages"]
+        check(len(msgs) == 3, f"expected 3 messages, got {len(msgs)}")
+        rating_msg = [m for m in msgs if m["role"] == "assistant"][0]
+        bubble = win._last_bubble
+        # Redirect feedback to a temp file so the test doesn't pollute the repo
+        feedback_path = win.rating_collector.feedback_path
+        win.rating_collector.feedback_path = feedback_path.__class__(
+            os.path.join(tempfile.gettempdir(), "tinylm_test_feedback.jsonl")
+        )
+        try:
+            # Thumbs are connected and rated in-place
+            bubble.thumbs_up.click()
+            check(rating_msg["rating"] == 5, rating_msg)
+            check(win.rating_collector.feedback_path.exists())
+        finally:
+            os.unlink(win.rating_collector.feedback_path)
+            win.rating_collector.feedback_path = feedback_path
+        # Logs roundtrip (append_history also logs, so count the delta)
+        before = len(win._all_log_entries)
+        win.log_unified("training", "smoke entry")
+        check(len(win._all_log_entries) == before + 1)
+    finally:
+        win.close()
+        win.deleteLater()
+
+
 if __name__ == "__main__":
     print("ScratchpadLM unit tests")
     print("-" * 40)

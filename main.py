@@ -19,14 +19,14 @@ except ImportError:
 
 
 def run_gui():
-    """Boot the Tkinter UI (must run on the main thread)."""
-    import tkinter as tk
+    """Boot the GUI (must run on the main thread).
 
-    from ui import App
+    PySide6 (Qt6) is the primary toolkit; Tkinter (stdlib) is the fallback
+    when Qt is unavailable. Force one via SCRATCHPADLM_UI=pyside6|tkinter.
+    """
+    from ui_base import run_gui as _run_gui
 
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
+    return _run_gui()
 
 
 def run_cli(argv=None):

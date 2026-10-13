@@ -9,7 +9,7 @@ from tkinter import scrolledtext, messagebox, ttk, filedialog
 from pathlib import Path
 
 from tokenizer import BPETokenizer
-from tinylm import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample
+from tinylm import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample, normalize_cap
 from registry import MODEL_REGISTRY, TASK_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
 from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, MODEL_CATALOG
 from config import Config
@@ -42,9 +42,9 @@ class ChatActionsMixin:
         self.prompt_var.delete(0, "end")
         # Show user message immediately
         self._append_history("user", prompt)
-        # Get generation settings
+        # Get generation settings (max_tokens 0 = unlimited, markers stop it)
         try:
-            max_tokens = int(self.max_tokens_var.get())
+            max_tokens = normalize_cap(self.max_tokens_var.get())
             min_tokens = int(self.min_tokens_var.get())
             temperature = float(self.temp_var.get())
             top_k = int(self.top_k_var.get())
@@ -53,7 +53,7 @@ class ChatActionsMixin:
             stop_token_ids = [int(x.strip()) for x in self.stop_tokens_var.get().split(",") if x.strip()]
             stop_strings = [x.strip() for x in self.stop_strings_var.get().split(",") if x.strip()]
         except ValueError:
-            max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty = 60, 0, 0.8, 0, 0.0, 1.0
+            max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty = None, 0, 0.8, 0, 0.0, 1.0
             stop_token_ids = []
             stop_strings = []
         self._stream_active = False  # streamed tokens open a fresh "AI:" block
@@ -164,9 +164,9 @@ class ChatActionsMixin:
         if not prompt:
             return
         
-        # Get generation settings
+        # Get generation settings (max_tokens 0 = unlimited, markers stop it)
         try:
-            max_tokens = int(self.max_tokens_var.get())
+            max_tokens = normalize_cap(self.max_tokens_var.get())
             min_tokens = int(self.min_tokens_var.get())
             temperature = float(self.temp_var.get())
             top_k = int(self.top_k_var.get())
@@ -175,7 +175,7 @@ class ChatActionsMixin:
             stop_token_ids = [int(x.strip()) for x in self.stop_tokens_var.get().split(",") if x.strip()]
             stop_strings = [x.strip() for x in self.stop_strings_var.get().split(",") if x.strip()]
         except ValueError:
-            max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty = 60, 0, 0.8, 0, 0.0, 1.0
+            max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty = None, 0, 0.8, 0, 0.0, 1.0
             stop_token_ids = []
             stop_strings = []
         

@@ -126,6 +126,7 @@ class WorkerMixin:
         self.history.configure(state="disabled")
 
         # Update status bar with tokens/sec
-        self.status.configure(text=f"Generating... {token_idx}/{total_tokens} tokens ({tps:.1f} tok/s)")
+        total = total_tokens if total_tokens is not None else "…"
+        self.status.configure(text=f"Generating... {token_idx}/{total} tokens ({tps:.1f} tok/s)")
 
     # ---- actions -----------------------------------------------------------

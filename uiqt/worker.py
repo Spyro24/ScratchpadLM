@@ -124,7 +124,7 @@ class WorkerMixin:
             if session["messages"]:
                 session["messages"][-1]["text"] = label.text()
         self.status_label.setText(
-            f"Generating... {token_idx}/{total_tokens} tokens ({tps:.1f} tok/s)"
+            f"Generating... {token_idx}/{total_tokens if total_tokens is not None else '…'} tokens ({tps:.1f} tok/s)"
         )
         self._scroll_chat_to_bottom()
 

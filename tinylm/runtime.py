@@ -3,7 +3,7 @@ import threading
 import time
 from typing import List, Optional
 
-from tinylm.generation import fast_logits, _sample_next_token, _resolve_stop_tokens
+from tinylm.generation import fast_logits, _sample_next_token, _resolve_stop_tokens, normalize_cap
 from tinylm.serialization import load_model
 
 # =============================================================================
@@ -179,6 +179,7 @@ class ModelRuntime:
         # Backward compatibility
         if 'n_tokens' in locals():
             pass  # max_tokens is the primary parameter now
+        max_tokens = normalize_cap(max_tokens)
         
         if max_models > 1 or collaborative:
             return self._generate_collaborative(prompt, max_tokens, temperature, top_k, top_p,
@@ -205,6 +206,7 @@ class ModelRuntime:
                            min_tokens=0, stop_token_ids=None, stop_strings=None,
                            stop_markers=("EOS",)):
         """Generate with optional streaming callback (None cap = marker stop)."""
+        max_tokens = normalize_cap(max_tokens)
         ids = tokenizer.encode(prompt) or [0]
         model_fast_logits = getattr(model, 'fast_logits', None)
         
@@ -355,6 +357,7 @@ class ModelRuntime:
             Dict with 'text', 'tokens_generated', 'elapsed_sec', 'tokens_per_sec', 'model_used'
         """
         import time
+        max_tokens = normalize_cap(max_tokens)
         
         routes = self.route(prompt, max_subtasks=max_models)
         if not routes:

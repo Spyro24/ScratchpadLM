@@ -113,6 +113,17 @@ def _sample_next_token(logits: list, temperature: float, top_k: int, top_p: floa
     return next_id, should_stop
 
 
+def normalize_cap(max_tokens):
+    """Translate UI/CLI token caps: None stays unbounded; 0 (or negative)
+    also means unbounded — structural markers end generation instead.
+    Raises ValueError on non-numeric input.
+    """
+    if max_tokens is None:
+        return None
+    n = int(max_tokens)
+    return None if n <= 0 else n
+
+
 def _resolve_stop_tokens(model, stop_token_ids, stop_markers):
     """Merge stop-token IDs + structural marker names into a set (or None).
 
@@ -167,6 +178,7 @@ def generate(model, tok, prompt, max_tokens=None, min_tokens=0, temperature=0.8,
         max_tokens = kwargs.pop('n_tokens')
     if kwargs:
         raise TypeError(f"generate() got unexpected keyword arguments: {list(kwargs.keys())}")
+    max_tokens = normalize_cap(max_tokens)
     
     ids = tok.encode(prompt) or [0]
     model_fast_logits = getattr(model, 'fast_logits', None)
@@ -251,6 +263,7 @@ def generate_with_preview(model, tok, prompt, max_tokens=None, min_tokens=0, tem
     # Backward compatibility
     if 'n_tokens' in locals() or 'n_tokens' in globals():
         pass  # max_tokens is the primary parameter now
+    max_tokens = normalize_cap(max_tokens)
     
     ids = tok.encode(prompt) or [0]
     model_fast_logits = getattr(model, 'fast_logits', None)

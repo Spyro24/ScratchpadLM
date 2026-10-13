@@ -187,8 +187,8 @@ class SettingsActionsMixin:
         if gen["repetition_penalty"] < 1.0:
             messagebox.showwarning("Invalid value", "generation.repetition_penalty must be >= 1.0.")
             return
-        if gen["max_tokens"] < 1:
-            messagebox.showwarning("Invalid value", "generation.max_tokens must be >= 1.")
+        if gen["max_tokens"] < 0:
+            messagebox.showwarning("Invalid value", "generation.max_tokens must be >= 0 (0 = unlimited).")
             return
         tr = new_data["training"]
         if tr["lr_scheduler"] not in ("linear", "cosine_warmup", "constant"):

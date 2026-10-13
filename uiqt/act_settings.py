@@ -223,7 +223,7 @@ class SettingsActionsMixin:
 
         gen = new_data["generation"]
         checks = [
-            (gen["max_tokens"] >= 1, "generation.max_tokens must be >= 1."),
+            (gen["max_tokens"] >= 0, "generation.max_tokens must be >= 0 (0 = unlimited)."),
             (gen["min_tokens"] >= 0, "generation.min_tokens must be >= 0."),
             (gen["temperature"] > 0, "generation.temperature must be greater than 0."),
             (gen["top_k"] >= 0, "generation.top_k must be >= 0."),

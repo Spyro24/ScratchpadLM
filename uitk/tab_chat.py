@@ -104,7 +104,7 @@ class ChatTabMixin:
 
         # Row 0: Max Tokens, Min Tokens, Temp, Top-k, Top-p
         settings_row1 = [
-            ("Max Tokens:", "max_tokens_var", "generation", "max_tokens", 8),
+            ("Max Tokens (0=∞):", "max_tokens_var", "generation", "max_tokens", 8),
             ("Min Tokens:", "min_tokens_var", "generation", "min_tokens", 8),
             ("Temp:", "temp_var", "generation", "temperature", 8),
             ("Top-k:", "top_k_var", "generation", "top_k", 8),

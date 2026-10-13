@@ -97,7 +97,7 @@ def run_cli(argv=None):
     gen_parser = subparsers.add_parser("generate", help="Generate text from prompt")
     gen_parser.add_argument("prompt", help="Input prompt")
     gen_parser.add_argument("--model", help="Model name (uses current model if not specified)")
-    gen_parser.add_argument("--tokens", type=int, default=60, help="Number of tokens to generate")
+    gen_parser.add_argument("--tokens", type=int, default=0, help="Token cap (0 = unlimited, markers stop it)")
     gen_parser.add_argument("--temperature", type=float, default=0.8, help="Temperature")
     gen_parser.add_argument("--top-k", type=int, default=0, help="Top-k sampling")
     gen_parser.add_argument("--top-p", type=float, default=0.0, help="Top-p sampling")
@@ -363,7 +363,7 @@ def cmd_autotrain(args):
 
 def cmd_generate(args):
     """Generate text from prompt."""
-    from tinylm import generate, load_model
+    from tinylm import generate, load_model, normalize_cap
     from registry import TOKENIZER_MANAGER
 
     tokenizer = TOKENIZER_MANAGER.tokenizer
@@ -376,7 +376,7 @@ def cmd_generate(args):
         model = load_model("tinyLM")
 
     text = generate(model, tokenizer, args.prompt,
-                    n_tokens=args.tokens, temperature=args.temperature,
+                    n_tokens=normalize_cap(args.tokens), temperature=args.temperature,
                     top_k=args.top_k, top_p=args.top_p)
     print(text)
 

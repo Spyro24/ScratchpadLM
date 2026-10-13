@@ -108,6 +108,7 @@ from tinylm.generation import (
     _sample_next_token,
     generate,
     generate_with_preview,
+    normalize_cap,
 )
 
 __all__ = [
@@ -137,4 +138,5 @@ __all__ = [
     "TrainingStats", "apply_stats", "best_path", "load_best", "train_with_stats", "STATS_PATH", "BEST_DIR",
     "train_parallel", "train_multicore", "_WorkerState", "_init_worker", "_worker_grads_v2",
     "fast_logits", "_sample_next_token", "generate", "generate_with_preview",
+    "normalize_cap",
 ]

@@ -139,7 +139,8 @@ class ChatTabMixin:
         gen = QGroupBox("Generation Settings")
         g = QHBoxLayout(gen)
         self.max_tokens_spin = QSpinBox()
-        self.max_tokens_spin.setRange(1, 10000)
+        self.max_tokens_spin.setRange(0, 10000)
+        self.max_tokens_spin.setSpecialValueText("∞")
         self.min_tokens_spin = QSpinBox()
         self.min_tokens_spin.setRange(0, 10000)
         self.temperature_spin = QDoubleSpinBox()
@@ -162,7 +163,7 @@ class ChatTabMixin:
         self.stop_strings_edit.setPlaceholderText("Stop strings (comma-separated)")
         self.stop_strings_edit.setMaximumWidth(150)
         for label, widget in (
-            ("Max Tokens", self.max_tokens_spin),
+            ("Max Tokens (0=∞)", self.max_tokens_spin),
             ("Min Tokens", self.min_tokens_spin),
             ("Temp", self.temperature_spin),
             ("Top-k", self.top_k_spin),

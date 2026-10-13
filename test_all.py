@@ -89,6 +89,7 @@ def t_config_defaults():
     check(cfg["training"]["momentum"] == 0.9)
     check(cfg["training"]["rollback_window"] == 2)
     check(cfg["training"]["early_stopping"] is True)
+    check(cfg["generation"]["max_tokens"] == 0, "0 = unlimited by default")
     for bad in ({"generation": {"top_k": -1}},
                 {"generation": {"top_p": 1.5}},
                 {"generation": {"repetition_penalty": 0.5}},
@@ -96,12 +97,29 @@ def t_config_defaults():
                 {"training": {"momentum": 1.0}},
                 {"training": {"momentum": -0.5}},
                 {"training": {"rollback_window": -1}},
-                {"training": {"val_split": 1.0}}):
+                {"training": {"val_split": 1.0}},
+                {"generation": {"max_tokens": -1}}):
         try:
             Config.from_dict(bad)
             raise AssertionError(f"expected ConfigError for {bad}")
         except ConfigError:
             pass
+    check(Config.from_dict({"generation": {"max_tokens": 0}})["generation"]["max_tokens"] == 0)
+
+
+@test("generation: normalize_cap maps 0/negatives to unlimited")
+def t_normalize_cap():
+    from tinylm import normalize_cap
+    check(normalize_cap(None) is None)
+    check(normalize_cap(0) is None)
+    check(normalize_cap(-5) is None)
+    check(normalize_cap(60) == 60)
+    check(normalize_cap("30") == 30)
+    try:
+        normalize_cap("abc")
+        raise AssertionError("expected ValueError for garbage")
+    except ValueError:
+        pass
 
 
 @test("config: yaml round trip via _write_config_yaml")
@@ -1581,6 +1599,7 @@ def t_ui_autoadjust():
             app = App(root)
             check(hasattr(app, "auto_adjust_cb"))
             check(app.auto_adjust_var.get() is True)
+            check(app.max_tokens_var.get() == "0")
         finally:
             root.destroy()
     from ui_base import has_pyside6
@@ -1599,6 +1618,8 @@ def t_ui_autoadjust():
     try:
         check(hasattr(win, "auto_adjust_cb"))
         check(win.auto_adjust_cb.isChecked() is True)
+        check(win.max_tokens_spin.minimum() == 0)
+        check(win.max_tokens_spin.value() == win.cfg["generation"]["max_tokens"] == 0)
     finally:
         win.close()
         win.deleteLater()

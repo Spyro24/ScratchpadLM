@@ -205,9 +205,10 @@ def train_router(router, tokenizer, training_examples: List[RouterTrainingExampl
 
 
 def generate_router_training_data(corpus: str, tokenizer, vocab_size: int, ctx: int,
-                                   domain_keywords: Optional[dict] = None) -> List[RouterTrainingExample]:
+                                   domain_keywords: Optional[dict] = None,
+                                   max_subtasks: int = 3) -> List[RouterTrainingExample]:
     """Generate router training examples from a corpus using heuristic domain detection.
-    
+
     Args:
         corpus: Text corpus to generate examples from
         tokenizer: BPETokenizer for encoding
@@ -216,9 +217,14 @@ def generate_router_training_data(corpus: str, tokenizer, vocab_size: int, ctx: 
         domain_keywords: Optional dict mapping model names to keyword lists
                         e.g., {"tiny-code": ["code", "function", "python"],
                                "tiny-reason": ["math", "calculate", "logic"]}
-    
+        max_subtasks: Max subtasks per composite example (1 = single-subtask
+                      examples only, as before)
+
     Returns:
-        List of RouterTrainingExample objects
+        List of RouterTrainingExample objects: one single-subtask example per
+        sentence, plus composite multi-subtask examples built from consecutive
+        sentences spanning at least two distinct domains (teaches multi-step
+        decomposition).
     """
     if domain_keywords is None:
         domain_keywords = {
@@ -233,6 +239,7 @@ def generate_router_training_data(corpus: str, tokenizer, vocab_size: int, ctx: 
     sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
     
     examples = []
+    labeled = []
     for sent in sentences:
         sent_lower = sent.lower()
         # Detect domain
@@ -243,12 +250,24 @@ def generate_router_training_data(corpus: str, tokenizer, vocab_size: int, ctx: 
             if score > best_score:
                 best_score = score
                 best_model = model
-        
+
         # Create example with single subtask (can be extended to multiple)
+        labeled.append((sent, best_model))
         examples.append(RouterTrainingExample(
             prompt=sent,
             subtasks=[{"model": best_model, "prompt": sent}]
         ))
-    
+
+    # Composite multi-subtask examples from consecutive sentences spanning
+    # at least two distinct domains (teaches multi-step decomposition).
+    for i in range(len(labeled)):
+        group = labeled[i:i + max_subtasks]
+        if len(group) < 2 or len({m for _, m in group}) < 2:
+            continue
+        examples.append(RouterTrainingExample(
+            prompt=" ".join(s for s, _ in group),
+            subtasks=[{"model": m, "prompt": s} for s, m in group],
+        ))
+
     return examples
 

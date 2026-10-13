@@ -939,6 +939,33 @@ def t_router_training_format():
     check(len(ids) > 0)
 
 
+@test("router: training data includes multi-subtask examples")
+def t_router_training_multi():
+    from tinylm import (encode_router_example, decode_router_sequence,
+                        generate_router_training_data)
+    from tokenizer import BPETokenizer
+    tok = BPETokenizer()
+    corpus = ("write a python function to sort a list. " * 10 +
+              "solve the math equation for x. " * 10 +
+              "write a story about a cat. " * 10)
+    tok.train(corpus, vocab_size=500)
+    examples = generate_router_training_data(corpus, tok, 500, 32)
+    check(len(examples) > 0)
+    multi = [ex for ex in examples if len(ex.subtasks) >= 2]
+    check(len(multi) > 0, "expected composite multi-subtask examples")
+    check(len({s["model"] for s in multi[0].subtasks}) >= 2)
+    check(all(len(s["prompt"]) > 0 for s in multi[0].subtasks))
+    # Multi-subtask examples survive the encode/decode roundtrip
+    enc = encode_router_example(multi[0], tok, 32, 500)
+    dec = decode_router_sequence(enc, tok, 500)
+    check(len(dec.subtasks) == len(multi[0].subtasks))
+    check([s["model"] for s in dec.subtasks] ==
+          [s["model"] for s in multi[0].subtasks])
+    # Opt-out restores single-subtask-only output
+    singles = generate_router_training_data(corpus, tok, 500, 32, max_subtasks=1)
+    check(all(len(ex.subtasks) == 1 for ex in singles))
+
+
 @test("planner: router.split creates TaskPad tasks")
 def t_planner():
     from scratchpad import TaskPad, TaskType, model_to_task_type, plan

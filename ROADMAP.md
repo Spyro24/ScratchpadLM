@@ -30,6 +30,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 ### 1. Router (300K, pretrained, frozen)
 - [x] `RouterConfig`, 2-layer transformer, forward + fast inference, sampled-loss training, `(prompt,[subtasks])` data, pretraining script → `router.tlm`, `split()` heuristic, 4-bit I/O, UI + CLI training, interaction data collection
 - [x] Inference usage: `Router.decompose()` autoregressively emits the decomposition with the trained weights (`decode_router_sequence`, `tiny-prose` fallback); `plan()` prefers it over heuristic `split()`
+- [x] Multi-subtask training data: `generate_router_training_data()` adds composite examples from consecutive sentences spanning distinct domains (`max_subtasks`, 1 = singles only)
 - [ ] **MCP tool use**: tool-calling head, schema awareness, multi-step chains, result→context
 
 ### 2. Specialized Base (≤100K each)

@@ -8,7 +8,7 @@ from pathlib import Path
 import json
 
 from tokenizer import BPETokenizer
-from ai import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params
+from ai import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample
 from registry import MODEL_REGISTRY, TASK_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
 from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, MODEL_CATALOG
 from config import Config
@@ -91,6 +91,7 @@ class App:
         if os.path.exists(TOKENIZER_PATH):
             TOKENIZER_MANAGER.load(TOKENIZER_PATH)
         self.model = self._load_model()
+        self.router = self._load_router()  # Load Router model
 
         # Rating collector for auto-training feedback
         self.rating_collector = RatingCollector()
@@ -102,6 +103,27 @@ class App:
         self.update_model_inspector()
         self.refresh_catalog_list()
         self.root.after(100, self._poll_queue)
+
+    def _load_router(self):
+        """Load or create Router model."""
+        router_path = "router.tlm"
+        try:
+            router = load_model(router_path)
+            if len(router.C) == len(self.tok.vocab):
+                return router
+        except Exception:
+            pass
+        # Create new Router with current vocab size
+        from ai import Router, RouterConfig
+        config = RouterConfig(
+            vocab_size=len(self.tok.vocab),
+            ctx=CTX,
+            emb=EMB,
+            hidden=HIDDEN,
+            n_layers=2,
+            d_ff=512
+        )
+        return Router(config, seed=42)
 
     # ---- setup -------------------------------------------------------------
 
@@ -352,6 +374,9 @@ class App:
 
         self.train_btn = tk.Button(train_controls, text="Train on Data", width=15, command=self.on_train)
         self.train_btn.pack(side="left", padx=5)
+
+        self.train_router_btn = tk.Button(train_controls, text="Train Router", width=15, command=self.on_train_router)
+        self.train_router_btn.pack(side="left", padx=5)
 
         # Progress bar row
         progress_row = tk.Frame(tab)
@@ -819,6 +844,7 @@ class App:
         self.busy = busy
         state = "disabled" if busy else "normal"
         self.train_btn.configure(state=state)
+        self.train_router_btn.configure(state=state)
         self.send_btn.configure(state=state)
         self.prompt_var.configure(state=state)
         self.clear_btn.configure(state=state)
@@ -978,6 +1004,63 @@ class App:
                        workers=training_cfg["workers"], progress_cb=on_progress)
         return prompt, steps
 
+    def on_train_router(self):
+        """Train the Router model on collected routing data."""
+        if self.busy:
+            return
+        if not os.path.exists("router_training_data.jsonl"):
+            messagebox.showwarning("No data", "No router training data found. Use the chat to generate routing data first.")
+            return
+        try:
+            steps = int(self.steps_var.get())
+            if steps < 1:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Invalid input", "Training steps must be a positive whole number.")
+            return
+        self._log_train(f"Router training started: {steps} steps")
+        self.train_progress.configure(maximum=steps, value=0)
+        self.progress_label.configure(text=f"Step 0/{steps}")
+        self._run_in_background("Training Router", self._train_router_job, steps)
+
+    def _train_router_job(self, steps):
+        """Background job to train the Router."""
+        from ai import train_router, generate_router_training_data
+        from tokenizer import BPETokenizer
+        
+        # Load training data
+        examples = []
+        with open("router_training_data.jsonl", "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                examples.append(RouterTrainingExample(
+                    prompt=data["prompt"],
+                    subtasks=data["subtasks"]
+                ))
+        
+        if not examples:
+            self.queue.put(("error", "Router Training", "No valid training examples"))
+            return
+        
+        # Progress callback
+        def on_progress(done, total, loss, val_loss=None, lr=None):
+            self.queue.put(("progress", "Router Training", (done, total, loss)))
+        
+        training_cfg = self.cfg["training"]
+        
+        train_router(self.router, self.tok, examples, 
+                    steps=steps, lr=training_cfg["lr"], 
+                    batch_size=training_cfg["batch_size"], 
+                    n_negatives=training_cfg["n_negatives"],
+                    progress_cb=on_progress)
+        
+        # Save the trained router
+        save_model(self.router, "router.tlm")
+        return steps
+
     def on_send_prompt(self):
         if self.busy:
             return
@@ -1000,18 +1083,79 @@ class App:
         self._run_in_background("Generating", self._generate_job, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty)
 
     def _generate_job(self, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty):
+        # Route the prompt using Router
+        model, model_name = self._route_prompt(prompt)
+        
         # Use streaming generation with callback for live updates
         def stream_callback(token_str, token_idx, total_tokens, tps):
             self.queue.put(("stream_token", token_str, (token_idx, total_tokens, tps)))
         
-        text = generate(self.model, self.tok, prompt, n_tokens=n_tokens, temperature=temperature, 
+        # Collect routing data for Router training
+        example = self._collect_routing_data(prompt, model_name, "")
+        
+        text = generate(model, self.tok, prompt, n_tokens=n_tokens, temperature=temperature, 
                         top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty,
                         stream_callback=stream_callback)
         
+        # Collect response for routing data
+        if example:
+            example.subtasks[0]["response"] = text
+            # Store for Router training
+            self._store_routing_example(example)
+        
         # Log to unified log
         self.queue.put(("log", "generation", f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}"))
+        self.queue.put(("log", "generation", f"Routed to: {model_name}"))
         self.queue.put(("log", "generation", f"Response: {text[:200]}{'...' if len(text) > 200 else ''}"))
         return prompt, text
+
+    def _store_routing_example(self, example):
+        """Store routing example for Router training."""
+        try:
+            # Save to a file for later Router training
+            import json
+            with open("router_training_data.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "prompt": example.prompt,
+                    "subtasks": example.subtasks
+                }) + "\n")
+        except Exception:
+            pass
+
+    def _route_prompt(self, prompt):
+        """Route prompt using the Router model."""
+        try:
+            routes = self.router.route_multi(prompt, self.tok, MODEL_CATALOG, max_subtasks=3)
+            if not routes:
+                # Fallback to default model
+                return self.model, self.model_var.get()
+            
+            # Use the top route
+            best_route = routes[0]
+            model_name = best_route["model"]
+            
+            # Load the model if different from current
+            if model_name != self.model_var.get():
+                loader = ModelLoader(MODEL_CATALOG, tokenizer_manager=TOKENIZER_MANAGER)
+                model = loader.load_model(model_name)
+                return model, model_name
+            return self.model, self.model_var.get()
+        except Exception as e:
+            self._log_unified("error", f"Routing failed: {e}, falling back to current model")
+            return self.model, self.model_var.get()
+
+    def _collect_routing_data(self, prompt, model_name, response):
+        """Collect routing training data from user interaction."""
+        # This creates training examples for the Router
+        # The Router learns to predict which model should handle which prompt
+        try:
+            example = RouterTrainingExample(
+                prompt=prompt,
+                subtasks=[{"model": model_name, "prompt": prompt}]
+            )
+            return example
+        except Exception:
+            return None
 
     def on_clear_history(self):
         self.history.configure(state="normal")

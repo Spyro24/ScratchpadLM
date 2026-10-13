@@ -31,6 +31,14 @@
   - [ ] Keep Tkinter implementation as fallback for environments without Qt
   - [ ] Auto-detect available toolkit at startup (PySide6 preferred, Tkinter fallback)
   - [ ] Consistent styling/theme across both toolkits
+- [ ] **Chat Layout (PySide6)**: Modern chat interface layout
+  - [ ] **Tabs at top**: Main navigation tabs (Chat, Training, Model Info, Admin, Settings, Logs)
+  - [ ] **Chats list at left**: Sidebar with conversation list/sessions
+  - [ ] **Chat area center**: Main chat display with messages
+  - [ ] **Chat input at bottom**: Text input area at bottom of chat
+  - [ ] **Send button right of chat input**: Send button positioned to the right of input field
+  - [ ] **Thumbs up/down on each answer**: Every AI response has thumbs up/down buttons for reinforcement learning feedback
+  - [ ] **Reinforcement Learning integration**: Thumbs up/down feeds into auto-training system (RatingCollector → AutoTrainer)
 - [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
 - [ ] **Training data provider**: User provides training data directly — file upload, text paste, URL fetch, folder watch, data preview, auto domain detection, train/val split
 - [ ] **Auto model naming**: System generates model name from training data domain — shows preview `tiny-{detected_domain}` before creation

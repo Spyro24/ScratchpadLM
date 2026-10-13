@@ -256,9 +256,114 @@ def clean_training_data(text: str,
     stats['reduction_pct'] = (1 - stats['final_chars'] / original_length) * 100 if original_length > 0 else 0
     
     result = {'cleaned_text': cleaned, 'stats': stats}
-    
+
     if classify:
         result['domains'] = sort_and_classify_data(cleaned)
         result['domain_classification'] = classify_by_domain(cleaned)
-    
+
     return result
+
+
+# =============================================================================
+# Structural markers ([EOL] / [EOS] / [EOT]) for training data
+# =============================================================================
+#
+# Inserted into the training text before training starts:
+#   [EOT] end of a sentence (. ! ?), [EOL] end of a line (\n),
+#   [EOS] end of a section (blank line between sections).
+# Each marker encodes as ONE token ID just below the router's reserved block
+# (SEP = V-1, model slots = V-10..V-3), so the top-of-vocab map is:
+#   V-13 [EOL], V-12 [EOS], V-11 [EOT], V-10..V-3 model slots, V-1 SEP.
+# Rendered training text shows the marker short forms in yellow (ANSI).
+# Pipeline: marked = insert_markers(corpus); ids = encode_marked(marked, tok, V)
+
+MARKERS = ("EOL", "EOS", "EOT")
+
+_MARKER_SLOTS = {"EOL": 13, "EOS": 12, "EOT": 11}
+
+_MARKER_RE = re.compile(r"\[(EOL|EOS|EOT)\]")
+
+_YELLOW = "\033[33m"
+_RESET = "\033[0m"
+
+
+def marker_id(name: str, vocab_size: int) -> int:
+    """Single token ID for a marker name (top-of-vocab, below router IDs)."""
+    if name not in _MARKER_SLOTS:
+        raise KeyError(f"Unknown marker {name!r}. Available: {MARKERS}")
+    return vocab_size - _MARKER_SLOTS[name]
+
+
+def marker_name(token_id: int, vocab_size: int):
+    """Marker name for a token ID, or None when it is not a marker ID."""
+    for name, slot in _MARKER_SLOTS.items():
+        if token_id == vocab_size - slot:
+            return name
+    return None
+
+
+def insert_markers(text: str) -> str:
+    """Insert `[EOT]`/`[EOL]`/`[EOS]` markers into raw training text.
+
+    Sentences (ending in `.`/`!`/`?`) get `[EOT]`, every non-empty line gets
+    `[EOL]`, every section gets a trailing `[EOS]`. Returns single-line
+    marked text ready for `encode_marked()`.
+    """
+    sections = []
+    for sec in re.split(r"\n[ \t]*\n", text):
+        lines = []
+        for line in sec.split("\n"):
+            s = line.strip()
+            if not s:
+                continue
+            parts = []
+            for m in re.finditer(r"[^.!?]*[.!?]+|[^.!?]+", s):
+                frag = m.group(0).strip()
+                if not frag:
+                    continue
+                parts.append(frag + " [EOT]" if frag[-1] in ".!?" else frag)
+            lines.append(" ".join(parts) + " [EOL]")
+        if lines:
+            sections.append(" ".join(lines) + " [EOS]")
+    return " ".join(sections)
+
+
+def encode_marked(marked_text: str, tokenizer, vocab_size: int) -> List[int]:
+    """Encode marked text to IDs, mapping each marker to its single token ID."""
+    ids: List[int] = []
+    for chunk in _MARKER_RE.split(marked_text):
+        if chunk in _MARKER_SLOTS:
+            ids.append(marker_id(chunk, vocab_size))
+        elif chunk:
+            ids.extend(tokenizer.encode(chunk))
+    return ids
+
+
+def render_marked(marked_text: str, color: bool = True) -> str:
+    """Render marked text, showing marker short forms in yellow (ANSI)."""
+    if not color:
+        return marked_text
+    return _MARKER_RE.sub(lambda m: f"{_YELLOW}{m.group(0)}{_RESET}", marked_text)
+
+
+def render_marked_ids(ids: List[int], tokenizer, vocab_size: int,
+                      color: bool = True) -> str:
+    """Render token IDs back to text with markers as (yellow) short forms."""
+    parts: List[str] = []
+    buf: List[int] = []
+
+    def flush() -> None:
+        if buf:
+            parts.append(tokenizer.decode(buf))
+            del buf[:]
+
+    for tok in ids:
+        name = marker_name(tok, vocab_size)
+        if name is None:
+            buf.append(tok)
+        else:
+            flush()
+            short = f"[{name}]"
+            parts.append(f"{_YELLOW}{short}{_RESET}" if color else short)
+    flush()
+    return "".join(parts)

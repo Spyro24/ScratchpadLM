@@ -50,12 +50,19 @@ from tinylm.router_data import (
 from tinylm.data_clean import (
     BOILERPLATE_PATTERNS,
     DOMAIN_KEYWORDS_CLEAN,
+    MARKERS,
     normalize_text,
     strip_boilerplate,
     deduplicate_lines,
     classify_by_domain,
     sort_and_classify_data,
     clean_training_data,
+    marker_id,
+    marker_name,
+    insert_markers,
+    encode_marked,
+    render_marked,
+    render_marked_ids,
 )
 from tinylm.sched import (
     LR_Scheduler,
@@ -111,6 +118,8 @@ __all__ = [
     "create_router_training_data", "train_router", "generate_router_training_data",
     "normalize_text", "strip_boilerplate", "deduplicate_lines",
     "classify_by_domain", "sort_and_classify_data", "clean_training_data",
+    "MARKERS", "marker_id", "marker_name", "insert_markers", "encode_marked",
+    "render_marked", "render_marked_ids",
     "LR_Scheduler", "clip_grads", "AutoAdjust", "RollbackGuard", "evaluate", "EarlyStopping",
     "Checkpoint", "save_checkpoint", "load_checkpoint", "resume_from_checkpoint",
     "_flat_params", "_set_flat_params",

@@ -966,6 +966,34 @@ def t_router_training_multi():
     check(all(len(ex.subtasks) == 1 for ex in singles))
 
 
+@test("markers: insert/encode/render with yellow short forms")
+def t_markers():
+    from tinylm import (insert_markers, encode_marked, render_marked,
+                        render_marked_ids, marker_id, marker_name)
+    from tokenizer import BPETokenizer
+    tok = BPETokenizer()
+    tok.train("hello world. foo bar! test line here. " * 30, vocab_size=300)
+    V = 300
+    marked = insert_markers(
+        "Hello world. How are you?\nSecond line here.\n\nNew section starts.")
+    check("[EOT]" in marked and "[EOL]" in marked and "[EOS]" in marked)
+    check(marked.index("[EOT]") < marked.index("[EOL]"))
+    check(marked.count("[EOS]") == 2)
+    ids = encode_marked(marked, tok, V)
+    check(marker_id("EOL", V) in ids and marker_id("EOS", V) in ids
+          and marker_id("EOT", V) in ids)
+    check(marker_name(V - 13, V) == "EOL" and marker_name(V - 1, V) is None)
+    # No collision with the router's reserved top-of-vocab IDs
+    router_ids = {V - 1} | {V - 10 + i for i in range(8)}
+    check(not ({marker_id(n, V) for n in ("EOL", "EOS", "EOT")} & router_ids))
+    # Markers render as yellow short forms
+    check("\033[33m[EOL]\033[0m" in render_marked(marked))
+    check(render_marked(marked, color=False) == marked)
+    back = render_marked_ids(ids, tok, V, color=False)
+    check("[EOL]" in back and "[EOS]" in back and "[EOT]" in back)
+    check("\033[33m[EOS]\033[0m" in render_marked_ids(ids, tok, V))
+
+
 @test("router: output depends on the full context window")
 def t_router_context():
     from tinylm import Router, RouterConfig

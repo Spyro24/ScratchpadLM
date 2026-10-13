@@ -383,8 +383,8 @@ def cmd_generate(args):
 
 def cmd_train(args):
     """Train a model on data."""
-    from tinylm import (train, load_model, save_model, sync_vocab, insert_markers,
-                        encode_marked, render_marked)
+    from tinylm import (load_model, save_model, sync_vocab, insert_markers,
+                        encode_marked, render_marked, train_with_stats)
     from registry import TOKENIZER_MANAGER
 
     tokenizer = TOKENIZER_MANAGER.tokenizer
@@ -423,9 +423,16 @@ def cmd_train(args):
             vloss = f" val_loss={val_loss:.4f}" if val_loss else ""
             print(f"  Step {done}/{total} loss={loss:.4f}{vloss} lr={lr:.6f}")
 
-    train(model, ids, steps=args.steps, lr=args.lr, progress_cb=progress_cb)
-    save_model(model, "tinyLM" if not args.model else f"models/{args.model}.tlm")
-    print("Training complete")
+    out_path = f"models/{args.model}.tlm" if args.model else "tinyLM"
+    name = args.model or os.path.splitext(os.path.basename(out_path))[0]
+    info = train_with_stats(name, model, ids, steps=args.steps, lr=args.lr,
+                            progress_cb=progress_cb)
+    if info["improved"]:
+        save_model(model, out_path)
+        print(f"Training complete: best loss {info['best_loss']:.4f}, model saved")
+    else:
+        print(f"Training complete: no improvement (best stays {info['prev_best']}) - "
+              f"weights reverted, {out_path} kept")
 
 
 def cmd_eval(args):

@@ -1030,6 +1030,49 @@ def t_mark_and_encode():
     check(marker_id("EOL", len(tok.vocab)) in ids)
 
 
+@test("stats: best loss only decreases across runs")
+def t_stats():
+    from tinylm import TrainingStats, best_path, train_with_stats
+    from tinylm.serialization import load_model
+    with tempfile.TemporaryDirectory() as d:
+        store = TrainingStats(os.path.join(d, "stats.json"))
+        # Record tracks the minimum without any training
+        store.record("m", 5.0, 5.5, 10)
+        store.record("m", 7.0, 7.0, 10)
+        check(store.best_loss("m") == 5.0)
+        check(store.get("m")["last_loss"] == 7.0)
+        check(store.get("m")["runs"] == 2)
+        check(store.best_loss("unknown") is None)
+
+        tok, ids = tiny_tok_and_ids()
+        model = tiny_model(vocab=len(tok.vocab))
+        kw = dict(steps=3, lr=0.05, batch_size=4, n_negatives=8, use_c=False,
+                  early_stopping=False, eval_every=0, checkpoint_every=0)
+        info = train_with_stats("m", model, ids, stats=store,
+                                best_dir=os.path.join(d, "best"), **kw)
+        check(info["improved"] is True and info["reverted"] is False)
+        check(os.path.exists(best_path("m", os.path.join(d, "best"))))
+        best1 = info["best_loss"]
+        check(best1 is not None and best1 < float("inf"))
+        # Sabotage the weights, then run zero steps (best stays None, which
+        # cannot beat the stored best): must restore the persisted weights
+        for p in model.params:
+            p.data += 5.0
+        sabotaged = [p.data for p in model.params]
+        info = train_with_stats("m", model, ids, stats=store,
+                                best_dir=os.path.join(d, "best"),
+                                steps=0, lr=0.0, batch_size=4, n_negatives=8,
+                                use_c=False, early_stopping=False,
+                                eval_every=0, checkpoint_every=0)
+        check(info["improved"] is False and info["reverted"] is True)
+        check(any(p != s for p, s in zip([p.data for p in model.params],
+                                         sabotaged)))
+        check(store.best_loss("m") == best1)
+        restored = load_model(best_path("m", os.path.join(d, "best")))
+        check(all(p.data == q.data
+                  for p, q in zip(model.params, restored.params)))
+
+
 @test("router: output depends on the full context window")
 def t_router_context():
     from tinylm import Router, RouterConfig

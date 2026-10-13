@@ -687,6 +687,68 @@ def t_train_momentum():
 # parallel training + gradient clipping
 # ---------------------------------------------------------------------------
 
+@test("train_multicore: best-of-N trials keep the lowest-loss update")
+def t_train_multicore():
+    from tinylm import train_multicore
+    from tinylm.parallel import _pick_winner
+    # Winner-selection rule: lowest finite probe loss wins; shard-loss
+    # fallback when probes are unusable; None when nothing is usable.
+    check(_pick_winner([(5.0, 4.0, [1.0], [0.0]),
+                        (6.0, 3.0, [2.0], [0.0])]) == 1)
+    check(_pick_winner([(5.0, float("nan"), [1.0], [0.0]),
+                        (6.0, 9.0, [2.0], [0.0])]) == 1)
+    check(_pick_winner([(5.0, float("nan"), [1.0], [0.0]),
+                        (4.0, float("nan"), [2.0], [0.0])]) == 1)
+    check(_pick_winner([(5.0, float("nan"), [float("nan")], [0.0])]) is None)
+    check(_pick_winner([]) is None)
+    # Integration: short run keeps the result contract on 2 workers.
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    import io, contextlib
+    losses = []
+    with contextlib.redirect_stdout(io.StringIO()):
+        r = train_multicore(model, ids, steps=4, lr=0.05, batch_size=8,
+                            n_negatives=32, workers=2, grad_clip=1.0,
+                            momentum=0.9, rollback_window=2,
+                            progress_cb=lambda d, t, l, *a: losses.append(l))
+    for k in ("cancelled", "initial_loss", "best_loss", "final_loss",
+              "steps_done", "rollbacks"):
+        check(k in r, f"missing {k} in {r}")
+    check(r["cancelled"] is False and r["steps_done"] == 4)
+    check(len(losses) == 4 and all(math.isfinite(l) for l in losses))
+    check(all(math.isfinite(p.data) for p in model.params))
+    # Immediate cancel leaves weights unchanged.
+    before = [p.data for p in model.params]
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = train_multicore(model, ids, steps=10, lr=0.05, batch_size=4,
+                             n_negatives=8, workers=2,
+                             cancel_callback=lambda: True)
+    check(rc["cancelled"] is True and rc["steps_done"] == 0)
+    check([p.data for p in model.params] == before,
+          "cancelled multicore run mutated weights")
+    # Total divergence (all trials non-finite) falls back to the best
+    # snapshot instead of keeping poisoned weights.
+    model3 = tiny_model(vocab=len(tok.vocab))
+    random.seed(0)
+    seen = []
+
+    def poison_cb3(done, total, loss, *a):
+        if done == 2:
+            for p in model3.params:
+                p.data = float("nan")
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        r3 = train_multicore(model3, ids, steps=6, lr=0.05, batch_size=8,
+                             n_negatives=32, workers=2, momentum=0.0,
+                             rollback_window=2,
+                             rollback_callback=lambda s, l, b: seen.append((s, l, b)),
+                             progress_cb=poison_cb3)
+    check(r3["rollbacks"] >= 1 and len(seen) == r3["rollbacks"],
+          f"expected fallback rollback, got {r3} {seen}")
+    check(all(math.isfinite(p.data) for p in model3.params),
+          "multicore did not restore finite weights after total divergence")
+
+
 @test("train_parallel: runs with grad clip + momentum")
 def t_train_parallel():
     from tinylm import train_parallel

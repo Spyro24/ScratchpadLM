@@ -81,6 +81,7 @@ from tinylm.training import (
 )
 from tinylm.parallel import (
     train_parallel,
+    train_multicore,
     _WorkerState,
     _init_worker,
     _worker_grads_v2,
@@ -114,6 +115,6 @@ __all__ = [
     "Checkpoint", "save_checkpoint", "load_checkpoint", "resume_from_checkpoint",
     "_flat_params", "_set_flat_params",
     "train", "_train_c", "_accel_available", "_flat_data",
-    "train_parallel", "_WorkerState", "_init_worker", "_worker_grads_v2",
+    "train_parallel", "train_multicore", "_WorkerState", "_init_worker", "_worker_grads_v2",
     "fast_logits", "_sample_next_token", "generate", "generate_with_preview",
 ]

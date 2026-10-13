@@ -13,7 +13,7 @@
 | `tinylm/specialized.py` | `SpecializedLM`, `SpecializedConfig`, presets factory (≤100K params) |
 | `tinylm/router_data.py` + `data_clean.py` | `RouterTrainingExample`, `train_router`, training-data corpus utils; `clean_training_data`, `classify_by_domain` |
 | `tinylm/sched.py` + `checkpoint.py` | `LR_Scheduler`, `clip_grads`, `AutoAdjust`, `evaluate`, `EarlyStopping`; `Checkpoint`, save/load/resume, `_flat_params` |
-| `tinylm/training.py` + `parallel.py` | `train`, `_train_c`; `train_parallel`, `_WorkerState` |
+| `tinylm/training.py` + `parallel.py` | `train`, `_train_c`; `train_parallel`, `train_multicore`, `_WorkerState` |
 | `tinylm/generation.py` | `generate`, `generate_with_preview`, `fast_logits`, `_sample_next_token` |
 | `tinylm/__main__.py` | `main()` train-from-scratch demo |
 | `tokenizer.py` | `BPETokenizer`: `train`/`extend`/`encode`/`decode`/`save`/`load`; merges `(a,b)→id`, vocab `id→bytes` (rebuilt on load) |

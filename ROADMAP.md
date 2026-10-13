@@ -266,6 +266,11 @@
 - [ ] Optional C extension: `tinylm._c` with `bpe_train`, `quantize`, `dequantize`
 - [x] Fallback to pure Python when C not available (training; enforced by `accel.AVAILABLE` check)
 
+### 16. Code Structure (module splits)
+- [x] **Split `ai.py` into `tinylm/` package**: `autograd`, `serialization`, `models_tiny`, `transformer`, `router`, `runtime`, `specialized`, `router_data`, `data_clean`, `sched`, `checkpoint`, `training`, `parallel`, `generation` (+ `__init__` re-exports); `ai.py` kept as backward-compatible shim so all `from ai import ...` imports keep working
+- [ ] **Split `ui.py` / `ui_qt.py`**: extract chat/training/admin/settings/logs tabs into per-tab modules with a shared controller
+- [ ] **Split `test_all.py`**: one test module per package area (e.g. `tests/test_training.py`, `tests/test_generation.py`)
+
 ---
 
 ## Constraints (hard)

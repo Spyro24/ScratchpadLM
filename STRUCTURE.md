@@ -12,7 +12,21 @@
 | File | Purpose | Key Classes/Functions |
 |------|---------|----------------------|
 | `tokenizer.py` | Byte-level BPE tokenizer | `BPETokenizer`, `extend()`, `train()`, `encode()`, `decode()`, `save()`, `load()` |
-| `ai.py` | Autograd, models, training, generation, 4-bit I/O | `Value`, `TinyLM`, `Router`, `SpecializedLM`, `train()`, `train_parallel()`, `generate()`, `save_model()`, `load_model()`, `sync_vocab()`, `count_params()`, `enforce_param_limit()`, `train_router()`, `generate_router_training_data()` |
+| `ai.py` | Backward-compatible shim re-exporting the `tinylm/` package | Same public API as before (`Value`, `TinyLM`, `Router`, `train()`, `generate()`, …) |
+| `tinylm/autograd.py` | Minimal scalar autograd | `Value`, `dot()`, `matvec_dot()`, `softmax_cross_entropy()` |
+| `tinylm/serialization.py` | 4-bit model I/O, vocab growth, param counting | `save_model()`, `load_model()`, `sync_vocab()`, `count_params()`, `enforce_param_limit()`, `load_corpus()` |
+| `tinylm/models_tiny.py` | TinyLM model | `TinyLM` |
+| `tinylm/transformer.py` | Transformer primitives | `layer_norm()`, `attention()`, `feed_forward()`, `TransformerBlock` (+ fast variants) |
+| `tinylm/router.py` | Router model (300K params) | `RouterConfig`, `Router` |
+| `tinylm/runtime.py` | Multi-model runtime | `ModelRuntime` |
+| `tinylm/specialized.py` | Specialized model base (≤100K params) | `SpecializedLM`, `SpecializedConfig`, `create_specialized_model()`, `get_specialized_presets()` |
+| `tinylm/router_data.py` | Router training data + pretraining | `RouterTrainingExample`, `encode_router_example()`, `train_router()`, `generate_router_training_data()` |
+| `tinylm/data_clean.py` | Training data cleaning / classification | `normalize_text()`, `clean_training_data()`, `classify_by_domain()` |
+| `tinylm/sched.py` | LR schedule, clipping, auto-adjust, eval, early stopping | `LR_Scheduler`, `clip_grads()`, `AutoAdjust`, `evaluate()`, `EarlyStopping` |
+| `tinylm/checkpoint.py` | Checkpoints + flat param helpers | `Checkpoint`, `save_checkpoint()`, `load_checkpoint()`, `resume_from_checkpoint()`, `_flat_params()` |
+| `tinylm/training.py` | Sequential training (Python + C kernel paths) | `train()`, `_train_c()` |
+| `tinylm/parallel.py` | Data-parallel training | `train_parallel()`, `_WorkerState` |
+| `tinylm/generation.py` | Text generation + sampling | `generate()`, `generate_with_preview()`, `fast_logits()`, `_sample_next_token()` |
 | `accel.py` | Optional C training kernel via ctypes (loads `libtinylm_accel.so` from `build.sh`) | `AVAILABLE`, `batch_loss_grads()`, `train_step()`, `CAccelError` |
 | `csrc/train_kernel.c` | C source for fused sampled-softmax fwd/bwd + SGD | `tl_batch_loss_grads()`, `tl_train_step()` |
 | `config.py` | Config system (YAML/JSON, validation, defaults) | `Config`, `load_yaml()`, `model_config()`, `training_config()`, `merge_configs()` |
@@ -38,9 +52,17 @@ ui.py (Tkinter fallback) / ui_qt.py (PySide6 primary)
   ├─ config.py (Config)
   └─ registry.py (TokenizerManager, MODEL_REGISTRY, TASK_REGISTRY)
 
-ai.py
+ai.py (shim → tinylm/*)
+  ├─ tinylm/autograd.py (Value, dot, matvec_dot, softmax_cross_entropy)
+  ├─ tinylm/serialization.py (save/load_model, sync_vocab, count_params)
+  ├─ tinylm/models_tiny.py (TinyLM) + tinylm/transformer.py (TransformerBlock)
+  ├─ tinylm/router.py (Router) + tinylm/runtime.py (ModelRuntime)
+  ├─ tinylm/specialized.py (SpecializedLM) + tinylm/router_data.py (train_router)
+  ├─ tinylm/data_clean.py (clean_training_data, classify_by_domain)
+  ├─ tinylm/sched.py (LR_Scheduler, AutoAdjust, EarlyStopping) + tinylm/checkpoint.py
+  ├─ tinylm/training.py (train, _train_c) + tinylm/parallel.py (train_parallel)
+  ├─ tinylm/generation.py (generate, fast_logits, _sample_next_token)
   ├─ tokenizer.py (BPETokenizer)  ← only in __main__ demo
-  ├─ config.py (Config)  ← NEW, not yet integrated
   └─ accel.py (optional C kernel; falls back to pure Python when missing)
 
 registry.py
@@ -73,12 +95,12 @@ config.py
   - `encode(text) → List[int]`, `decode(ids) → str`
   - `save(path)`, `load(path)` — persists merges only (vocab rebuilt on load)
 
-### `Value` (ai.py)
+### `Value` (tinylm/autograd.py)
 - Minimal autograd scalar: `data`, `grad`, `_prev`, `_back`
 - Ops: `+`, `*`, `-`, `/`, `**`, `exp()`, `log()`, `tanh()`, `backward()`
 - **Rule**: Never send `Value` objects to subprocesses (use floats only)
 
-### `TinyLM` (ai.py)
+### `TinyLM` (tinylm/models_tiny.py)
 - **Architecture**: Embedding (C) → concat context → tanh hidden (W1, b1) → output (W2, b2)
 - **Params** (in order):
   - `C`: `[vocab_size, emb]` — token embeddings
@@ -90,7 +112,7 @@ config.py
   - `loss(context, target) → Value`
   - `sampled_loss(context, target, n_negatives, vocab_size) → Value` — negative sampling
 
-### `Router` (ai.py)
+### `Router` (tinylm/router.py)
 - **Architecture**: Token embeddings + positional embeddings → 2 TransformerBlocks → LM head
 - **Config**: `RouterConfig(vocab_size, ctx, emb, hidden, n_layers=2, d_ff=512)`
 - **Params**: ~300K (embeddings + 2 blocks + output head)
@@ -101,7 +123,7 @@ config.py
   - `fast_logits(context) → List[float]` (inference)
   - `split(prompt, tokenizer, max_subtasks=4, catalog=None) → List[dict]` — task decomposition with optional catalog-based routing
 
-### `SpecializedLM` (ai.py)
+### `SpecializedLM` (tinylm/specialized.py)
 - **Architecture**: Token embeddings + positional embeddings → 1 TransformerBlock → LM head
 - **Config**: `SpecializedConfig(vocab_size, ctx, emb, hidden, n_layers=1, d_ff=128, model_type)`
 - **Params**: ≤100K (enforced at init via `enforce_param_limit`)
@@ -146,7 +168,7 @@ config.py
 - **Vocab display**: Live label showing current tokenizer vocab size
 - **Generation settings**: Configurable n_tokens (default 60) and temperature (default 0.8)
 
-### Serialization & Model Introspection (ai.py)
+### Serialization & Model Introspection (tinylm/serialization.py)
 - `save_model(model, path)` — saves any model with `get_config()` and `get_tensors()` to 4-bit binary
 - `load_model(path, model_factory=None)` — loads model, uses registry fallback by `config['arch']`
 - `count_params(model)` — returns total parameter count from `get_tensors()`

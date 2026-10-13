@@ -330,7 +330,7 @@ python3 ai.py
 | Section | Focus |
 |---------|-------|
 | 0. Foundations | Config, registries, tokenizer singleton, param counter |
-| 0a. Control UI | Tkinter dashboard for model mgmt, training, generation |
+| 0a. Control UI | PySide6 dashboard (Tkinter fallback): model mgmt, training, generation, theming (dark/light/system) |
 | 0b. Dynamic Model Management | ModelSpec, Catalog, Loader, Creator, Updater, CLI |
 | 0c. Auto-Training | RatingCollector, AutoTrainer, feedback loop |
 | 1. Router Model | 300K param 2-layer transformer for task decomposition |
@@ -344,6 +344,7 @@ python3 ai.py
 | 9. Generation Improvements | Top-k, top-p, repetition penalty, unified generate |
 | 10. Checkpointing | Checkpoint class, auto-save, resume |
 | 11. Harness | .tlm script parser, runtime, assertions, parallel, retry |
+| 11a. Skill System | Executable helper scripts: skill manifests, registry, safe runner, CLI/UI, model invocation |
 | 12. CLI / API | tinylm entry point, serve, train, eval |
 | 13. Testing & Validation | Unit, integration, harness, benchmarks, CI |
 | 14. Documentation | README, CONFIG, HARNESS, MODELS, API |

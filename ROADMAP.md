@@ -46,6 +46,12 @@
   - [ ] **Privilege Level Descriptions**: Tooltip/help text explaining each privilege level
   - [ ] **Path Validation**: Real-time validation of harness root path existence/permissions
   - [ ] **Harness Status Indicator**: Visual indicator showing current harness mode (enabled/disabled) and active privilege level
+- [ ] **Theme system (dark / white / follow system)**: UI theme selectable as **dark**, **white (light)**, or **system** (follow the OS/desktop setting)
+  - [ ] Config option `ui.theme`: `dark` | `light` | `system` (default `system`) + selector in Settings tab
+  - [ ] Shared theme palettes in `ui_base.py`: light + dark variants (`PALETTE_LIGHT` / `PALETTE_DARK`), `qss_theme(theme)` for Qt, per-theme tag colors for Tkinter
+  - [ ] System detection: Qt `QStyleHints.colorScheme`; stdlib fallback on Linux (`gsettings get org.gnome.desktop.interface color-scheme`, `XDG_CURRENT_DESKTOP` heuristics)
+  - [ ] Live theme switch without app restart (re-apply Qt stylesheet / retag Tk widgets in place)
+  - [ ] React to OS theme changes at runtime when `system` is selected (Qt signal, periodic check fallback)
 - [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
 - [ ] **Training data provider**: User provides training data directly — file upload, text paste, URL fetch, folder watch, data preview, auto domain detection, train/val split
 - [ ] **Auto model naming**: System generates model name from training data domain — shows preview `tiny-{detected_domain}` before creation
@@ -203,6 +209,19 @@
 - [ ] **Hooks**: `on_pass`, `on_fail`, `on_timeout` — user callbacks
 - [ ] **Reporter**: `JSONReporter`, `MarkdownReporter` — summary + details
 - [ ] **CLI**: `tinylm harness run script.tlm --reporter json --output report.json`
+
+### 11a. Skill System — **Executable Helper Scripts**
+> Skills are **small helper scripts** (Python, shell, anything executable) that extend what the AI can do: format code, query a local database, fetch a URL, post-process model output, generate reports. Unlike MCP tools, skills live in the repo as plain files, are discoverable, and run locally with a captured result. (Conceptually similar to Claude-style "skills".)
+
+- [ ] **Skill definition**: `skills/<name>/` folder — `skill.yaml` manifest (`name`, `description`, `args` schema, `timeout`, `privilege`, `entry`) + the script itself (`main.py`, `run.sh`, …)
+- [ ] **Skill discovery**: auto-scan `skills/` on startup → `SkillRegistry` (name → manifest + path), hot-reload on folder change
+- [ ] **Skill runner**: `run_skill(name, args, timeout)` — subprocess execution, JSON args in / JSON+stdout+stderr+exit code out, never passes `Value` objects across the boundary
+- [ ] **Safety**: privilege levels shared with Harness (default read-only), timeout + output-size limits, allowlist per privilege, audit log (`skills_audit.jsonl`)
+- [ ] **CLI**: `tinylm skill list`, `tinylm skill info <name>`, `tinylm skill run <name> --args '{...}'`, `tinylm skill create <name>`
+- [ ] **UI integration**: Skills section (PySide6 + Tkinter fallback) — skill list, generated arg form from manifest, Run button, output viewer, "insert result into chat" action
+- [ ] **Model invocation**: router/specialized models can request skill execution during generation (skill-calling within the 100K param budget); results are fed back into the model context
+- [ ] **Harness integration**: `skill run <name>` command in `.tlm` scripts; skills usable in assertions and as pipeline steps
+- [ ] **Scaffolding**: `tinylm skill create <name>` generates a starter folder (manifest template + example script + README)
 
 ### 12. CLI / API
 - [x] `tinylm` entry point (argparse subcommands) - basic implementation in main.py

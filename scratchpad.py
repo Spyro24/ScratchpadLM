@@ -308,6 +308,59 @@ class TaskPad:
         return executed
 
 
+# ---- Router planner ---------------------------------------------------------
+
+MODEL_TO_TASK_TYPE = {
+    "tiny-code": TaskType.CODE,
+    "tiny-reason": TaskType.REASON,
+    "tiny-prose": TaskType.GENERATE,
+    "tiny-embed": TaskType.EMBED,
+    "tiny-sql": TaskType.CUSTOM,
+    "tiny-docs": TaskType.CUSTOM,
+    "tiny-shell": TaskType.CUSTOM,
+    "tiny-data": TaskType.ANALYZE,
+}
+
+
+def plan(prompt: str, router, tokenizer, taskpad: Optional["TaskPad"] = None,
+         task_registry=None, catalog=None, max_subtasks: int = 4) -> List[Task]:
+    """Decompose `prompt` via the router and create one `TaskPad` task per subtask.
+
+    Each subtask dict from `router.split()` (`{model, prompt, context_tokens}`)
+    becomes a `Task` whose type follows `MODEL_TO_TASK_TYPE` (unknown models →
+    `CUSTOM`). The router's `context_tokens` are stored in
+    `task.metadata["context_tokens"]`; `task.metadata["features"]` starts empty
+    and is filled later by the feature-extraction model. When `task_registry`
+    holds a template named after the subtask model, its `prompt_template` (with
+    `{text}`) and `parameters` are applied.
+    """
+    if taskpad is None:
+        taskpad = TaskPad()
+    subtasks = router.split(prompt, tokenizer, max_subtasks=max_subtasks,
+                            catalog=catalog)
+    tasks = []
+    for sub in subtasks:
+        model_name = sub.get("model", "tiny-prose")
+        sub_prompt = sub.get("prompt", prompt)
+        params: Dict[str, Any] = {}
+        if task_registry is not None:
+            try:
+                tmpl = task_registry.get(model_name)
+                sub_prompt = tmpl.prompt_template.format(text=sub_prompt)
+                params.update(tmpl.parameters)
+            except Exception:
+                pass
+        task = taskpad.create_task(
+            MODEL_TO_TASK_TYPE.get(model_name, TaskType.CUSTOM),
+            sub_prompt, model_name=model_name, parameters=params,
+        )
+        task.metadata["context_tokens"] = list(sub.get("context_tokens", []))
+        task.metadata["features"] = {}
+        tasks.append(task)
+    taskpad._save()
+    return tasks
+
+
 class ThinkEngine:
     """High-level thinking engine that uses scratchpad for step-by-step reasoning."""
 

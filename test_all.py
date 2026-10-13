@@ -939,6 +939,31 @@ def t_router_training_format():
     check(len(ids) > 0)
 
 
+@test("planner: router.split creates TaskPad tasks")
+def t_planner():
+    from scratchpad import TaskPad, TaskType, plan
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "taskpad.jsonl")
+        pad = TaskPad(path=path)
+
+        class FakeRouter:
+            def split(self, prompt, tokenizer, max_subtasks=4, catalog=None):
+                ids = [1, 2, 3]
+                return [
+                    {"model": "tiny-code", "prompt": prompt, "context_tokens": ids},
+                    {"model": "tiny-unknown", "prompt": "other", "context_tokens": ids},
+                ]
+
+        tasks = plan("write code", FakeRouter(), tokenizer=None, taskpad=pad)
+        check(len(tasks) == 2)
+        check(tasks[0].type == TaskType.CODE and tasks[0].model_name == "tiny-code")
+        check(tasks[1].type == TaskType.CUSTOM)
+        check(tasks[0].metadata["context_tokens"] == [1, 2, 3])
+        check(tasks[0].metadata["features"] == {})
+        # Tasks persist across TaskPad instances
+        check(len(TaskPad(path=path).list_tasks()) == 2)
+
+
 @test("router: train_router runs and reduces loss")
 def t_router_train():
     from tinylm import Router, RouterConfig, train_router, generate_router_training_data

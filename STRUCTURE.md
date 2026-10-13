@@ -19,6 +19,7 @@
 | `tokenizer.py` | `BPETokenizer`: `train`/`extend`/`encode`/`decode`/`save`/`load`; merges `(a,b)→id`, vocab `id→bytes` (rebuilt on load) |
 | `config.py` | `Config` (YAML/JSON, `DEFAULTS`/`SCHEMA`); `model/training/generation/tokenizer_config()`, `merge_configs()` |
 | `registry.py` | `MODEL_REGISTRY`, `TASK_REGISTRY` (+ `TaskTemplate`), `TOKENIZER_MANAGER` singleton |
+| `scratchpad.py` | `Scratchpad`, `ThinkEngine`, `TaskPad` (+ `Task`/`TaskType`), `plan()` router→tasks |
 | `model_mgmt.py` | `ModelSpec`, `ModelCatalog` (JSON), `ModelLoader/Creator/Updater`, `MODEL_CATALOG` |
 | `accel.py` + `csrc/train_kernel.c` | Optional C kernel (`AVAILABLE`, `train_step`, `batch_loss_grads`); `./build.sh` |
 | `uitk/app.py` + `uitk/` mixins | Tk `App`: `core` (init/backend), `shell`+`tab_*` (6 tabs), `history`, `worker`, `act_*`, `result`, `info`, `const` |

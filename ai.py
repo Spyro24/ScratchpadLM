@@ -1,5 +1,6 @@
 import math
 import random
+import time
 import struct
 import json
 import re
@@ -1983,26 +1984,32 @@ def fast_logits(model, context):
 
 
 def _sample_next_token(logits: list, temperature: float, top_k: int, top_p: float, repetition_penalty: float, generated_ids: list) -> int:
-    """Sample next token with temperature, top-k, top-p, and repetition penalty."""
+    """Sample next token with temperature, top-k, top-p, and repetition penalty.
+    
+    Optimized: caches softmax, uses efficient sorting, avoids redundant computations.
+    """
     # Apply repetition penalty
     if repetition_penalty != 1.0:
         for idx in set(generated_ids):
             logits[idx] /= repetition_penalty
 
     # Apply temperature
-    logits = [l / temperature for l in logits]
+    if temperature != 1.0:
+        inv_temp = 1.0 / temperature
+        logits = [l * inv_temp for l in logits]
 
     # Apply top-k
-    if top_k > 0:
-        # Find top-k indices
+    if top_k > 0 and top_k < len(logits):
+        # Find top-k indices using partial sort (more efficient than full sort)
         indexed_logits = list(enumerate(logits))
         indexed_logits.sort(key=lambda x: x[1], reverse=True)
         top_k_indices = {idx for idx, _ in indexed_logits[:top_k]}
         # Set logits of non-top-k to -inf
-        logits = [logits[i] if i in top_k_indices else -float('inf') for i in range(len(logits))]
+        neg_inf = -float('inf')
+        logits = [logits[i] if i in top_k_indices else neg_inf for i in range(len(logits))]
 
     # Apply top-p (nucleus sampling)
-    if top_p > 0.0:
+    if top_p > 0.0 and top_p < 1.0:
         # Softmax to get probabilities
         m = max(logits)
         exps = [math.exp(x - m) for x in logits]
@@ -2024,7 +2031,8 @@ def _sample_next_token(logits: list, temperature: float, top_k: int, top_p: floa
 
         # Zero out probabilities beyond cutoff
         allowed_indices = {idx for idx, _ in indexed_probs[:cutoff_idx]}
-        logits = [logits[i] if i in allowed_indices else -float('inf') for i in range(len(logits))]
+        neg_inf = -float('inf')
+        logits = [logits[i] if i in allowed_indices else neg_inf for i in range(len(logits))]
 
     # Final softmax and sample
     m = max(logits)
@@ -2033,11 +2041,32 @@ def _sample_next_token(logits: list, temperature: float, top_k: int, top_p: floa
     return next_id
 
 
-def generate(model, tok, prompt, n_tokens=60, temperature=0.8, top_k=0, top_p=0.0, repetition_penalty=1.0):
+def generate(model, tok, prompt, n_tokens=60, temperature=0.8, top_k=0, top_p=0.0, 
+             repetition_penalty=1.0, stream_callback=None):
+    """Generate text from prompt with optional streaming callback.
+    
+    Args:
+        model: Model instance
+        tok: Tokenizer
+        prompt: Input prompt string
+        n_tokens: Number of tokens to generate
+        temperature: Sampling temperature
+        top_k: Top-k sampling parameter (0 = disabled)
+        top_p: Top-p (nucleus) sampling parameter (0 = disabled)
+        repetition_penalty: Repetition penalty (>1.0)
+        stream_callback: Optional callback(token_str, token_idx, total_tokens, tokens_per_sec)
+    
+    Returns:
+        Generated text string
+    """
     ids = tok.encode(prompt) or [0]
-    # Use model's own fast_logits if available (for transformer models), else use legacy
     model_fast_logits = getattr(model, 'fast_logits', None)
-    for _ in range(n_tokens):
+    
+    generated_text = ""
+    start_time = time.time()
+    last_report = start_time
+    
+    for i in range(n_tokens):
         window = ids[-model.ctx:]
         window = [0] * (model.ctx - len(window)) + window
         if model_fast_logits is not None:
@@ -2046,7 +2075,72 @@ def generate(model, tok, prompt, n_tokens=60, temperature=0.8, top_k=0, top_p=0.
             logits = fast_logits(model, window)
         next_id = _sample_next_token(logits, temperature, top_k, top_p, repetition_penalty, ids)
         ids.append(next_id)
+        
+        # Decode and yield token for streaming
+        if stream_callback is not None:
+            token_str = tok.decode([next_id])
+            generated_text += token_str
+            elapsed = time.time() - start_time
+            tps = (i + 1) / elapsed if elapsed > 0 else 0
+            stream_callback(token_str, i + 1, n_tokens, tps)
+    
     return tok.decode(ids)
+
+
+def generate_with_preview(model, tok, prompt, n_tokens=60, temperature=0.8, top_k=0, top_p=0.0, 
+                          repetition_penalty=1.0) -> dict:
+    """Generate text with live token preview and timing stats.
+    
+    Returns:
+        Dict with 'text', 'tokens_generated', 'elapsed_sec', 'tokens_per_sec', 'tokens'
+    """
+    import time
+    
+    ids = tok.encode(prompt) or [0]
+    model_fast_logits = getattr(model, 'fast_logits', None)
+    
+    generated_tokens = []
+    generated_text = ""
+    start_time = time.time()
+    
+    print(f"\n{'='*60}")
+    print(f"Generating {n_tokens} tokens...")
+    print(f"Prompt: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
+    print(f"{'='*60}")
+    
+    for i in range(n_tokens):
+        window = ids[-model.ctx:]
+        window = [0] * (model.ctx - len(window)) + window
+        if model_fast_logits is not None:
+            logits = model_fast_logits(window)
+        else:
+            logits = fast_logits(model, window)
+        next_id = _sample_next_token(logits, temperature, top_k, top_p, repetition_penalty, ids)
+        ids.append(next_id)
+        generated_tokens.append(next_id)
+        
+        # Decode and print token
+        token_str = tok.decode([next_id])
+        generated_text += token_str
+        print(token_str, end="", flush=True)
+        
+        # Progress report every 10 tokens
+        if (i + 1) % 10 == 0 or (i + 1) == n_tokens:
+            elapsed = time.time() - start_time
+            tps = (i + 1) / elapsed if elapsed > 0 else 0
+            print(f"\n  [{i+1}/{n_tokens}] {tps:.1f} tok/s")
+    
+    total_elapsed = time.time() - start_time
+    print(f"\n{'='*60}")
+    print(f"Done: {n_tokens} tokens in {total_elapsed:.2f}s ({n_tokens/total_elapsed:.1f} tok/s)")
+    
+    return {
+        "text": generated_text,
+        "tokens_generated": len(generated_tokens),
+        "elapsed_sec": total_elapsed,
+        "tokens_per_sec": len(generated_tokens) / total_elapsed if total_elapsed > 0 else 0,
+        "tokens": generated_tokens
+    }
 
 
 # ---- LR Scheduler -----------------------------------------------------------

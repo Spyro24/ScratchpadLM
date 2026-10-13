@@ -314,7 +314,10 @@ class App:
         self.rep_penalty_var.grid(row=1, column=1, padx=(0, 15), sticky="ew", pady=(4, 0))
 
         self.clear_btn = tk.Button(gen_frame, text="Clear History", command=self.on_clear_history)
-        self.clear_btn.grid(row=1, column=2, columnspan=6, sticky="w", pady=(4, 0), padx=10)
+        self.clear_btn.grid(row=1, column=2, columnspan=3, sticky="w", pady=(4, 0), padx=10)
+        
+        self.preview_btn = tk.Button(gen_frame, text="Generate with Preview", command=self.on_generate_preview)
+        self.preview_btn.grid(row=1, column=5, columnspan=3, sticky="w", pady=(4, 0), padx=10)
 
     def _build_training_tab(self, tab):
         """Training tab: data input, controls, training log monitor."""
@@ -846,6 +849,10 @@ class App:
                 elif kind == "log":
                     # Direct log to unified log (runs on main thread)
                     self._log_unified(label, payload)
+                elif kind == "stream_token":
+                    # Streaming token update (runs on main thread)
+                    token_str, (token_idx, total_tokens, tps) = payload
+                    self._handle_stream_token(token_str, token_idx, total_tokens, tps)
                 else:
                     self._handle_result(kind, label, payload)
         except queue.Empty:
@@ -859,6 +866,23 @@ class App:
         done, total, loss = payload
         self.train_progress.configure(maximum=max(total, 1), value=done)
         self.progress_label.configure(text=f"Step {done}/{total}  loss {loss:.3f}")
+
+    def _handle_stream_token(self, token_str, token_idx, total_tokens, tps):
+        """Handle streaming token from generation (runs on main thread)."""
+        # Append token to history
+        self.history.configure(state="normal")
+        # Find the last "AI: " position and append token
+        content = self.history.get("1.0", "end")
+        if content.endswith("\n\n"):
+            content = content[:-2]
+        self.history.configure(state="normal")
+        self.history.delete("1.0", "end")
+        self.history.insert("1.0", content + token_str)
+        self.history.see("end")
+        self.history.configure(state="disabled")
+        
+        # Update status bar with tokens/sec
+        self.status.configure(text=f"Generating... {token_idx}/{total_tokens} tokens ({tps:.1f} tok/s)")
 
     def _handle_result(self, kind, label, payload):
         if kind == "error":
@@ -886,10 +910,13 @@ class App:
             self._append_history("system", f"[Loaded model: {model_name} ({len(self.model.C)} vocab, {self.model.ctx} ctx)]")
             self._set_busy(False, "Ready")
             self.update_model_inspector()
-        elif label == "Generating":
-            prompt, text = payload
-            self._append_history("assistant", text)
+        elif label == "Generating (Preview)":
+            prompt, result = payload
+            # Result already printed to console by generate_with_preview
+            # Just add to history if not already there
+            self._append_history("assistant", result["text"])
             self._set_busy(False, "Ready")
+            self.status.configure(text=f"Ready ({result['tokens_per_sec']:.1f} tok/s)")
         elif label == "Creating model":
             spec = payload
             self._append_history("system", f"[Created model '{spec.name}' ({spec.param_count:,} params, domains: {', '.join(spec.domain_keywords)})]")
@@ -973,9 +1000,15 @@ class App:
         self._run_in_background("Generating", self._generate_job, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty)
 
     def _generate_job(self, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty):
+        # Use streaming generation with callback for live updates
+        def stream_callback(token_str, token_idx, total_tokens, tps):
+            self.queue.put(("stream_token", token_str, (token_idx, total_tokens, tps)))
+        
         text = generate(self.model, self.tok, prompt, n_tokens=n_tokens, temperature=temperature, 
-                        top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty)
-        # Log to unified log (will be picked up by _handle_result via queue)
+                        top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty,
+                        stream_callback=stream_callback)
+        
+        # Log to unified log
         self.queue.put(("log", "generation", f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}"))
         self.queue.put(("log", "generation", f"Response: {text[:200]}{'...' if len(text) > 200 else ''}"))
         return prompt, text
@@ -984,6 +1017,43 @@ class App:
         self.history.configure(state="normal")
         self.history.delete("1.0", "end")
         self.history.configure(state="disabled")
+
+    def on_generate_preview(self):
+        """Generate with detailed preview showing tokens/sec."""
+        if self.busy:
+            return
+        prompt = self.prompt_var.get().strip()
+        if not prompt:
+            return
+        
+        # Get generation settings
+        try:
+            n_tokens = int(self.n_tokens_var.get())
+            temperature = float(self.temp_var.get())
+            top_k = int(self.top_k_var.get())
+            top_p = float(self.top_p_var.get())
+            repetition_penalty = float(self.rep_penalty_var.get())
+        except ValueError:
+            n_tokens, temperature, top_k, top_p, repetition_penalty = 60, 0.8, 0, 0.0, 1.0
+        
+        # Clear prompt entry
+        self.prompt_var.delete(0, "end")
+        
+        # Show user message
+        self._append_history("user", prompt)
+        
+        # Run in background with preview
+        self._run_in_background("Generating (Preview)", self._generate_preview_job, 
+                               prompt, n_tokens, temperature, top_k, top_p, repetition_penalty)
+
+    def _generate_preview_job(self, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty):
+        """Background job for generate_with_preview."""
+        from ai import generate_with_preview
+        result = generate_with_preview(self.model, self.tok, prompt, 
+                                      n_tokens=n_tokens, temperature=temperature,
+                                      top_k=top_k, top_p=top_p, 
+                                      repetition_penalty=repetition_penalty)
+        return prompt, result
 
     # ---- admin actions -----------------------------------------------------
 
@@ -1222,10 +1292,13 @@ class App:
             self._append_history("system", f"[Loaded model: {model_name} ({len(self.model.C)} vocab, {self.model.ctx} ctx)]")
             self._set_busy(False, "Ready")
             self.update_model_inspector()
-        elif label == "Generating":
-            prompt, text = payload
-            self._append_history("assistant", text)
+        elif label == "Generating (Preview)":
+            prompt, result = payload
+            # Result already printed to console by generate_with_preview
+            # Just add to history if not already there
+            self._append_history("assistant", result["text"])
             self._set_busy(False, "Ready")
+            self.status.configure(text=f"Ready ({result['tokens_per_sec']:.1f} tok/s)")
         elif label == "Creating model":
             spec = payload
             self._append_history("system", f"[Created model '{spec.name}' ({spec.param_count:,} params, domains: {', '.join(spec.domain_keywords)})]")

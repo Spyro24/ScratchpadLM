@@ -73,7 +73,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 - [ ] Protection layer (allowlists, policy validation, audit log); MCP client (`mcp call/read`); `parse_tlm` → AST; `HarnessRuntime` + variables; commands (`prompt/task/assert/loop/branch/parallel/retry/save/load`); system commands (`code_run/shell/file_read/file_write/http_request/git/search`); assertions; `${var}` interpolation; parallel join; retry w/ backoff; `on_pass/on_fail/on_timeout` hooks; JSON/Markdown reporters; CLI `tinylm harness run`
 
 ### 11a. Skill System (local helper scripts, `skills/<name>/` + `skill.yaml`)
-- [x] `opencodeSkill/readpy.py`: Python file-structure reader skill (`tree`/`treefull`/`class`/`function` + `classfull` alias)
+- [x] `opencodeSkill/readpy.py`: Python file-structure reader skill (`tree`/`treefull`/`class`/`function` + `classfull` alias) + `SKILL.md` agent index
 - [ ] Manifest spec; auto-discovery + hot-reload; `run_skill()` sandbox (JSON IO, timeouts, no `Value` crossing); privilege levels + `skills_audit.jsonl`; CLI (`list/info/run/create`); UI section + arg forms + insert-into-chat; model-invoked skills; harness `skill run`; scaffolding
 
 ### 12. CLI / API

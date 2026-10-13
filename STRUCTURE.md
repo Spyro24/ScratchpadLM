@@ -26,6 +26,7 @@
 | `ui_base.py` | `detect_toolkit`/`run_gui` (+ `SCRATCHPADLM_UI` override, `qt_platform_check` preflight), `PALETTE`/`qss_theme`, `BackgroundWorker`, config helpers |
 | `main.py` | CLI (`tinylm` subcommands) + GUI boot |
 | `opencodeSkill/readpy.py` | File-structure reader skill: `tree`/`treefull`/`class`/`function` for Python files (stdlib `ast`) |
+| `opencodeSkill/SKILL.md` | Agent skill index for this repo (name/description + when to use each skill) |
 | `test_all.py` | stdlib unit/integration suite |
 
 Never delete: `tinyLM` (weights), `bpe_merges.txt` (merges).

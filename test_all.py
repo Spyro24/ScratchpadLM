@@ -990,6 +990,12 @@ def t_readpy():
             check(readpy.main(["function", path, "Nope"]) == 1)
     finally:
         os.unlink(path)
+    # Agent contract: SKILL.md index exists and advertises every subcommand.
+    with open(os.path.join(root, "opencodeSkill", "SKILL.md"), encoding="utf-8") as f:
+        index = f.read()
+    check("name:" in index and "description:" in index)
+    for needle in ("tree", "treefull", "class", "function"):
+        check(needle in index, f"SKILL.md missing {needle!r}")
 
 
 @test("model_mgmt: catalog create/load/delete roundtrip")

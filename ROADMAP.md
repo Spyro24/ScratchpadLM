@@ -126,6 +126,7 @@
 
 ### 7. Training Pipeline
 - [x] `train(model, data, steps, config)` — works for any model type
+- [ ] **Training efficiency improvements**: profile bottlenecks, optimize sampled softmax, batch processing, memory usage; consider mixed precision, gradient accumulation, better negative sampling strategies
 - [ ] **Data cleaning & sorting**: normalize text (whitespace, unicode, encoding fixes), deduplicate lines, strip boilerplate, sort/classify cleaned data by domain → feeds per-model training queues
 - [ ] Data loaders: `CodeDataset`, `ReasoningDataset`, `ProseDataset`, `EmbeddingDataset`, `SQLDataset`, `ShellDataset`, `DataAnalysisDataset`, `AutoDataset` (from user data)
 - [ ] **Variable batch token router**: Analyzes batch tokens → routes to correct model trainer (code→tiny-code, math→tiny-reason, etc.), prevents cross-domain contamination

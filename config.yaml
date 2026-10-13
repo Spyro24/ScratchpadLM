@@ -2,10 +2,10 @@
 # All values can be overridden via config.yaml or config.json
 
 model:
-  vocab_size: 1000
-  ctx: 50
-  emb: 50
-  hidden: 50
+  vocab_size: 10000
+  ctx: 2000
+  emb: 5
+  hidden: 25
 
 training:
   steps: 100

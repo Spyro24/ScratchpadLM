@@ -7,3 +7,5 @@ tinyLM
 bpe_merges.txt
 models/
 checkpoints/
+training_stats.json
+best_models/

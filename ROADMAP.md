@@ -84,7 +84,8 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 ### 9. Generation
 - [x] Top-k / top-p / repetition penalty, unified `generate()`, speed opts, tokens/sec + live preview UI, `generate_with_preview()`, stream-callback early stop, `ModelRuntime` wiring, conversation-only chat, use-selected-model option, autostop (`stop_token_ids`/`stop_strings`/`min/max_tokens`)
 - [x] Unbounded generation: `generate()` defaults to `max_tokens=None` and ends on structural markers (`stop_markers`, default `("EOS",)` ends after a finished section, resolved against the model vocab)
-- [ ] Same marker-stop + unbounded default for `generate_with_preview()`, `ModelRuntime` streaming/collaborative paths, and UI generation controls/config validation
+- [x] Same cap-free marker stop in `generate_with_preview()` (both), `ModelRuntime.generate`/`_generate_streaming` (shared `_resolve_stop_tokens`), and single-pass unbounded collaborative chunks
+- [ ] UI generation controls + config validation still require `max_tokens >= 1` (allow unlimited there too)
 
 ### 10. Checkpointing
 - [x] `Checkpoint`, save/load, auto-save callback, resume

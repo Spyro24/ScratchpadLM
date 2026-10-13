@@ -329,6 +329,26 @@ def t_generate_marker_stop():
     check(len(seen) == 4)
 
 
+@test("generation: preview + streaming stop on EOS without cap")
+def t_generate_unbounded():
+    import io, contextlib
+    from tinylm import TinyLM, generate_with_preview, ModelRuntime
+    from tinylm.data_clean import marker_id
+    tok, _ = tiny_tok_and_ids()
+    V = len(tok.vocab)
+    EOS = marker_id("EOS", V)
+    model = tiny_model(vocab=V)
+    model.b2[EOS].data = 1e6  # force the EOS marker
+    with contextlib.redirect_stdout(io.StringIO()):
+        res = generate_with_preview(model, tok, "hello", max_tokens=None,
+                                    top_k=1)
+    check(res["tokens_generated"] == 1 and res["tokens"] == [EOS])
+    rt = ModelRuntime(tokenizer=tok)
+    text = rt._generate_streaming(model, tok, "hello", None, 0.8, 1, 0.0,
+                                  1.0, None, "m")
+    check(text == tok.decode([EOS]))
+
+
 # ---------------------------------------------------------------------------
 # training pipeline: LR scheduler, grad clip, evaluate, early stop, checkpoint
 # ---------------------------------------------------------------------------

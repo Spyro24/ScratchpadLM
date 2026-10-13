@@ -113,6 +113,23 @@ def _sample_next_token(logits: list, temperature: float, top_k: int, top_p: floa
     return next_id, should_stop
 
 
+def _resolve_stop_tokens(model, stop_token_ids, stop_markers):
+    """Merge stop-token IDs + structural marker names into a set (or None).
+
+    Marker names (`EOL`/`EOS`/`EOT`) resolve to single token IDs against the
+    model's vocab (`len(model.C)`); out-of-range markers are skipped.
+    """
+    stop_tokens = set(stop_token_ids) if stop_token_ids else set()
+    if stop_markers:
+        from tinylm.data_clean import marker_id
+        vocab = len(model.C)
+        for name in stop_markers:
+            mid = marker_id(name, vocab)
+            if mid >= 0:
+                stop_tokens.add(mid)
+    return stop_tokens or None
+
+
 def generate(model, tok, prompt, max_tokens=None, min_tokens=0, temperature=0.8, 
              top_k=0, top_p=0.0, repetition_penalty=1.0,
              stop_token_ids=None, stop_strings=None, stop_markers=("EOS",),
@@ -154,16 +171,8 @@ def generate(model, tok, prompt, max_tokens=None, min_tokens=0, temperature=0.8,
     ids = tok.encode(prompt) or [0]
     model_fast_logits = getattr(model, 'fast_logits', None)
     
-    # Convert stop_token_ids to set for O(1) lookup
-    stop_tokens = set(stop_token_ids) if stop_token_ids else set()
-    if stop_markers:
-        from tinylm.data_clean import marker_id
-        vocab = len(model.C)
-        for name in stop_markers:
-            mid = marker_id(name, vocab)
-            if mid >= 0:
-                stop_tokens.add(mid)
-    stop_tokens = stop_tokens or None
+    # Merge stop-token IDs + structural marker names for O(1) lookup
+    stop_tokens = _resolve_stop_tokens(model, stop_token_ids, stop_markers)
     
     # Pre-encode stop strings to token sequences
     stop_sequences = []
@@ -213,15 +222,17 @@ def generate(model, tok, prompt, max_tokens=None, min_tokens=0, temperature=0.8,
     return tok.decode(ids)
 
 
-def generate_with_preview(model, tok, prompt, max_tokens=60, min_tokens=0, temperature=0.8, top_k=0, top_p=0.0, 
-                          repetition_penalty=1.0, stop_token_ids=None, stop_strings=None) -> dict:
+def generate_with_preview(model, tok, prompt, max_tokens=None, min_tokens=0, temperature=0.8, top_k=0, top_p=0.0, 
+                          repetition_penalty=1.0, stop_token_ids=None, stop_strings=None,
+                          stop_markers=("EOS",)) -> dict:
     """Generate text with live token preview and timing stats.
     
     Args:
         model: Model instance
         tok: Tokenizer
         prompt: Input prompt string
-        max_tokens: Maximum tokens to generate (default 60)
+        max_tokens: Maximum tokens to generate (None = unbounded: ends on
+            stop markers/strings/ids)
         min_tokens: Minimum tokens before autostop can trigger (default 0)
         temperature: Sampling temperature
         top_k: Top-k sampling parameter (0 = disabled)
@@ -229,6 +240,8 @@ def generate_with_preview(model, tok, prompt, max_tokens=60, min_tokens=0, tempe
         repetition_penalty: Repetition penalty (>1.0)
         stop_token_ids: Optional set/list of token IDs that trigger stop
         stop_strings: Optional list of strings that trigger stop when generated
+        stop_markers: Marker names (`EOL`/`EOS`/`EOT`) that trigger stop.
+            Default `("EOS",)` ends after a finished section.
 
     Returns:
         Dict with 'text', 'tokens_generated', 'elapsed_sec', 'tokens_per_sec', 'tokens'
@@ -242,8 +255,8 @@ def generate_with_preview(model, tok, prompt, max_tokens=60, min_tokens=0, tempe
     ids = tok.encode(prompt) or [0]
     model_fast_logits = getattr(model, 'fast_logits', None)
     
-    # Convert stop_token_ids to set for O(1) lookup
-    stop_tokens = set(stop_token_ids) if stop_token_ids else None
+    # Merge stop-token IDs + structural marker names for O(1) lookup
+    stop_tokens = _resolve_stop_tokens(model, stop_token_ids, stop_markers)
     
     # Pre-encode stop strings to token sequences
     stop_sequences = []
@@ -256,13 +269,15 @@ def generate_with_preview(model, tok, prompt, max_tokens=60, min_tokens=0, tempe
     generated_tokens = []
     generated_text = ""
     start_time = time.time()
+    count = 0
     
     print(f"\n{'='*60}")
-    print(f"Generating up to {max_tokens} tokens...")
+    cap = f"up to {max_tokens} tokens" if max_tokens is not None else "until a stop marker"
+    print(f"Generating {cap}...")
     print(f"Prompt: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
     print(f"{'='*60}")
     
-    for i in range(max_tokens):
+    while max_tokens is None or count < max_tokens:
         window = ids[-model.ctx:]
         window = [0] * (model.ctx - len(window)) + window
         if model_fast_logits is not None:
@@ -273,6 +288,7 @@ def generate_with_preview(model, tok, prompt, max_tokens=60, min_tokens=0, tempe
                                                    repetition_penalty, ids, stop_tokens)
         ids.append(next_id)
         generated_tokens.append(next_id)
+        count += 1
         
         # Check stop strings
         if stop_sequences:
@@ -287,14 +303,15 @@ def generate_with_preview(model, tok, prompt, max_tokens=60, min_tokens=0, tempe
         print(token_str, end="", flush=True)
         
         # Progress report every 10 tokens
-        if (i + 1) % 10 == 0 or (i + 1) == max_tokens:
+        if count % 10 == 0 or (max_tokens is not None and count == max_tokens):
             elapsed = time.time() - start_time
-            tps = (i + 1) / elapsed if elapsed > 0 else 0
-            print(f"\n  [{i+1}/{max_tokens}] {tps:.1f} tok/s")
+            tps = count / elapsed if elapsed > 0 else 0
+            total = max_tokens if max_tokens is not None else "…"
+            print(f"\n  [{count}/{total}] {tps:.1f} tok/s")
         
         # Check stop conditions
-        if should_stop and i + 1 >= min_tokens:
-            print(f"\n  [Stopped early at token {i+1}]")
+        if should_stop and count >= min_tokens:
+            print(f"\n  [Stopped early at token {count}]")
             break
     
     total_elapsed = time.time() - start_time

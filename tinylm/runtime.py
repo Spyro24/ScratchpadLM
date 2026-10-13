@@ -3,7 +3,7 @@ import threading
 import time
 from typing import List, Optional
 
-from tinylm.generation import fast_logits, _sample_next_token
+from tinylm.generation import fast_logits, _sample_next_token, _resolve_stop_tokens
 from tinylm.serialization import load_model
 
 # =============================================================================
@@ -149,15 +149,17 @@ class ModelRuntime:
         tokenizer = self._get_tokenizer()
         return self.router.route_multi(prompt, tokenizer, self.catalog, max_subtasks)
 
-    def generate(self, prompt: str, max_tokens: int = 60, min_tokens: int = 0, temperature: float = 0.8,
+    def generate(self, prompt: str, max_tokens=None, min_tokens: int = 0, temperature: float = 0.8,
                  top_k: int = 0, top_p: float = 0.0, repetition_penalty: float = 1.0,
                  stop_token_ids=None, stop_strings=None,
-                 max_models: int = 1, stream_callback=None, collaborative: bool = False) -> str:
+                 max_models: int = 1, stream_callback=None, collaborative: bool = False,
+                 stop_markers=("EOS",)) -> str:
         """Generate text using routed model(s) with autostop support.
 
         Args:
             prompt: Input prompt
-            max_tokens: Maximum tokens to generate (default 60)
+            max_tokens: Maximum tokens to generate (None = unbounded: ends on
+                stop markers/strings/ids)
             min_tokens: Minimum tokens before autostop can trigger (default 0)
             temperature: Sampling temperature
             top_k: Top-k sampling parameter
@@ -168,6 +170,8 @@ class ModelRuntime:
             max_models: Maximum number of models to use (1 = single, >1 = collaborative)
             stream_callback: Optional callback(token, model_name) for streaming
             collaborative: Force collaborative mode even with max_models=1
+            stop_markers: Marker names (`EOL`/`EOS`/`EOT`) that trigger stop.
+                Default `("EOS",)` ends after a finished section.
 
         Returns:
             Generated text
@@ -179,7 +183,8 @@ class ModelRuntime:
         if max_models > 1 or collaborative:
             return self._generate_collaborative(prompt, max_tokens, temperature, top_k, top_p,
                                                repetition_penalty, max_models, stream_callback,
-                                               min_tokens, stop_token_ids, stop_strings)
+                                               min_tokens, stop_token_ids, stop_strings,
+                                               stop_markers)
         else:
             routes = self.route(prompt, max_subtasks=1)
             if not routes:
@@ -192,17 +197,19 @@ class ModelRuntime:
             # Generate with streaming support
             return self._generate_streaming(model, tokenizer, prompt, max_tokens, temperature,
                                            top_k, top_p, repetition_penalty, stream_callback, model_name,
-                                           min_tokens, stop_token_ids, stop_strings)
+                                           min_tokens, stop_token_ids, stop_strings,
+                                           stop_markers)
 
     def _generate_streaming(self, model, tokenizer, prompt, max_tokens, temperature,
                            top_k, top_p, repetition_penalty, stream_callback, model_name,
-                           min_tokens=0, stop_token_ids=None, stop_strings=None):
-        """Generate with optional streaming callback."""
+                           min_tokens=0, stop_token_ids=None, stop_strings=None,
+                           stop_markers=("EOS",)):
+        """Generate with optional streaming callback (None cap = marker stop)."""
         ids = tokenizer.encode(prompt) or [0]
         model_fast_logits = getattr(model, 'fast_logits', None)
         
-        # Convert stop_token_ids to set for O(1) lookup
-        stop_tokens = set(stop_token_ids) if stop_token_ids else None
+        # Merge stop-token IDs + structural marker names for O(1) lookup
+        stop_tokens = _resolve_stop_tokens(model, stop_token_ids, stop_markers)
         
         # Pre-encode stop strings to token sequences
         stop_sequences = []
@@ -214,8 +221,9 @@ class ModelRuntime:
         
         generated_text = ""
         start_time = time.time()
+        count = 0
         
-        for i in range(max_tokens):
+        while max_tokens is None or count < max_tokens:
             window = ids[-model.ctx:]
             window = [0] * (model.ctx - len(window)) + window
             if model_fast_logits is not None:
@@ -225,6 +233,7 @@ class ModelRuntime:
             next_id, should_stop = _sample_next_token(logits, temperature, top_k, top_p, 
                                                        repetition_penalty, ids, stop_tokens)
             ids.append(next_id)
+            count += 1
             
             # Check stop strings
             if stop_sequences:
@@ -241,15 +250,21 @@ class ModelRuntime:
                 stream_callback(new_token, model_name)
             
             # Check stop conditions
-            if should_stop and i + 1 >= min_tokens:
+            if should_stop and count >= min_tokens:
                 break
         
         return generated_text
 
     def _generate_collaborative(self, prompt, max_tokens, temperature, top_k, top_p,
                                repetition_penalty, max_models, stream_callback,
-                               min_tokens=0, stop_token_ids=None, stop_strings=None):
-        """Collaborative generation with multiple models, alternating between them."""
+                               min_tokens=0, stop_token_ids=None, stop_strings=None,
+                               stop_markers=("EOS",)):
+        """Collaborative generation with multiple models, alternating between them.
+
+        With `max_tokens=None` each model contributes one marker-terminated
+        chunk in a single round-robin pass instead of capped alternating
+        chunks.
+        """
         routes = self.route(prompt, max_subtasks=max_models)
         if not routes:
             raise RuntimeError("No models available for generation")
@@ -270,8 +285,10 @@ class ModelRuntime:
         for route in routes:
             models[route["model"]] = self.load_model(route["model"])
         
-        # Determine tokens per model (round-robin distribution)
-        tokens_per_model = max(1, max_tokens // len(routes))
+        # Determine tokens per model (round-robin distribution).
+        # Unbounded: one marker-terminated chunk per model in a single pass.
+        single_pass = max_tokens is None
+        tokens_per_model = None if single_pass else max(1, max_tokens // len(routes))
         remaining = max_tokens
         
         generated_text = ""
@@ -280,12 +297,12 @@ class ModelRuntime:
         if stream_callback:
             stream_callback(f"[Collaborative: {', '.join(model_names)}] ", "system")
         
-        while remaining > 0:
+        while remaining is None or remaining > 0:
             model_name = model_names[current_model_idx]
             model = models[model_name]
             
             # Generate tokens for this model
-            chunk_size = min(tokens_per_model, remaining)
+            chunk_size = None if single_pass else min(tokens_per_model, remaining)
             
             if stream_callback:
                 stream_callback(f"\n[{model_name}] ", "system")
@@ -295,11 +312,14 @@ class ModelRuntime:
                 top_k, top_p, repetition_penalty, 
                 lambda token: stream_callback(token, model_name) if stream_callback else None,
                 model_name,
-                min_tokens, stop_token_ids, stop_strings
+                min_tokens, stop_token_ids, stop_strings, stop_markers
             )
             
             generated_text += chunk_text
-            remaining -= chunk_size
+            if single_pass and current_model_idx == len(routes) - 1:
+                break
+            if not single_pass:
+                remaining -= chunk_size
             current_model_idx = (current_model_idx + 1) % len(routes)
             
             # Update prompt context for next model
@@ -307,16 +327,18 @@ class ModelRuntime:
         
         return generated_text
 
-    def generate_with_preview(self, prompt: str, max_tokens: int = 60, min_tokens: int = 0, 
+    def generate_with_preview(self, prompt: str, max_tokens=None, min_tokens: int = 0, 
                               temperature: float = 0.8, top_k: int = 0, top_p: float = 0.0,
                               repetition_penalty: float = 1.0, max_models: int = 1,
                               stop_token_ids=None, stop_strings=None,
+                              stop_markers=("EOS",),
                               preview_callback=None) -> dict:
         """Generate text with live token preview and timing stats.
 
         Args:
             prompt: Input prompt
-            max_tokens: Maximum tokens to generate (default 60)
+            max_tokens: Maximum tokens to generate (None = unbounded: ends on
+                stop markers/strings/ids)
             min_tokens: Minimum tokens before autostop can trigger (default 0)
             temperature: Sampling temperature
             top_k: Top-k sampling parameter
@@ -325,6 +347,8 @@ class ModelRuntime:
             max_models: Maximum number of models to use
             stop_token_ids: Optional set/list of token IDs that trigger stop
             stop_strings: Optional list of strings that trigger stop when generated
+            stop_markers: Marker names (`EOL`/`EOS`/`EOT`) that trigger stop.
+                Default `("EOS",)` ends after a finished section.
             preview_callback: Callback(token, model_name, token_idx, total_tokens, tokens_per_sec)
 
         Returns:
@@ -343,8 +367,8 @@ class ModelRuntime:
         ids = tokenizer.encode(prompt) or [0]
         model_fast_logits = getattr(model, 'fast_logits', None)
         
-        # Convert stop_token_ids to set for O(1) lookup
-        stop_tokens = set(stop_token_ids) if stop_token_ids else None
+        # Merge stop-token IDs + structural marker names for O(1) lookup
+        stop_tokens = _resolve_stop_tokens(model, stop_token_ids, stop_markers)
         
         # Pre-encode stop strings to token sequences
         stop_sequences = []
@@ -358,8 +382,9 @@ class ModelRuntime:
         generated_text = ""
         start_time = time.time()
         last_report_time = start_time
+        count = 0
         
-        for i in range(max_tokens):
+        while max_tokens is None or count < max_tokens:
             window = ids[-model.ctx:]
             window = [0] * (model.ctx - len(window)) + window
             if model_fast_logits is not None:
@@ -370,6 +395,7 @@ class ModelRuntime:
                                                        repetition_penalty, ids, stop_tokens)
             ids.append(next_id)
             generated_tokens.append(next_id)
+            count += 1
             
             # Check stop strings
             if stop_sequences:
@@ -385,17 +411,18 @@ class ModelRuntime:
             # Call preview callback with timing info
             if preview_callback:
                 elapsed = time.time() - start_time
-                tps = (i + 1) / elapsed if elapsed > 0 else 0
-                preview_callback(new_token, model_name, i + 1, max_tokens, tps)
+                tps = count / elapsed if elapsed > 0 else 0
+                preview_callback(new_token, model_name, count, max_tokens, tps)
             
             # Print progress every 10 tokens or at end
-            if (i + 1) % 10 == 0 or (i + 1) == max_tokens:
+            if count % 10 == 0 or (max_tokens is not None and count == max_tokens):
                 elapsed = time.time() - start_time
-                tps = (i + 1) / elapsed if elapsed > 0 else 0
-                print(f"  [{model_name}] Generated {i+1}/{max_tokens} tokens ({tps:.1f} tok/s)")
+                tps = count / elapsed if elapsed > 0 else 0
+                total = max_tokens if max_tokens is not None else "…"
+                print(f"  [{model_name}] Generated {count}/{total} tokens ({tps:.1f} tok/s)")
             
             # Check stop conditions
-            if should_stop and i + 1 >= min_tokens:
+            if should_stop and count >= min_tokens:
                 break
         
         total_elapsed = time.time() - start_time

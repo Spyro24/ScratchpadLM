@@ -211,7 +211,7 @@ class SettingsActionsMixin:
             except ValueError:
                 self.show_warning("Invalid value", f"{section}.{key}: '{raw}' is not a valid {cast.__name__}.")
                 return
-            ZERO_OK = {"top_k", "warmup_steps", "eval_every", "checkpoint_every", "min_tokens"}
+            ZERO_OK = {"top_k", "warmup_steps", "eval_every", "checkpoint_every", "min_tokens", "rollback_window"}
             if isinstance(value, int) and not isinstance(value, bool):
                 if key in ZERO_OK and value < 0:
                     self.show_warning("Invalid value", f"{section}.{key} must be >= 0.")

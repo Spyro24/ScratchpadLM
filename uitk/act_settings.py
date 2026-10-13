@@ -164,7 +164,7 @@ class SettingsActionsMixin:
                 )
                 return
             # Validate integer fields: most must be positive; some allow zero
-            ZERO_OK = {"top_k", "warmup_steps", "eval_every", "checkpoint_every", "min_tokens"}
+            ZERO_OK = {"top_k", "warmup_steps", "eval_every", "checkpoint_every", "min_tokens", "rollback_window"}
             if isinstance(value, int) and not isinstance(value, bool):
                 if key in ZERO_OK:
                     if value < 0:

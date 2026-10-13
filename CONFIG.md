@@ -41,6 +41,8 @@ All configuration options for ScratchpadLM / TinyLM. Configuration is loaded fro
 | `auto_factor` | float | `0.5` | LR multiplier on plateau (0.0–1.0). |
 | `auto_patience` | int | `10` | Steps of plateau before LR reduction. |
 | `auto_clip_relax` | bool | `true` | Relax grad clip limit if chronic clipping detected. |
+| `momentum` | float | `0.9` | SGD momentum (0 = plain SGD). |
+| `rollback_window` | int | `2` | Snapshot every step; restore lowest-loss step in window on spike (0 = disabled). |
 
 **Validation**:
 - `steps`, `batch_size`, `n_negatives` ≥ 0 (`batch_size`, `n_negatives` > 0 in practice)
@@ -122,6 +124,8 @@ training:
   auto_factor: 0.5
   auto_patience: 10
   auto_clip_relax: true
+  momentum: 0.9
+  rollback_window: 2
 
 generation:
   n_tokens: 100

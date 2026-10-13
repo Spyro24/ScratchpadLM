@@ -134,6 +134,8 @@ class TrainingActionsMixin:
             batch_size=training_cfg["batch_size"], n_negatives=training_cfg["n_negatives"],
             workers=training_cfg["workers"], progress_cb=on_progress,
             momentum=training_cfg.get("momentum", 0.9),
+            grad_clip=training_cfg.get("grad_clip", 0.0),
+            rollback_window=training_cfg.get("rollback_window", 2),
             cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel,
         )
         return prompt, steps, result

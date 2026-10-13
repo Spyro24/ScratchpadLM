@@ -87,6 +87,7 @@ def t_config_defaults():
     check(cfg["training"]["lr_scheduler"] == "cosine_warmup")
     check(cfg["training"]["grad_clip"] == 1.0)
     check(cfg["training"]["momentum"] == 0.9)
+    check(cfg["training"]["rollback_window"] == 2)
     check(cfg["training"]["early_stopping"] is True)
     for bad in ({"generation": {"top_k": -1}},
                 {"generation": {"top_p": 1.5}},
@@ -94,6 +95,7 @@ def t_config_defaults():
                 {"training": {"lr_scheduler": "nope"}},
                 {"training": {"momentum": 1.0}},
                 {"training": {"momentum": -0.5}},
+                {"training": {"rollback_window": -1}},
                 {"training": {"val_split": 1.0}}):
         try:
             Config.from_dict(bad)
@@ -528,6 +530,70 @@ def t_train_c_auto_adjust():
               val_split=0.0, eval_every=0, use_c=True,
               progress_cb=lambda d, t, l, *a: losses.append(l))
     check(len(losses) == 20 and all(math.isfinite(l) for l in losses))
+
+
+@test("train: rollback guard unit + spike restore in train()")
+def t_train_rollback():
+    from tinylm import RollbackGuard, train
+    # Unit: window=2 triggers above best+tol, collapses to best after rollback
+    g = RollbackGuard(window=2, tol=0.0)
+    check(g.enabled is True)
+    g.push(5.0, [1.0, 2.0], [0.1, 0.2])
+    check(g.check(99.0)[0] is False, "no rollback until window is full")
+    g.push(4.0, [3.0, 4.0], [0.3, 0.4])
+    do_rb, best = g.check(6.0)
+    check(do_rb is True and best[0] == 4.0, f"expected spike rollback, got {do_rb} {best}")
+    check(g.check(3.5)[0] is False, "improvement must not roll back")
+    g.note_rollback()
+    check(g.rollbacks == 1 and len(g.history) == 1)
+    # Non-finite loss always rolls back to the best finite snapshot
+    do_rb, best = g.check(float("nan"))
+    check(do_rb is True and math.isfinite(best[0]))
+    # Disabled guard is inert
+    off = RollbackGuard(window=0)
+    check(off.enabled is False)
+    off.push(1.0, [1.0], None)
+    check(off.check(99.0) == (False, None))
+
+    # Integration: poison weights mid-run with NaNs; rollback must restore
+    # finite weights and count the event, while the disabled run stays poisoned.
+    import io, contextlib
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    random.seed(0)
+
+    def poison_cb(done, total, loss, *a):
+        if done == 2:
+            for p in model.params:
+                p.data = float("nan")
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        r = train(model, ids, steps=6, lr=0.05, batch_size=8, n_negatives=32,
+                  lr_scheduler="constant", warmup_steps=0, grad_clip=0.0,
+                  momentum=0.0, auto_adjust=False, early_stopping=False,
+                  checkpoint_every=0, eval_every=0, use_c=False,
+                  rollback_window=2, progress_cb=poison_cb)
+    check(r["rollbacks"] >= 1, f"expected >=1 rollback, got {r}")
+    check(all(math.isfinite(p.data) for p in model.params),
+          "rollback did not restore finite weights")
+
+    model2 = tiny_model(vocab=len(tok.vocab))
+    random.seed(0)
+
+    def poison_cb2(done, total, loss, *a):
+        if done == 2:
+            for p in model2.params:
+                p.data = float("nan")
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        r2 = train(model2, ids, steps=6, lr=0.05, batch_size=8, n_negatives=32,
+                   lr_scheduler="constant", warmup_steps=0, grad_clip=0.0,
+                   momentum=0.0, auto_adjust=False, early_stopping=False,
+                   checkpoint_every=0, eval_every=0, use_c=False,
+                   rollback_window=0, progress_cb=poison_cb2)
+    check(r2["rollbacks"] == 0, f"disabled run must report 0 rollbacks, got {r2}")
+    check(not all(math.isfinite(p.data) for p in model2.params),
+          "disabled run should keep the poisoned (non-finite) weights")
 
 
 @test("train: update uses the batch-averaged gradient")

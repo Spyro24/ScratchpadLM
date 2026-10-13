@@ -61,6 +61,7 @@ from tinylm.sched import (
     LR_Scheduler,
     clip_grads,
     AutoAdjust,
+    RollbackGuard,
     evaluate,
     EarlyStopping,
 )
@@ -109,7 +110,7 @@ __all__ = [
     "create_router_training_data", "train_router", "generate_router_training_data",
     "normalize_text", "strip_boilerplate", "deduplicate_lines",
     "classify_by_domain", "sort_and_classify_data", "clean_training_data",
-    "LR_Scheduler", "clip_grads", "AutoAdjust", "evaluate", "EarlyStopping",
+    "LR_Scheduler", "clip_grads", "AutoAdjust", "RollbackGuard", "evaluate", "EarlyStopping",
     "Checkpoint", "save_checkpoint", "load_checkpoint", "resume_from_checkpoint",
     "_flat_params", "_set_flat_params",
     "train", "_train_c", "_accel_available", "_flat_data",

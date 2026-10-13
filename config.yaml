@@ -29,6 +29,7 @@ training:
   auto_patience: 10
   auto_clip_relax: true
   momentum: 0.9
+  rollback_window: 2
 
 generation:
   n_tokens: 60

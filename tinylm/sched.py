@@ -1,7 +1,8 @@
 """Training helpers: LR schedule, grad clipping, auto-adjust, eval, early stopping."""
 import math
 import random
-from typing import List, Optional
+from collections import deque
+from typing import List, Optional, Tuple
 
 from tinylm.autograd import Value
 
@@ -138,6 +139,72 @@ class AutoAdjust:
     def grad_clip_now(self) -> float:
         """Effective gradient-clip threshold (0 disables clipping)."""
         return self._clip_limit
+
+
+# ---- Loss-spike rollback ----------------------------------------------------
+
+class RollbackGuard:
+    """Per-step snapshot + spike rollback to the best step in a window.
+
+    Every training step snapshots (loss, flat params, velocity). When the
+    window holds `window` entries and the current pre-update loss exceeds the
+    lowest loss in the window by more than `tol`, the caller restores the
+    snapshot of that lowest-loss step ("jumps back") and skips the bad update.
+
+    `window=0` disables rollback. Recommended window is 2. `tol` reuses the
+    training `min_delta` so tiny floating-point jitter does not trigger a
+    rollback. After a rollback the window is collapsed to the best entry so a
+    lucky low batch cannot pin training forever.
+    """
+
+    def __init__(self, window: int = 2, tol: float = 0.0):
+        self.window = int(window)
+        self.tol = float(tol)
+        self.history: Optional[deque] = (
+            deque(maxlen=self.window) if self.window > 0 else None
+        )
+        self.rollbacks = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self.window > 0 and self.history is not None
+
+    def check(self, loss: float) -> Tuple[bool, Optional[tuple]]:
+        """Return (should_rollback, best_entry). Best entry is
+        (loss, flat, velocity-or-None). Non-finite loss always rolls back
+        (to the best finite snapshot). Finite loss rolls back only once the
+        window is full and the loss exceeds the window best by `tol`.
+        """
+        if not self.enabled or not self.history:
+            return False, None
+        if not math.isfinite(loss):
+            finite = [e for e in self.history if math.isfinite(e[0])]
+            if not finite:
+                return False, None
+            return True, min(finite, key=lambda e: e[0])
+        if len(self.history) < self.window:
+            return False, None
+        best = min(self.history, key=lambda e: e[0])
+        if loss > best[0] + self.tol:
+            return True, best
+        return False, None
+
+    def push(self, loss: float, flat: List[float], velocity=None) -> None:
+        """Snapshot the pre-update params/velocity that produced `loss`."""
+        if not self.enabled:
+            return
+        self.history.append(
+            (float(loss), list(flat),
+             list(velocity) if velocity is not None else None)
+        )
+
+    def note_rollback(self) -> None:
+        """Count a rollback and collapse the window to its best entry."""
+        self.rollbacks += 1
+        if self.enabled and self.history:
+            best = min(self.history, key=lambda e: e[0])
+            self.history.clear()
+            self.history.append(best)
 
 
 # ---- Evaluation -------------------------------------------------------------

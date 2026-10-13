@@ -16,7 +16,7 @@ from tinylm.checkpoint import (
     Checkpoint, save_checkpoint, _flat_params,
 )
 from tinylm.sched import (
-    LR_Scheduler, clip_grads, AutoAdjust, evaluate, EarlyStopping,
+    LR_Scheduler, clip_grads, AutoAdjust, RollbackGuard, evaluate, EarlyStopping,
 )
 
 # ---- training and generation ----------------------------------------------
@@ -39,7 +39,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
              auto_patience: int = 10, auto_clip_relax: bool = True,
              cancel_callback=None, save_on_cancel_callback=None,
              gradient_accumulation: int = 1, neg_sample_seed: int = 0,
-             momentum: float = 0.9):
+             momentum: float = 0.9, rollback_window: int = 0):
     """train() via the fused C kernel with gradient clipping support.
 
     C kernel supports: LR per step, gradient clipping, SGD momentum.
@@ -47,8 +47,10 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
     automatic adjustment (plateau LR reduction, clip relaxation).
     `cancel_callback()` is checked before each step; on cancel the improved
     weights are kept when loss improved, otherwise initial weights are restored.
+    `rollback_window` snapshots every step and restores the lowest-loss step
+    in the window when the current loss spikes above it (0 disables).
     Returns a dict with `cancelled`, `initial_loss`, `best_loss`,
-    `final_loss`, `steps_done`.
+    `final_loss`, `steps_done`, `rollbacks`.
     """
     ctx = model.ctx
     vocab = len(model.C)
@@ -99,6 +101,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
     val_loss = None
     cancelled = False
     steps_done = 0
+    rb_guard = RollbackGuard(window=rollback_window, tol=min_delta)
 
     for step in range(steps):
         # Check for cancellation before starting the next step.
@@ -112,12 +115,36 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
             i = random.choice(list(starts))
             windows.extend(train_ids[i:i + ctx])
             windows.append(train_ids[i + ctx])
-        
+
+        flat_before = list(flat)
         # C kernel with gradient clipping
         loss, flat = accel.train_step(flat, windows, dims, n_negatives,
                                       rate, random.randrange(1 << 62),
                                       momentum=momentum,
                                       max_norm=adjuster.grad_clip_now())
+
+        # Loss-spike rollback: discard the fused update and jump back to the
+        # lowest-loss snapshot in the window. The C velocity already absorbed
+        # the spiked grad, so reset it to avoid stepping straight back out.
+        if rb_guard.enabled:
+            do_rb, best_entry = rb_guard.check(loss)
+            if do_rb:
+                _, best_flat, _ = best_entry
+                flat = list(best_flat)
+                for p, x in zip(params, flat):
+                    p.data = x
+                accel.reset_momentum()
+                rb_guard.note_rollback()
+                if initial_loss is None:
+                    initial_loss = loss
+                last_loss = loss
+                steps_done = step + 1
+                print(f"step {step:5d}  rollback: loss {loss:.3f} > best {best_entry[0]:.3f} in window {rollback_window} -> restored")
+                if progress_cb is not None:
+                    progress_cb(step + 1, steps, loss, val_loss, rate)
+                continue
+            rb_guard.push(loss, flat_before, None)
+
         # In-place update of the existing Value objects
         for p, x in zip(params, flat):
             p.data = x
@@ -203,6 +230,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
         "best_loss": best_loss if best_loss != float('inf') else None,
         "final_loss": last_loss,
         "steps_done": steps_done,
+        "rollbacks": rb_guard.rollbacks,
     }
 
 
@@ -215,7 +243,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
           auto_adjust: bool = True, auto_factor: float = 0.5,
           auto_patience: int = 10, auto_clip_relax: bool = True,
           gradient_accumulation: int = 1, neg_sample_seed: int = 0,
-          momentum: float = 0.9,
+          momentum: float = 0.9, rollback_window: int = 0,
           cancel_callback=None, save_on_cancel_callback=None):
     """Mini-batch SGD with sampled softmax and advanced training features.
 
@@ -240,6 +268,9 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     - Gradient accumulation for larger effective batch sizes
     - Pre-computed negative samples for faster training
     - Cancel training with optional save if loss improved
+    - Loss-spike rollback: snapshots every step and restores the lowest-loss
+      step in `rollback_window` when the current loss spikes above it
+      (0 disables; config default 2)
 
     `progress_cb(done, total, loss, val_loss=None, lr=None)` is called after every step if given.
     `use_c` forces the optional C kernel on/off; default: on when available.
@@ -249,7 +280,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
       (and `save_on_cancel_callback(model, best_loss, steps_done)` is called
       when provided); otherwise the model is restored to its initial weights.
     Returns a dict with `cancelled`, `initial_loss`, `best_loss`,
-    `final_loss`, `steps_done`.
+    `final_loss`, `steps_done`, `rollbacks`.
     """
     # Disable C kernel when advanced features are requested that C doesn't support.
     # C kernel now supports: gradient clipping, LR per step (for scheduling).
@@ -278,7 +309,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
                  auto_patience=auto_patience, auto_clip_relax=auto_clip_relax,
                  cancel_callback=cancel_callback, save_on_cancel_callback=save_on_cancel_callback,
                  gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed,
-                 momentum=momentum)
+                 momentum=momentum, rollback_window=rollback_window)
 
     ctx = model.ctx
     starts = range(len(ids) - ctx)
@@ -336,6 +367,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     val_loss = None
     cancelled = False
     steps_done = 0
+    rb_guard = RollbackGuard(window=rollback_window, tol=min_delta)
 
     # Gradient accumulation buffer
     accumulated_grads = [0.0] * len(params)
@@ -370,6 +402,30 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
         for L in losses[1:]:
             loss = loss + L
         loss = loss * (1.0 / batch_size)
+
+        # Loss-spike rollback: if the pre-update loss exceeds the lowest loss
+        # in the window, restore that step's snapshot (params + momentum) and
+        # skip the bad update. Snapshots are taken every step below.
+        if rb_guard.enabled:
+            do_rb, best_entry = rb_guard.check(loss.data)
+            if do_rb:
+                _, best_flat, best_vel = best_entry
+                for p, v in zip(params, best_flat):
+                    p.data = v
+                if best_vel is not None:
+                    velocity = list(best_vel)
+                accumulated_grads = [0.0] * len(params)
+                accumulation_counter = 0
+                rb_guard.note_rollback()
+                if initial_loss is None:
+                    initial_loss = loss.data
+                last_loss = loss.data
+                steps_done = step + 1
+                print(f"step {step:5d}  rollback: loss {loss.data:.3f} > best {best_entry[0]:.3f} in window {rollback_window} -> restored")
+                if progress_cb is not None:
+                    progress_cb(step + 1, steps, loss.data, val_loss, rate)
+                continue
+            rb_guard.push(loss.data, [p.data for p in params], velocity)
 
         # Track initial and best loss (pre-update loss)
         if initial_loss is None:
@@ -482,4 +538,5 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
         "best_loss": best_loss if best_loss != float('inf') else None,
         "final_loss": last_loss,
         "steps_done": steps_done,
+        "rollbacks": rb_guard.rollbacks,
     }

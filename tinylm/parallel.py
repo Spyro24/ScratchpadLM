@@ -10,7 +10,7 @@ except Exception:  # pragma: no cover
     accel = None
 
 from tinylm.checkpoint import _flat_params, _set_flat_params
-from tinylm.sched import clip_grads
+from tinylm.sched import RollbackGuard, clip_grads
 
 class _WorkerState:
     """Holds a model instance in each worker process to avoid reconstruction."""
@@ -77,7 +77,8 @@ def _worker_grads_v2(args):
 
 def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, workers=None,
                    progress_cb=None, grad_clip: float = 0.0, cancel_callback=None,
-                   save_on_cancel_callback=None, momentum: float = 0.9):
+                   save_on_cancel_callback=None, momentum: float = 0.9,
+                   rollback_window: int = 0, rollback_tol: float = 1e-4):
     """Data-parallel version of train. Uses persistent worker pool to avoid
     rebuilding the model each step. The batch is split across processes and
     the gradients are summed before one SGD update (with momentum).
@@ -86,6 +87,10 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
     global norm, then applied as `v = momentum * v + g ; p -= lr * v`
     (`momentum=0` -> plain SGD).
 
+    `rollback_window` snapshots every step and restores the lowest-loss step
+    in the window when the current loss spikes above it by more than
+    `rollback_tol` (0 disables).
+
     `progress_cb(done, total, loss)` is called after every step if given
     (runs in the main process; safe for queue-based UI updates).
     `cancel_callback()` - if provided and returns True, training stops early.
@@ -93,7 +98,7 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
       (and `save_on_cancel_callback(model, best_loss, steps_done)` is called
       when provided); otherwise the model is restored to its initial weights.
     Returns a dict with `cancelled`, `initial_loss`, `best_loss`,
-    `final_loss`, `steps_done`.
+    `final_loss`, `steps_done`, `rollbacks`.
     """
     workers = workers or cpu_count()
     ctx = model.ctx
@@ -113,6 +118,7 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
     cancelled = False
     steps_done = 0
     velocity = [0.0] * len(params)
+    rb_guard = RollbackGuard(window=rollback_window, tol=rollback_tol)
 
     # Pre-create initial flat params for worker initialization.
     # Workers only compute gradients: clipping is applied once in the parent
@@ -151,6 +157,23 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
 
             # Track initial and best loss (pre-update loss)
             step_loss = total_loss / batch_size
+            if rb_guard.enabled:
+                do_rb, best_entry = rb_guard.check(step_loss)
+                if do_rb:
+                    _, best_flat, best_vel = best_entry
+                    _set_flat_params(model, list(best_flat))
+                    if best_vel is not None:
+                        velocity = list(best_vel)
+                    rb_guard.note_rollback()
+                    if initial_loss is None:
+                        initial_loss = step_loss
+                    last_loss = step_loss
+                    steps_done = step + 1
+                    print(f"step {step:5d}  rollback: loss {step_loss:.3f} > best {best_entry[0]:.3f} in window {rollback_window} -> restored")
+                    if progress_cb is not None:
+                        progress_cb(step + 1, steps, step_loss)
+                    continue
+                rb_guard.push(step_loss, _flat_params(model), velocity)
             if initial_loss is None:
                 initial_loss = step_loss
             if step_loss < best_loss:
@@ -200,4 +223,5 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
         "best_loss": best_loss if best_loss != float('inf') else None,
         "final_loss": last_loss,
         "steps_done": steps_done,
+        "rollbacks": rb_guard.rollbacks,
     }

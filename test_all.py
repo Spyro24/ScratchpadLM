@@ -1062,6 +1062,48 @@ def t_router_decompose():
         check(tasks[-1].type == TaskType.CODE)
 
 
+@test("cycle: run_cycle plans, executes and records")
+def t_run_cycle():
+    from scratchpad import (Scratchpad, TaskPad, TaskStatus, TaskType,
+                            run_cycle)
+    with tempfile.TemporaryDirectory() as d:
+        pad = TaskPad(path=os.path.join(d, "taskpad.jsonl"))
+        sp = Scratchpad(path=os.path.join(d, "scratchpad.jsonl"))
+
+        class FakeRouter:
+            def split(self, prompt, tokenizer, max_subtasks=4, catalog=None):
+                return [
+                    {"model": "tiny-code", "prompt": prompt,
+                     "context_tokens": [1]},
+                    {"model": "tiny-prose", "prompt": "other",
+                     "context_tokens": [2]},
+                ]
+
+        res = run_cycle("do it", FakeRouter(), tokenizer=None, taskpad=pad,
+                        scratchpad=sp,
+                        executors={TaskType.CODE: lambda t: "code-done",
+                                   TaskType.GENERATE: lambda t: "prose-done"})
+        check(res["done"] is True and res["cycles"] == 1)
+        check(len(res["tasks"]) == 2)
+        results = sorted(t.result for t in pad.list_tasks())
+        check(results == ["code-done", "prose-done"])
+        types = {e.metadata.get("step_type") for e in sp.get_recent()}
+        check("cycle_start" in types and "task_outcome" in types)
+        # Blocked queue makes no progress and still terminates
+        pad2 = TaskPad(path=os.path.join(d, "tp2.jsonl"))
+        sp2 = Scratchpad(path=os.path.join(d, "sp2.jsonl"))
+        pad2.create_task(TaskType.CODE, "blocked", dependencies=["missing"])
+
+        class EmptyRouter:
+            def split(self, prompt, tokenizer, max_subtasks=4, catalog=None):
+                return []
+
+        res = run_cycle("stuck", EmptyRouter(), tokenizer=None, taskpad=pad2,
+                        scratchpad=sp2, max_cycles=3)
+        check(res["done"] is False and res["cycles"] == 1)
+        check(len(pad2.list_tasks(status=TaskStatus.PENDING)) == 1)
+
+
 @test("router: train_router runs and reduces loss")
 def t_router_train():
     from tinylm import Router, RouterConfig, train_router, generate_router_training_data

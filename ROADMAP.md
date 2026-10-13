@@ -46,6 +46,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 
 ### 5. Task System
 - [x] Planner `plan()` (`scratchpad.py`): router `split()` → one `TaskPad` task per subtask (dynamic `model_to_task_type()` for any model count/naming, registry templates, `context_tokens` + empty `features` slot + `model_available` flag in `metadata`)
+- [x] Cyclic path `run_cycle()` (`scratchpad.py`): plan once → execute pending → record each outcome in `Scratchpad`, until drained / no progress / `max_cycles`; returns `{cycles, tasks, done}`
 - [ ] `Task` definition; DAG executor; built-ins (`generate/summarize/code/analyze/train/embed`); output types (`text/json/code/embedding/model`)
 - [ ] **Feature extraction model** (`tiny-embed`): `extract_features()` filling `task.metadata["features"]` with the per-task prompt features
 

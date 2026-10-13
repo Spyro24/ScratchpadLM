@@ -395,6 +395,56 @@ def plan(prompt: str, router, tokenizer, taskpad: Optional["TaskPad"] = None,
     return tasks
 
 
+def run_cycle(prompt: str, router, tokenizer, taskpad: Optional["TaskPad"] = None,
+              scratchpad: Optional["Scratchpad"] = None,
+              executors: Optional[Dict[Any, Callable]] = None,
+              task_registry=None, catalog=None, max_subtasks: int = 4,
+              max_cycles: int = 5) -> Dict[str, Any]:
+    """Cyclic AI path over the scratchpad and task pad: plan → execute → record.
+
+    Plans once via `plan()` (router → `TaskPad`; pre-existing pending tasks are
+    kept), then repeats per cycle: execute all pending tasks and record each
+    outcome (result or error) as a `Scratchpad` entry. Stops when no `PENDING`
+    tasks remain, a cycle makes no progress (e.g. missing executors), or
+    `max_cycles` cycles ran. Returns `{cycles, tasks, done}` where `done`
+    means the queue drained.
+    """
+    if taskpad is None:
+        taskpad = TaskPad()
+    if scratchpad is None:
+        scratchpad = Scratchpad()
+    if executors:
+        for task_type, fn in executors.items():
+            taskpad.register_executor(task_type, fn)
+    planned = plan(prompt, router, tokenizer, taskpad=taskpad,
+                   task_registry=task_registry, catalog=catalog,
+                   max_subtasks=max_subtasks)
+    cycles = 0
+    while cycles < max_cycles:
+        pending = taskpad.list_tasks(status=TaskStatus.PENDING)
+        if not pending:
+            break
+        cycles += 1
+        scratchpad.add(
+            thought=f"Cycle {cycles}: executing {len(pending)} pending task(s)",
+            result=prompt, model="cycle",
+            metadata={"step_type": "cycle_start", "pending": len(pending)},
+        )
+        executed = taskpad.execute_all_pending()
+        for task in executed:
+            scratchpad.add(
+                thought=f"Task {task.id} ({task.type.value}) {task.status.value}",
+                result=task.result or task.error or "",
+                model=task.model_name or "cycle",
+                metadata={"step_type": "task_outcome", "task_id": task.id,
+                          "status": task.status.value},
+            )
+        if not executed:
+            break
+    done = not taskpad.list_tasks(status=TaskStatus.PENDING)
+    return {"cycles": cycles, "tasks": planned, "done": done}
+
+
 class ThinkEngine:
     """High-level thinking engine that uses scratchpad for step-by-step reasoning."""
 

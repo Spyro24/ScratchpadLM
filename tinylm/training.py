@@ -60,6 +60,11 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
     emb = len(model.C[0])
     hidden = len(model.b1)
     dims = (vocab, ctx, emb, hidden)
+    if len(ids) <= ctx:
+        raise ValueError(
+            f"Not enough training tokens ({len(ids)}) for ctx={ctx}: "
+            "need at least ctx+1 tokens"
+        )
     starts = range(len(ids) - ctx)
     flat = _flat_data(model)
     params = model.params
@@ -93,6 +98,11 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
         split_idx = int(len(ids) * (1 - val_split))
         train_ids = ids[:split_idx]
         val_ids = ids[split_idx:]
+        if len(train_ids) <= ctx:
+            raise ValueError(
+                f"Not enough training tokens after val_split ({len(train_ids)}) "
+                f"for ctx={ctx}: need at least ctx+1 tokens"
+            )
         starts = range(len(train_ids) - ctx)
     else:
         train_ids = ids
@@ -319,6 +329,11 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
                  rollback_callback=rollback_callback)
 
     ctx = model.ctx
+    if len(ids) <= ctx:
+        raise ValueError(
+            f"Not enough training tokens ({len(ids)}) for ctx={ctx}: "
+            "need at least ctx+1 tokens"
+        )
     starts = range(len(ids) - ctx)
     vocab = len(model.C)
     params = model.params
@@ -344,6 +359,11 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
         split_idx = int(len(ids) * (1 - val_split))
         train_ids = ids[:split_idx]
         val_ids = ids[split_idx:]
+        if len(train_ids) <= ctx:
+            raise ValueError(
+                f"Not enough training tokens after val_split ({len(train_ids)}) "
+                f"for ctx={ctx}: need at least ctx+1 tokens"
+            )
         starts = range(len(train_ids) - ctx)
     else:
         train_ids = ids

@@ -79,7 +79,8 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 
 ### 12. CLI / API
 - [x] `tinylm` entry (main.py): router train, model mgmt, autotrain, `generate/train/eval/serve`, interactive prompt
-- [ ] `python3 -m tinylm` demo crashes with `IndexError` when `len(ids) <= model.ctx` (the saved `tinyLM` has ctx=2000, the demo corpus yields fewer tokens) — guard the demo / clamp ctx on load
+- [x] `python3 -m tinylm` demo guards `len(ids) <= model.ctx` (saved `tinyLM` ctx=2000 vs ~1802-token corpus): falls back to a fresh small-ctx model + `train()`/`_train_c()` raise `ValueError` instead of `IndexError`
+- [ ] `train_parallel()`/`train_multicore()` still lack the `len(ids) <= ctx` `ValueError` guard (same `IndexError` via `random.choice` on empty `starts`)
 
 ### 13. Testing & Validation
 - [x] Unit + integration tests (`test_all.py`); benchmarks (`benchmark.py`)

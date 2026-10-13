@@ -5,7 +5,7 @@ from tokenizer import BPETokenizer
 
 from tinylm.generation import generate
 from tinylm.models_tiny import TinyLM
-from tinylm.serialization import load_model, save_model
+from tinylm.serialization import load_model, save_model, sync_vocab
 from tinylm.training import train
 
 
@@ -20,8 +20,17 @@ def main() -> None:
     ids = tok.encode(corpus)
     try:
         model = load_model("./tinyLM")
-    except:
-        model = TinyLM(vocab_size=len(tok.vocab), ctx=50, hidden=50, emb=50)
+        sync_vocab(model, len(tok.vocab))
+        if len(ids) <= model.ctx:
+            # Saved ctx (e.g. 2000) exceeds demo corpus tokens: W1 shape is
+            # tied to ctx so it cannot be clamped in place — fall back to a
+            # fresh small-ctx model instead of crashing with IndexError.
+            print(f"demo: corpus has {len(ids)} tokens but loaded model "
+                  f"needs ctx={model.ctx}; using a fresh model instead")
+            raise ValueError("loaded ctx too large for demo corpus")
+    except Exception:
+        ctx = max(1, min(50, len(ids) - 1))
+        model = TinyLM(vocab_size=len(tok.vocab), ctx=ctx, hidden=50, emb=50)
     train(model, ids, steps=100)
 
     print()

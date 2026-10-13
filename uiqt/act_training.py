@@ -44,7 +44,10 @@ from tinylm import (
     count_params,
     generate,
     generate_with_preview,
+    insert_markers,
     load_model,
+    mark_and_encode,
+    render_marked,
     save_model,
     sync_vocab,
     train_parallel,
@@ -113,7 +116,11 @@ class TrainingActionsMixin:
         self.tok.save(TOKENIZER_PATH)
         sync_vocab(self.model, len(self.tok.vocab))
 
-        ids = self.tok.encode(prompt)
+        marked = insert_markers(prompt)
+        sample = marked[:300]
+        self.worker.post("log", "Training",
+                         f"Training text with markers: {render_marked(sample + ('...' if len(marked) > 300 else ''), color=False)}")
+        ids = mark_and_encode(prompt, self.tok, len(self.tok.vocab))
         if len(ids) <= self.model.ctx:
             raise ValueError(
                 f"The input has {len(ids)} tokens, but training needs more than {self.model.ctx}."

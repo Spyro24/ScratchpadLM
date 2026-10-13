@@ -36,6 +36,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 - [ ] Same unread-context flaw exists in `SpecializedLM._embed_context` (`specialized.py:115`) → apply the same pooling there
 - [x] Multi-subtask training data: `generate_router_training_data()` adds composite examples from consecutive sentences spanning distinct domains (`max_subtasks`, 1 = singles only)
 - [x] Structural markers: `insert_markers()` tags `[EOT]` per sentence / `[EOL]` per line / `[EOS]` per section before training; single token IDs below the router block (`V-13..V-11`); training text renders the short forms yellow (`render_marked`, ANSI)
+- [x] Markers enter training: `mark_and_encode()` is the canonical entry, wired into CLI `train` (yellow sample printed at start, `--no-markers` opt-out) and both UI training jobs (marked sample in the training log)
 - [x] De-hardwired runtime routing: `split()`/`route()`/`decompose()` and taskpad executors resolve models from the catalog only (unknown → `[]` / first catalogued model / dropped / clear error; only `router` stays literal)
 - [ ] Same treatment for the rest: `router_data` slot map + `decode_router_sequence` + training-data keyword defaults; `ThinkEngine`/`HarnessRuntime` model defaults; `cmd_generate`/`cmd_train`/demo/benchmark `tinyLM` fallbacks; UI placeholders
 - [ ] **MCP tool use**: tool-calling head, schema awareness, multi-step chains, result→context

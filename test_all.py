@@ -1015,6 +1015,20 @@ def t_markers():
     check("\033[33m[EOS]\033[0m" in render_marked_ids(ids, tok, V))
 
 
+@test("markers: mark_and_encode is the canonical training entry")
+def t_mark_and_encode():
+    from tinylm import (mark_and_encode, insert_markers, encode_marked,
+                        marker_id)
+    from tokenizer import BPETokenizer
+    tok = BPETokenizer()
+    tok.train("hello world. foo bar! test line here. " * 30, vocab_size=300)
+    ids = mark_and_encode("Hello world.\nSecond line.", tok, len(tok.vocab))
+    check(ids == encode_marked(insert_markers("Hello world.\nSecond line."),
+                               tok, len(tok.vocab)))
+    check(marker_id("EOT", len(tok.vocab)) in ids)
+    check(marker_id("EOL", len(tok.vocab)) in ids)
+
+
 @test("router: output depends on the full context window")
 def t_router_context():
     from tinylm import Router, RouterConfig

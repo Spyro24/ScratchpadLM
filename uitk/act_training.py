@@ -9,7 +9,7 @@ from tkinter import scrolledtext, messagebox, ttk, filedialog
 from pathlib import Path
 
 from tokenizer import BPETokenizer
-from tinylm import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample
+from tinylm import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample, insert_markers, mark_and_encode, render_marked
 from registry import MODEL_REGISTRY, TASK_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
 from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, MODEL_CATALOG
 from config import Config
@@ -66,7 +66,11 @@ class TrainingActionsMixin:
         self.tok.save(TOKENIZER_PATH)
         sync_vocab(self.model, len(self.tok.vocab))
 
-        ids = self.tok.encode(prompt)
+        marked = insert_markers(prompt)
+        sample = marked[:300]
+        self.queue.put(("log", "Training",
+                        f"Training text with markers: {render_marked(sample + ('...' if len(marked) > 300 else ''), color=False)}"))
+        ids = mark_and_encode(prompt, self.tok, len(self.tok.vocab))
         if len(ids) <= self.model.ctx:
             raise ValueError(
                 f"The input has {len(ids)} tokens, but training needs more than {self.model.ctx}."

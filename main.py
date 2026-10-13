@@ -108,6 +108,8 @@ def run_cli(argv=None):
     train_parser.add_argument("--model", help="Model name (uses current model if not specified)")
     train_parser.add_argument("--steps", type=int, default=1000, help="Training steps")
     train_parser.add_argument("--lr", type=float, default=0.05, help="Learning rate")
+    train_parser.add_argument("--no-markers", dest="markers", action="store_false",
+                              help="Skip [EOL]/[EOS]/[EOT] structure markers")
 
     # Eval command
     eval_parser = subparsers.add_parser("eval", help="Evaluate a model checkpoint")
@@ -381,7 +383,8 @@ def cmd_generate(args):
 
 def cmd_train(args):
     """Train a model on data."""
-    from tinylm import train, load_model, save_model, sync_vocab
+    from tinylm import (train, load_model, save_model, sync_vocab, insert_markers,
+                        encode_marked, render_marked)
     from registry import TOKENIZER_MANAGER
 
     tokenizer = TOKENIZER_MANAGER.tokenizer
@@ -404,7 +407,14 @@ def cmd_train(args):
     tokenizer.save("bpe_merges.txt")
     sync_vocab(model, len(tokenizer.vocab))
 
-    ids = tokenizer.encode(data)
+    if getattr(args, "markers", True):
+        marked = insert_markers(data)
+        sample = marked[:600]
+        print("Training text with markers:")
+        print(render_marked(sample + ("..." if len(marked) > 600 else "")))
+        ids = encode_marked(marked, tokenizer, len(tokenizer.vocab))
+    else:
+        ids = tokenizer.encode(data)
     if len(ids) <= model.ctx:
         raise ValueError(f"Need more than {model.ctx} tokens, got {len(ids)}")
 

@@ -61,6 +61,7 @@ from tinylm.data_clean import (
     marker_name,
     insert_markers,
     encode_marked,
+    mark_and_encode,
     render_marked,
     render_marked_ids,
 )
@@ -119,7 +120,7 @@ __all__ = [
     "normalize_text", "strip_boilerplate", "deduplicate_lines",
     "classify_by_domain", "sort_and_classify_data", "clean_training_data",
     "MARKERS", "marker_id", "marker_name", "insert_markers", "encode_marked",
-    "render_marked", "render_marked_ids",
+    "mark_and_encode", "render_marked", "render_marked_ids",
     "LR_Scheduler", "clip_grads", "AutoAdjust", "RollbackGuard", "evaluate", "EarlyStopping",
     "Checkpoint", "save_checkpoint", "load_checkpoint", "resume_from_checkpoint",
     "_flat_params", "_set_flat_params",

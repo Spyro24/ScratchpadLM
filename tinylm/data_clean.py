@@ -339,6 +339,15 @@ def encode_marked(marked_text: str, tokenizer, vocab_size: int) -> List[int]:
     return ids
 
 
+def mark_and_encode(text: str, tokenizer, vocab_size: int) -> List[int]:
+    """Insert markers and encode in one call — the canonical training entry.
+
+    Use this (instead of raw `tokenizer.encode`) everywhere training starts
+    so the model actually sees `[EOT]`/`[EOL]`/`[EOS]` structure tokens.
+    """
+    return encode_marked(insert_markers(text), tokenizer, vocab_size)
+
+
 def render_marked(marked_text: str, color: bool = True) -> str:
     """Render marked text, showing marker short forms in yellow (ANSI)."""
     if not color:

@@ -444,15 +444,26 @@ class TinyLM:
     def loss(self, context, target):
         return softmax_cross_entropy(self.logits(context), target)
     
-    def sampled_loss(self, context, target, n_negatives, vocab_size):
+    def sampled_loss(self, context, target, n_negatives, vocab_size, negatives=None):
         """Cross-entropy over the target plus random negatives only.
-        Computes just those output rows instead of the whole vocabulary."""
+        Computes just those output rows instead of the whole vocabulary.
+        
+        Args:
+            context: List of token IDs for context
+            target: Target token ID
+            n_negatives: Number of negative samples
+            vocab_size: Vocabulary size
+            negatives: Optional pre-sampled negative token IDs
+        """
         x = self._embed_context(context)
         h = matvec_dot(self.W1, x, self.b1)
         for i in range(len(h)):
             h[i] = h[i].tanh()
 
-        candidates = [target] + [random.randrange(vocab_size) for _ in range(n_negatives)]
+        if negatives is not None:
+            candidates = [target] + negatives
+        else:
+            candidates = [target] + [random.randrange(vocab_size) for _ in range(n_negatives)]
         W2_sub = [self.W2[c] for c in candidates]
         b2_sub = [self.b2[c] for c in candidates]
         logits = matvec_dot(W2_sub, h, b2_sub)
@@ -818,13 +829,16 @@ class Router:
     def loss(self, context: List[int], target: int) -> Value:
         return softmax_cross_entropy(self.logits(context), target)
     
-    def sampled_loss(self, context: List[int], target: int, n_negatives: int, vocab_size: int) -> Value:
+    def sampled_loss(self, context: List[int], target: int, n_negatives: int, vocab_size: int, negatives=None) -> Value:
         """Sampled softmax loss for training."""
         x = self._embed_context(context)
         for block in self.blocks:
             x = block.forward(x)
         
-        candidates = [target] + [random.randrange(vocab_size) for _ in range(n_negatives)]
+        if negatives is not None:
+            candidates = [target] + negatives
+        else:
+            candidates = [target] + [random.randrange(vocab_size) for _ in range(n_negatives)]
         W_out_sub = [self.W_out[c] for c in candidates]
         b_out_sub = [self.b_out[c] for c in candidates]
         logits = matvec_dot(W_out_sub, x, b_out_sub)
@@ -1497,13 +1511,16 @@ class SpecializedLM:
     def loss(self, context: List[int], target: int) -> Value:
         return softmax_cross_entropy(self.logits(context), target)
     
-    def sampled_loss(self, context: List[int], target: int, n_negatives: int, vocab_size: int) -> Value:
+    def sampled_loss(self, context: List[int], target: int, n_negatives: int, vocab_size: int, negatives=None) -> Value:
         """Sampled softmax loss for training."""
         x = self._embed_context(context)
         for block in self.blocks:
             x = block.forward(x)
         
-        candidates = [target] + [random.randrange(vocab_size) for _ in range(n_negatives)]
+        if negatives is not None:
+            candidates = [target] + negatives
+        else:
+            candidates = [target] + [random.randrange(vocab_size) for _ in range(n_negatives)]
         W_out_sub = [self.W_out[c] for c in candidates]
         b_out_sub = [self.b_out[c] for c in candidates]
         logits = matvec_dot(W_out_sub, x, b_out_sub)
@@ -1942,7 +1959,144 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
           early_stopping: bool = True, patience: int = 5, min_delta: float = 1e-4,
           checkpoint_every: int = 100, checkpoint_dir: str = "checkpoints",
           auto_adjust: bool = True, auto_factor: float = 0.5,
-          auto_patience: int = 10, auto_clip_relax: bool = True):
+          auto_patience: int = 10, auto_clip_relax: bool = True,
+          gradient_accumulation: int = 1, neg_sample_seed: int = 0):
+    """Mini-batch SGD with sampled softmax and advanced training features.
+
+    Each step averages the loss over `batch_size` windows. For each target, the
+    softmax runs over the true token plus `n_negatives` random tokens instead of
+    the whole vocabulary. This cuts the output-layer cost by roughly
+    vocab_size / (n_negatives + 1).
+
+    New features:
+    - LR scheduling: cosine_warmup, linear, constant
+    - Gradient clipping by global norm
+    - Validation evaluation with perplexity
+    - Early stopping with best model restoration
+    - Checkpointing for resume capability
+    - Automatic adjustment: LR reduction on plateau + auto grad-clip relaxation
+    - Gradient accumulation for larger effective batch sizes
+    - Pre-computed negative samples for faster training
+
+    `progress_cb(done, total, loss, val_loss=None, lr=None)` is called after every step if given.
+    `use_c` forces the optional C kernel on/off; default: on when available.
+    Note: C kernel supports LR scheduling and gradient clipping; Python handles validation, early stopping, checkpointing.
+    """
+    # Disable C kernel when advanced features are requested that C doesn't support
+    # C kernel now supports: gradient clipping, LR per step (for scheduling)
+    # C kernel does NOT support: validation, early stopping, checkpointing
+    advanced_features = (
+        val_ids is not None or
+        val_split > 0 or
+        eval_every > 0 or
+        early_stopping or
+        checkpoint_every > 0
+    )
+    
+    if use_c is None:
+        use_c = _accel_available() and not advanced_features
+    if use_c:
+        # C kernel path with gradient clipping support
+        _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
+                 lr_scheduler=lr_scheduler, warmup_steps=warmup_steps, min_lr=min_lr,
+                 grad_clip=grad_clip, val_ids=val_ids, val_split=val_split, eval_every=eval_every,
+                 early_stopping=early_stopping, patience=patience, min_delta=min_delta,
+                 checkpoint_every=checkpoint_every, checkpoint_dir=checkpoint_dir,
+                 auto_adjust=auto_adjust, auto_factor=auto_factor,
+                 auto_patience=auto_patience, auto_clip_relax=auto_clip_relax)
+        return
+
+    ctx = model.ctx
+    starts = range(len(ids) - ctx)
+    vocab = len(model.C)
+    params = model.params
+
+    # Pre-compute negative samples for faster training
+    if neg_sample_seed:
+        neg_rng = random.Random(neg_sample_seed)
+    else:
+        neg_rng = random
+    
+    # Pre-sample negative token candidates for the entire training
+    neg_samples = []
+    for _ in range(steps * batch_size * n_negatives):
+        neg_samples.append(neg_rng.randrange(vocab))
+    neg_idx = 0
+
+    # Split validation data if provided as ratio
+    if val_ids is None and val_split > 0:
+        split_idx = int(len(ids) * (1 - val_split))
+        train_ids = ids[:split_idx]
+        val_ids = ids[split_idx:]
+        starts = range(len(train_ids) - ctx)
+    else:
+        train_ids = ids
+
+    # Setup LR scheduler
+    scheduler = LR_Scheduler(lr, steps, lr_scheduler, warmup_steps, min_lr)
+
+    # Setup early stopping
+    early_stopper = EarlyStopping(patience=patience, min_delta=min_delta) if early_stopping else None
+
+    # Setup automatic adjustment (LR on plateau + clip relaxation)
+    adjuster = AutoAdjust(
+        enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
+        min_delta=min_delta, warmup_ignore=warmup_steps,
+        max_grad_clip=grad_clip if (auto_adjust and auto_clip_relax) else 0.0,
+    )
+
+    # Setup checkpoint directory
+    from pathlib import Path
+    checkpoint_path = Path(checkpoint_dir)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    # Gradient accumulation buffer
+    accumulated_grads = [0.0] * len(params)
+    accumulation_counter = 0
+
+    for step in range(steps):
+        rate = scheduler.get_lr(step) * adjuster.multiplier
+        losses = []
+        for _ in range(batch_size):
+            i = random.choice(starts)
+            context, target = train_ids[i:i + ctx], train_ids[i + ctx]
+            
+            # Use pre-sampled negatives if available
+            if neg_idx < len(neg_samples):
+                negs = neg_samples[neg_idx:neg_idx + n_negatives]
+                neg_idx += n_negatives
+                losses.append(model.sampled_loss(context, target, n_negatives, vocab, negatives=negs))
+            else:
+                losses.append(model.sampled_loss(context, target, n_negatives, vocab))
+        
+        # Average losses by summing and scaling once
+        loss = losses[0]
+        for L in losses[1:]:
+            loss = loss + L
+        loss = loss * (1.0 / batch_size)
+
+        for p in params:
+            p.grad = 0.0
+        loss.backward()
+
+        # Gradient clipping (with automatic relaxation if chronically clipping)
+        clip_now = adjuster.grad_clip_now()
+        if clip_now > 0:
+            norm = clip_grads(params, clip_now)
+            adjuster.note_grad_clip(norm)
+
+        # Gradient accumulation
+        accumulation_counter += 1
+        for i, p in enumerate(params):
+            accumulated_grads[i] += p.grad
+        
+        if accumulation_counter >= gradient_accumulation:
+            # Apply accumulated gradients
+            scale = 1.0 / (gradient_accumulation * batch_size)
+            for i, p in enumerate(params):
+                p.data -= rate * accumulated_grads[i] * scale
+                accumulated_grads[i] = 0.0
+            accumulation_counter = 0
     """Mini-batch SGD with sampled softmax and advanced training features.
 
     Each step averages the loss over `batch_size` windows. For each target, the

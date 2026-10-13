@@ -1,46 +1,99 @@
 /* train_kernel.c — fused sampled-softmax training kernels for TinyLM.
- *
- * Numerically equivalent to ai.py's TinyLM.sampled_loss + backward() +
- * in-place SGD update, but computed on flat double buffers in C.
- *
- * Flat param layout (matches ai.py TinyLM.params order):
- *   C  : vocab * emb
- *   W1 : hidden * (ctx * emb)
- *   b1 : hidden
- *   W2 : vocab * hidden
- *   b2 : vocab
- *
- * Windows: batch_size groups of (ctx context ids + 1 target id).
- * Negatives: if non-NULL, batch_size * n_negatives explicit ids (used by
- * parity tests); otherwise sampled internally per candidate with an
- * xorshift64 RNG seeded per call (same distribution as random.randrange:
- * with replacement, target may repeat).
- *
- * Build: cc -O2 -shared -fPIC -o libtinylm_accel.so train_kernel.c -lm
- */
-
-#include <math.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
-
-static uint64_t tl_rand(uint64_t *state) {
-    uint64_t x = *state;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    *state = x;
-    return x * 0x2545F4914F6CDD1DULL;
-}
-
-/* Accumulate loss and gradients for one window (matches sampled_loss math). */
-static int window_grads(const double *params, const int *win, int ctx, int vocab,
-                        int emb, int hidden, int n_negatives, uint64_t *rng,
-                        const int *negs,
-                        double *x, double *dx, double *h, double *dh,
-                        double *logit, int *cand,
-                        double *dC, double *dW1, double *db1,
-                        double *dW2, double *db2, double *loss_out)
+ *  *
+ *  * Numerically equivalent to ai.py's TinyLM.sampled_loss + backward() +
+ *  * in-place SGD update, but computed on flat double buffers in C.
+ *  *
+ *  * Flat param layout (matches ai.py TinyLM.params order):
+ *  *   C  : vocab * emb
+ *  *   W1 : hidden * (ctx * emb)
+ *  *   b1 : hidden
+ *  *   W2 : vocab * hidden
+ *  *   b2 : vocab
+ *  *
+ *  * Windows: batch_size groups of (ctx context ids + 1 target id).
+ *  * Negatives: if non-NULL, batch_size * n_negatives explicit ids (used by
+ *  * parity tests); otherwise sampled internally per candidate with an
+ *  * xorshift64 RNG seeded per call (same distribution as random.randrange:
+ *  * with replacement, target may repeat).
+ *  *
+ *  * Build: cc -O2 -shared -fPIC -o libtinylm_accel.so train_kernel.c -lm
+ *  */
+ 
+ #include <math.h>
+ #include <stdint.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+ /* Thread-local pre-allocated buffers to avoid malloc/free per batch */
+ typedef struct {
+     double *x;
+     double *dx;
+     double *h;
+     double *dh;
+     double *logit;
+     int *cand;
+     size_t xlen;
+     size_t n_cand;
+     size_t hidden;
+     size_t vocab;
+     size_t emb;
+     size_t ctx;
+     int initialized;
+ } tl_Buffers;
+ 
+ static __thread tl_Buffers tl_buffers = {0};
+ 
+ static void tl_ensure_buffers(int ctx, int vocab, int emb, int hidden, int n_negatives) {
+     tl_Buffers *b = &tl_buffers;
+     size_t xlen = (size_t)ctx * emb;
+     size_t n_cand = (size_t)n_negatives + 1;
+     
+     if (b->initialized && b->xlen == xlen && b->n_cand == n_cand && 
+         b->hidden == (size_t)hidden && b->vocab == (size_t)vocab && 
+         b->emb == (size_t)emb && b->ctx == (size_t)ctx) {
+         return;
+     }
+     
+     // Free old buffers if sizes changed
+     if (b->initialized) {
+         free(b->x); free(b->dx); free(b->h); free(b->dh);
+         free(b->logit); free(b->cand);
+     }
+     
+     b->xlen = (size_t)ctx * emb;
+     b->n_cand = (size_t)n_negatives + 1;
+     b->hidden = (size_t)hidden;
+     b->vocab = (size_t)vocab;
+     b->emb = (size_t)emb;
+     b->ctx = (size_t)ctx;
+     
+     b->x = malloc(xlen * sizeof(double));
+     b->dx = malloc(xlen * sizeof(double));
+     b->h = malloc((size_t)hidden * sizeof(double));
+     b->dh = malloc((size_t)hidden * sizeof(double));
+     b->logit = malloc(((size_t)n_negatives + 1) * sizeof(double));
+     b->cand = malloc(((size_t)n_negatives + 1) * sizeof(int));
+     
+     b->initialized = 1;
+ }
+ 
+ static uint64_t tl_rand(uint64_t *state) {
+     uint64_t x = *state;
+     x ^= x >> 12;
+     x ^= x << 25;
+     x ^= x >> 27;
+     *state = x;
+     return x * 0x2545F4914F6CDD1DULL;
+ }
+ 
+ /* Accumulate loss and gradients for one window (matches sampled_loss math). */
+ static int window_grads(const double *params, const int *win, int ctx, int vocab,
+                         int emb, int hidden, int n_negatives, uint64_t *rng,
+                         const int *negs,
+                         double *x, double *dx, double *h, double *dh,
+                         double *logit, int *cand,
+                         double *dC, double *dW1, double *db1,
+                         double *dW2, double *db2, double *loss_out)
 {
     const double *C = params;
     const double *W1 = C + (size_t)vocab * emb;
@@ -160,31 +213,22 @@ static int core(const double *params, const int *windows, const int *negatives,
     double *dW2 = db1 + hidden;
     double *db2 = dW2 + (size_t)vocab * hidden;
 
-    double *x = malloc(xlen * sizeof(double));
-    double *dx = malloc(xlen * sizeof(double));
-    double *h = malloc((size_t)hidden * sizeof(double));
-    double *dh = malloc((size_t)hidden * sizeof(double));
-    double *logit = malloc((size_t)n_cand * sizeof(double));
-    int *cand = malloc((size_t)n_cand * sizeof(int));
-    if (!x || !dx || !h || !dh || !logit || !cand) {
-        free(x); free(dx); free(h); free(dh); free(logit); free(cand);
-        return -3;
-    }
+    tl_ensure_buffers(ctx, vocab, emb, hidden, n_negatives);
+    tl_Buffers *buf = &tl_buffers;
 
     double total = 0.0;
     int rc = 0;
-    for (int b = 0; b < batch; b++) {
-        const int *win = windows + (size_t)b * (ctx + 1);
-        const int *negs = negatives ? negatives + (size_t)b * n_negatives : NULL;
+    for (int i = 0; i < batch; i++) {
+        const int *win = windows + (size_t)i * (ctx + 1);
+        const int *negs = negatives ? negatives + (size_t)i * n_negatives : NULL;
         double wl = 0.0;
         rc = window_grads(params, win, ctx, vocab, emb, hidden, n_negatives,
-                          rng, negs, x, dx, h, dh, logit, cand,
+                          rng, negs, buf->x, buf->dx, buf->h, buf->dh, buf->logit, buf->cand,
                           dC, dW1, db1, dW2, db2, &wl);
         if (rc != 0) break;
         total += wl;
     }
 
-    free(x); free(dx); free(h); free(dh); free(logit); free(cand);
     if (rc == 0) *loss_sum = total;
     return rc;
 }

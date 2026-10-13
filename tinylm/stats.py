@@ -73,24 +73,22 @@ def best_path(name: str, best_dir: str = BEST_DIR) -> str:
     return str(Path(best_dir) / f"best_{_safe_name(name)}.tlm")
 
 
-def train_with_stats(name: str, model, ids, stats=None,
-                     stats_path: str = STATS_PATH, best_dir: str = BEST_DIR,
-                     **train_kwargs) -> Dict[str, Any]:
-    """Run `train()` and enforce a non-increasing best loss for `name`.
+def apply_stats(name: str, model, result: Dict[str, Any], stats=None,
+                stats_path: str = STATS_PATH, best_dir: str = BEST_DIR) -> Dict[str, Any]:
+    """Enforce a non-increasing best loss for `name` given a train result.
 
-    On improvement the weights are snapshotted to `best_<name>.tlm` and the
+    Works with any training path (`train()`, `train_parallel()`, ...): on
+    improvement the weights are snapshotted to `best_<name>.tlm` and the
     stats record updated; otherwise the persisted best weights are restored
     in place (the model never regresses) and `reverted` is True. Returns
-    `{result, improved, reverted, prev_best, best_loss}`.
+    `{improved, reverted, prev_best, best_loss}`.
     """
     from tinylm.serialization import load_model, save_model
-    from tinylm.training import train
 
     store = stats if stats is not None else TrainingStats(stats_path)
     prev_best = store.best_loss(name)
     target = best_path(name, best_dir)
 
-    result = train(model, ids, **train_kwargs)
     new_best = result.get("best_loss")
     improved = (
         new_best is not None
@@ -108,9 +106,25 @@ def train_with_stats(name: str, model, ids, stats=None,
     store.record(name, result.get("best_loss"), result.get("final_loss"),
                  result.get("steps_done", 0) or 0)
     return {
-        "result": result,
         "improved": improved,
         "reverted": reverted,
         "prev_best": prev_best,
         "best_loss": store.best_loss(name),
     }
+
+
+def train_with_stats(name: str, model, ids, stats=None,
+                     stats_path: str = STATS_PATH, best_dir: str = BEST_DIR,
+                     **train_kwargs) -> Dict[str, Any]:
+    """Run `train()` and enforce a non-increasing best loss for `name`.
+
+    Returns `{result, improved, reverted, prev_best, best_loss}` (see
+    `apply_stats()`).
+    """
+    from tinylm.training import train
+
+    result = train(model, ids, **train_kwargs)
+    info = apply_stats(name, model, result, stats=stats,
+                       stats_path=stats_path, best_dir=best_dir)
+    info["result"] = result
+    return info

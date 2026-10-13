@@ -41,6 +41,8 @@ from tinylm import (
     RouterConfig,
     RouterTrainingExample,
     TinyLM,
+    TrainingStats,
+    apply_stats,
     count_params,
     generate,
     generate_with_preview,
@@ -96,6 +98,9 @@ class TrainingActionsMixin:
         self.train_btn.setEnabled(False)
         self.train_router_btn.setEnabled(False)
         self._log_train(f"Training started: {len(prompt)} chars, {steps} steps, model={self._model_name}")
+        prev_best = TrainingStats().best_loss(self._model_name)
+        if prev_best is not None:
+            self._log_train(f"Previous best loss for '{self._model_name}': {prev_best:.4f}")
         self.train_progress.setMaximum(steps)
         self.train_progress.setValue(0)
         self.progress_label.setText(f"Step 0/{steps}")
@@ -106,7 +111,8 @@ class TrainingActionsMixin:
         self._train_text_raw = prompt
         self.train_text.setPlainText(insert_markers(prompt))
         self.train_text.setReadOnly(True)
-        self.worker.submit("Training", self._train_job, prompt, steps)
+        self.worker.submit("Training", self._train_job, prompt, steps,
+                           self._model_name)
         self.set_busy(True, "Training...")
 
     def _restore_training_text(self):
@@ -117,7 +123,7 @@ class TrainingActionsMixin:
             del self._train_text_raw
         self.train_text.setReadOnly(False)
 
-    def _train_job(self, prompt, steps):
+    def _train_job(self, prompt, steps, model_name):
         tokenizer_cfg = self.cfg["tokenizer"]
         training_cfg = self.cfg["training"]
 
@@ -166,6 +172,10 @@ class TrainingActionsMixin:
             rollback_callback=on_rollback,
             cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel,
         )
+        stats_info = apply_stats(model_name, self.model, result)
+        result = {**result, "stats_improved": stats_info["improved"],
+                  "stats_reverted": stats_info["reverted"],
+                  "stats_best": stats_info["best_loss"]}
         return prompt, steps, result
 
     def on_train_router(self):

@@ -96,6 +96,7 @@ from tinylm.parallel import (
 )
 from tinylm.stats import (
     TrainingStats,
+    apply_stats,
     best_path,
     train_with_stats,
     STATS_PATH,
@@ -132,7 +133,7 @@ __all__ = [
     "Checkpoint", "save_checkpoint", "load_checkpoint", "resume_from_checkpoint",
     "_flat_params", "_set_flat_params",
     "train", "_train_c", "_accel_available", "_flat_data",
-    "TrainingStats", "best_path", "train_with_stats", "STATS_PATH", "BEST_DIR",
+    "TrainingStats", "apply_stats", "best_path", "train_with_stats", "STATS_PATH", "BEST_DIR",
     "train_parallel", "train_multicore", "_WorkerState", "_init_worker", "_worker_grads_v2",
     "fast_logits", "_sample_next_token", "generate", "generate_with_preview",
 ]

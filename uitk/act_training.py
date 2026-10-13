@@ -9,7 +9,7 @@ from tkinter import scrolledtext, messagebox, ttk, filedialog
 from pathlib import Path
 
 from tokenizer import BPETokenizer
-from tinylm import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample, insert_markers, mark_and_encode, render_marked
+from tinylm import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample, insert_markers, mark_and_encode, render_marked, TrainingStats, apply_stats
 from registry import MODEL_REGISTRY, TASK_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
 from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, MODEL_CATALOG
 from config import Config
@@ -51,6 +51,9 @@ class TrainingActionsMixin:
         self.train_btn.configure(state="disabled")
         self.train_router_btn.configure(state="disabled")
         self._log_train(f"Training started: {len(prompt)} chars, {steps} steps, model={self.model_var.get()}")
+        prev_best = TrainingStats().best_loss(self.model_var.get())
+        if prev_best is not None:
+            self._log_train(f"Previous best loss for '{self.model_var.get()}': {prev_best:.4f}")
         self.train_progress.configure(maximum=steps, value=0)
         self.progress_label.configure(text=f"Step 0/{steps}")
         self._rollback_count = 0
@@ -59,7 +62,8 @@ class TrainingActionsMixin:
         # while training runs; the raw text is restored on completion.
         self._train_text_raw = prompt
         self._show_marked_training_text(insert_markers(prompt))
-        self._run_in_background("Training", self._train_job, prompt, steps)
+        self._run_in_background("Training", self._train_job, prompt, steps,
+                                self.model_var.get())
 
     def _show_marked_training_text(self, marked):
         """Display marked training text with yellow marker tags, input locked."""
@@ -87,7 +91,7 @@ class TrainingActionsMixin:
             self.train_text.insert("1.0", raw)
             del self._train_text_raw
 
-    def _train_job(self, prompt, steps):
+    def _train_job(self, prompt, steps, model_name):
         # Use config for tokenizer and training settings
         tokenizer_cfg = self.cfg["tokenizer"]
         training_cfg = self.cfg["training"]
@@ -132,6 +136,10 @@ class TrainingActionsMixin:
                        rollback_window=training_cfg.get("rollback_window", 2),
                        rollback_callback=on_rollback,
                        cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel)
+        stats_info = apply_stats(model_name, self.model, result)
+        result = {**result, "stats_improved": stats_info["improved"],
+                  "stats_reverted": stats_info["reverted"],
+                  "stats_best": stats_info["best_loss"]}
         return prompt, steps, result
 
     def on_cancel_training(self):

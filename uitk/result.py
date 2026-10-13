@@ -89,13 +89,18 @@ class ResultMixin:
                 self.progress_label.configure(text=f"Cancelled ({info.get('steps_done', 0)} steps)")
                 self._set_busy(False, "Training cancelled")
             else:
-                save_model(self.model, MODEL_PATH)
-                self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
                 info = result if isinstance(result, dict) else {}
                 # Training logs only go to training tab / unified logs, not chat
-                self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}, "
-                                f"rollbacks={info.get('rollbacks', 0)}")
-                self._log_unified("system", f"Training done: {steps} steps, model saved.")
+                if info.get("stats_reverted"):
+                    self._log_train(f"Training done: {steps} steps, no improvement "
+                                    f"(best stays {info.get('stats_best')}) - reverted, model file kept")
+                    self._log_unified("system", "Training done without improvement - reverted to best weights.")
+                else:
+                    save_model(self.model, MODEL_PATH)
+                    self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}, "
+                                    f"rollbacks={info.get('rollbacks', 0)}")
+                    self._log_unified("system", f"Training done: {steps} steps, model saved.")
+                self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
                 self.train_progress.configure(maximum=max(steps, 1), value=steps)
                 self.progress_label.configure(text=f"Done ({steps} steps)")
                 self._set_busy(False, "Training done")

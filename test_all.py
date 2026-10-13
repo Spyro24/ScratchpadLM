@@ -1073,6 +1073,34 @@ def t_stats():
                   for p, q in zip(model.params, restored.params)))
 
 
+@test("stats: apply_stats works for any train result dict")
+def t_stats_apply():
+    from tinylm import TrainingStats, apply_stats, best_path
+    from tinylm.serialization import load_model
+    tok, _ = tiny_tok_and_ids()
+    with tempfile.TemporaryDirectory() as d:
+        best_dir = os.path.join(d, "best")
+        store = TrainingStats(os.path.join(d, "stats.json"))
+        model = tiny_model(vocab=len(tok.vocab))
+        info = apply_stats("n", model, {"best_loss": 3.0, "final_loss": 3.2,
+                                        "steps_done": 5}, stats=store,
+                           best_dir=best_dir)
+        check(info["improved"] is True and info["reverted"] is False)
+        check(os.path.exists(best_path("n", best_dir)))
+        check(store.best_loss("n") == 3.0)
+        # Worse run reverts to the snapshotted weights
+        for p in model.params:
+            p.data += 2.0
+        info = apply_stats("n", model, {"best_loss": 9.0, "final_loss": 9.1,
+                                        "steps_done": 5}, stats=store,
+                           best_dir=best_dir)
+        check(info["improved"] is False and info["reverted"] is True)
+        check(info["prev_best"] == 3.0 and store.best_loss("n") == 3.0)
+        saved = load_model(best_path("n", best_dir))
+        check(all(p.data == q.data
+                  for p, q in zip(model.params, saved.params)))
+
+
 @test("router: output depends on the full context window")
 def t_router_context():
     from tinylm import Router, RouterConfig

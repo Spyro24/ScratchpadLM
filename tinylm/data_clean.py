@@ -306,8 +306,9 @@ def insert_markers(text: str) -> str:
     """Insert `[EOT]`/`[EOL]`/`[EOS]` markers into raw training text.
 
     Sentences (ending in `.`/`!`/`?`) get `[EOT]`, every non-empty line gets
-    `[EOL]`, every section gets a trailing `[EOS]`. Returns single-line
-    marked text ready for `encode_marked()`.
+    `[EOL]`, every section gets a trailing `[EOS]` on its own line. Line
+    breaks are preserved (not collapsed), so the marked preview keeps the
+    original layout. Output is ready for `encode_marked()`.
     """
     sections = []
     for sec in re.split(r"\n[ \t]*\n", text):
@@ -324,8 +325,8 @@ def insert_markers(text: str) -> str:
                 parts.append(frag + " [EOT]" if frag[-1] in ".!?" else frag)
             lines.append(" ".join(parts) + " [EOL]")
         if lines:
-            sections.append(" ".join(lines) + " [EOS]")
-    return " ".join(sections)
+            sections.append("\n".join(lines) + "\n[EOS]")
+    return "\n".join(sections)
 
 
 def encode_marked(marked_text: str, tokenizer, vocab_size: int) -> List[int]:

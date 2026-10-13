@@ -1,11 +1,12 @@
 """PySide6 UI mixin. Part of the `uiqt/` package split from `ui_qt.py`."""
 import json
 import os
+import re
 import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -72,6 +73,20 @@ from ui_base import (
 from uiqt.widgets import MONO, MessageBubble, AssistantBubble
 
 
+class MarkerHighlighter(QSyntaxHighlighter):
+    """Paints structural markers (`[EOL]`/`[EOS]`/`[EOT]`) yellow."""
+
+    def __init__(self, document):
+        super().__init__(document)
+        self._format = QTextCharFormat()
+        self._format.setForeground(QColor("#F7DC6F"))
+        self._pattern = re.compile(r"\[(EOL|EOS|EOT)\]")
+
+    def highlightBlock(self, text: str) -> None:
+        for m in self._pattern.finditer(text):
+            self.setFormat(m.start(), m.end() - m.start(), self._format)
+
+
 class TrainingTabMixin:
     def _build_training_tab(self) -> QWidget:
         root = QWidget()
@@ -93,6 +108,7 @@ class TrainingTabMixin:
         self.train_text = QPlainTextEdit()
         self.train_text.setPlaceholderText("Enter training text here…")
         self.train_text.setMinimumHeight(120)
+        self._marker_highlighter = MarkerHighlighter(self.train_text.document())
         dg.addWidget(self.train_text)
         v.addWidget(data_group, 2)
 

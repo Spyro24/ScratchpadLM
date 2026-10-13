@@ -1000,6 +1000,7 @@ def t_markers():
     check("[EOT]" in marked and "[EOL]" in marked and "[EOS]" in marked)
     check(marked.index("[EOT]") < marked.index("[EOL]"))
     check(marked.count("[EOS]") == 2)
+    check("\n" in marked, "marked preview must keep line breaks")
     ids = encode_marked(marked, tok, V)
     check(marker_id("EOL", V) in ids and marker_id("EOS", V) in ids
           and marker_id("EOT", V) in ids)
@@ -1539,6 +1540,39 @@ def t_ui_qt_smoke():
         win._poll_worker()  # must not raise on unpacking
         streamed = win._sessions[win._current_session]["messages"][-1]
         check(streamed["role"] == "assistant" and streamed["text"] == "tok123", streamed)
+    finally:
+        win.close()
+        win.deleteLater()
+
+
+@test("ui qt: marker highlighter paints markers yellow")
+def t_ui_qt_markers():
+    from ui_base import has_pyside6
+    if not has_pyside6():
+        print("    (PySide6 not installed - skipping)")
+        return
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QTextCursor
+        from uiqt.window import MainWindow
+    except Exception as exc:
+        print(f"    (PySide6 unavailable: {exc} - skipping)")
+        return
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    try:
+        check(hasattr(win, "_marker_highlighter"))
+        win.train_text.setPlainText("Hello world. [EOT] [EOL]\n[EOS]")
+        doc = win.train_text.document()
+        painted = set()
+        block = doc.firstBlock()
+        while block.isValid():
+            for fr in block.layout().formats():
+                if fr.format.foreground().color().name().lower() == "#f7dc6f":
+                    painted.add(block.text()[fr.start:fr.start + fr.length])
+            block = block.next()
+        check(painted == {"[EOT]", "[EOL]", "[EOS]"}, painted)
     finally:
         win.close()
         win.deleteLater()

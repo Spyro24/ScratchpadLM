@@ -37,7 +37,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 - [x] Multi-subtask training data: `generate_router_training_data()` adds composite examples from consecutive sentences spanning distinct domains (`max_subtasks`, 1 = singles only)
 - [x] Structural markers: `insert_markers()` tags `[EOT]` per sentence / `[EOL]` per line / `[EOS]` per section before training; single token IDs below the router block (`V-13..V-11`); training text renders the short forms yellow (`render_marked`, ANSI)
 - [x] Markers enter training: `mark_and_encode()` is the canonical entry, wired into CLI `train` (yellow sample printed at start, `--no-markers` opt-out) and both UI training jobs (marked sample in the training log)
-- [x] Training box shows markers: on train start the box displays the marked text (yellow tags in Tk) and locks input; raw text is restored on completion/error/cancel (both toolkits)
+- [x] Training box shows markers: on train start the box displays the marked text (yellow tags in Tk, `MarkerHighlighter` in Qt, newlines preserved) and locks input; raw text is restored on completion/error/cancel (both toolkits)
 - [x] De-hardwired runtime routing: `split()`/`route()`/`decompose()` and taskpad executors resolve models from the catalog only (unknown → `[]` / first catalogued model / dropped / clear error; only `router` stays literal)
 - [ ] Same treatment for the rest: `router_data` slot map + `decode_router_sequence` + training-data keyword defaults; `ThinkEngine`/`HarnessRuntime` model defaults; `cmd_generate`/`cmd_train`/demo/benchmark `tinyLM` fallbacks; UI placeholders
 - [ ] **MCP tool use**: tool-calling head, schema awareness, multi-step chains, result→context
@@ -102,6 +102,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 - [x] `taskpad execute`/`run-all` actually execute via default generate-backed executors (task model → catalog → `./tinyLM` fallback; per-task `max_tokens`); graceful error when no model files are present
 - [x] `python3 -m tinylm` demo guards `len(ids) <= model.ctx` (saved `tinyLM` ctx=2000 vs ~1802-token corpus): falls back to a fresh small-ctx model + `train()`/`_train_c()` raise `ValueError` instead of `IndexError`
 - [ ] `train_parallel()`/`train_multicore()` still lack the `len(ids) <= ctx` `ValueError` guard (same `IndexError` via `random.choice` on empty `starts`)
+- [ ] Per-model training stats (`training_stats.json`): persist best/last loss + steps per model at train end; surface the previous best when training starts so future runs know where the last best loss was
 
 ### 13. Testing & Validation
 - [x] Unit + integration tests (`test_all.py`); benchmarks (`benchmark.py`)

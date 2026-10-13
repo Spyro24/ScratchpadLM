@@ -6,6 +6,7 @@ Stdlib only. Implements online learning from user feedback.
 import json
 import time
 import threading
+import math
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Any, Optional, Callable
@@ -160,22 +161,63 @@ class RatingCollector:
 class Deduplicator:
     """Deduplicates feedback entries based on prompt similarity."""
 
-    def __init__(self, similarity_threshold: float = 0.2):
+    def __init__(self, similarity_threshold: float = 0.2, max_history: int = 1000):
         self.threshold = similarity_threshold
+        self.max_history = max_history
         self._seen_hashes: set = set()
+        self._seen_prompts: List[str] = []  # For edit distance comparison
+
+    def _edit_distance(self, s1: str, s2: str) -> int:
+        """Compute Levenshtein edit distance between two strings."""
+        if len(s1) < len(s2):
+            s1, s2 = s2, s1
+        if len(s2) == 0:
+            return len(s1)
+        
+        previous_row = list(range(len(s2) + 1))
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        return previous_row[-1]
+
+    def _normalized_distance(self, s1: str, s2: str) -> float:
+        """Normalized edit distance (0 = identical, 1 = completely different)."""
+        max_len = max(len(s1), len(s2))
+        if max_len == 0:
+            return 0.0
+        return self._edit_distance(s1, s2) / max_len
 
     def is_duplicate(self, entry: FeedbackEntry) -> bool:
         """Check if entry is a near-duplicate of a previously seen prompt."""
         if entry.prompt_hash in self._seen_hashes:
             return True
 
-        # For more sophisticated dedup, could compute edit distance
-        # For now, just use hash-based exact match
+        # Check edit distance against recent prompts
+        for seen_prompt in self._seen_prompts:
+            dist = self._normalized_distance(entry.prompt, seen_prompt)
+            if dist < self.threshold:
+                return True
+
+        # Add to history
         self._seen_hashes.add(entry.prompt_hash)
+        self._seen_prompts.append(entry.prompt)
+        
+        # Limit history size
+        if len(self._seen_prompts) > self.max_history:
+            self._seen_prompts = self._seen_prompts[-self.max_history:]
+            # Rebuild hash set (simplified - in production would use more efficient structure)
+            self._seen_hashes = {hashlib.md5(p.encode()).hexdigest()[:16] for p in self._seen_prompts}
+        
         return False
 
     def reset(self):
         self._seen_hashes.clear()
+        self._seen_prompts.clear()
 
 
 class AutoTrainer:
@@ -207,6 +249,39 @@ class AutoTrainer:
         # Pending feedback by model
         self._pending: Dict[str, List[FeedbackEntry]] = defaultdict(list)
 
+        # Load persisted state
+        self._load_state()
+
+    def _load_state(self) -> None:
+        """Load persisted autotrain state from disk."""
+        state_path = Path(AUTOTRAIN_CONFIG_PATH)
+        if state_path.exists():
+            try:
+                with open(state_path, "r") as f:
+                    state = json.load(f)
+                self._last_trained = state.get("last_trained", {})
+                self._steps_today = defaultdict(int, state.get("steps_today", {}))
+                self._last_day = state.get("last_day", time.strftime("%Y-%m-%d"))
+                # Restore running state
+                if state.get("was_running", False):
+                    self.start()
+            except Exception:
+                pass
+
+    def _save_state(self) -> None:
+        """Persist autotrain state to disk."""
+        state = {
+            "last_trained": self._last_trained,
+            "steps_today": dict(self._steps_today),
+            "last_day": self._last_day,
+            "was_running": self._running,
+        }
+        try:
+            with open(AUTOTRAIN_CONFIG_PATH, "w") as f:
+                json.dump(state, f)
+        except Exception:
+            pass
+
     def _on_new_feedback(self, entry: FeedbackEntry) -> None:
         """Callback when new feedback is collected."""
         if self.collector.is_high_rated(entry.rating):
@@ -222,6 +297,7 @@ class AutoTrainer:
         if today != self._last_day:
             self._steps_today.clear()
             self._last_day = today
+            self._save_state()
 
         # Check daily step limit
         if self._steps_today[model_name] >= self.max_steps_per_day:
@@ -234,10 +310,24 @@ class AutoTrainer:
 
         return True
 
+    def _evaluate_model_loss(self, model, ids: List[int]) -> float:
+        """Quick evaluation of model loss on a sample of data."""
+        from ai import evaluate
+        if len(ids) < model.ctx + 1:
+            return float('inf')
+        # Use a small sample for quick eval
+        sample_size = min(50, len(ids) - model.ctx)
+        sample_ids = ids[:sample_size + model.ctx]
+        try:
+            perplexity = evaluate(model, sample_ids)
+            return math.log(perplexity) if perplexity > 0 else float('inf')
+        except Exception:
+            return float('inf')
+
     def _train_model(self, model_name: str, entries: List[FeedbackEntry]) -> Dict[str, Any]:
         """Train a model on the given feedback entries."""
-        from ai import train, sync_vocab, save_model
-        from tokenizer import BPETokenizer
+        import math
+        from ai import train, sync_vocab, save_model, evaluate
         from registry import TOKENIZER_MANAGER
         from model_mgmt import ModelLoader, MODEL_CATALOG
 
@@ -251,37 +341,53 @@ class AutoTrainer:
             training_text += entry.prompt + "\n" + entry.response + "\n\n"
 
         # Extend tokenizer and sync model
-        tokenizer_cfg = {"vocab_size": 2000, "min_frequency": 2}  # Could come from config
+        tokenizer_cfg = {"vocab_size": 2000, "min_frequency": 2}
         TOKENIZER_MANAGER.extend(training_text, vocab_size=tokenizer_cfg["vocab_size"],
                                 min_frequency=tokenizer_cfg["min_frequency"])
         TOKENIZER_MANAGER.save("bpe_merges.txt")
         sync_vocab(model, len(TOKENIZER_MANAGER.tokenizer.vocab))
 
-        # Encode and train
+        # Encode
         ids = TOKENIZER_MANAGER.tokenizer.encode(training_text)
         if len(ids) <= model.ctx:
             return {"success": False, "error": f"Insufficient tokens: {len(ids)} <= {model.ctx}"}
 
-        # Train
-        loss_before = None
-        try:
-            # Quick eval before training (optional)
-            pass
+        # Evaluate loss before training
+        loss_before = self._evaluate_model_loss(model, ids)
 
+        # Train
+        try:
             train(model, ids, steps=self.autotrain_steps, lr=self.autotrain_lr,
                   batch_size=16, n_negatives=256, workers=1)
 
+            # Evaluate loss after training
+            loss_after = self._evaluate_model_loss(model, ids)
+
             # Save model
             save_model(model, f"models/{model_name}.tlm")
+            
+            # Update catalog metrics
+            spec = MODEL_CATALOG.get(model_name)
+            old_train_count = spec.metrics.get("train_count", 0) if spec else 0
             MODEL_CATALOG.update_metrics(model_name, {
                 "last_trained": time.time(),
-                "train_count": MODEL_CATALOG.get(model_name).metrics.get("train_count", 0) + 1
+                "train_count": old_train_count + 1,
+                "last_loss": loss_after,
+                "improvement_delta": loss_before - loss_after if loss_before != float('inf') and loss_after != float('inf') else 0.0,
             })
 
             self._last_trained[model_name] = time.time()
             self._steps_today[model_name] += self.autotrain_steps
+            self._save_state()
 
-            return {"success": True, "steps": self.autotrain_steps, "entries": len(entries)}
+            return {
+                "success": True, 
+                "steps": self.autotrain_steps, 
+                "entries": len(entries),
+                "loss_before": loss_before,
+                "loss_after": loss_after,
+                "improvement": loss_before - loss_after if loss_before != float('inf') and loss_after != float('inf') else 0.0
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -313,6 +419,9 @@ class AutoTrainer:
             "steps": result.get("steps", 0),
             "success": result.get("success", False),
             "error": result.get("error"),
+            "loss_before": result.get("loss_before"),
+            "loss_after": result.get("loss_after"),
+            "improvement": result.get("improvement"),
         }
         try:
             with open(AUTOTRAIN_LOG_PATH, "a", encoding="utf-8") as f:
@@ -327,6 +436,7 @@ class AutoTrainer:
         self._running = True
         self._thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._thread.start()
+        self._save_state()
 
     def stop(self) -> None:
         """Stop the background auto-trainer."""
@@ -334,6 +444,7 @@ class AutoTrainer:
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None
+        self._save_state()
 
     def status(self) -> Dict[str, Any]:
         """Get auto-trainer status."""
@@ -352,6 +463,50 @@ class AutoTrainer:
                 "rate_limit_minutes": self.rate_limit_minutes,
                 "max_steps_per_day": self.max_steps_per_day,
             }
+        }
+
+    def update_config(self, **kwargs) -> None:
+        """Update autotrain configuration."""
+        for key, value in kwargs.items():
+            if key == "min_batch":
+                self.min_batch = value
+            elif key == "max_wait":
+                self.max_wait = value
+            elif key == "autotrain_steps":
+                self.autotrain_steps = value
+            elif key == "autotrain_lr":
+                self.autotrain_lr = value
+            elif key == "rate_limit_minutes":
+                self.rate_limit_minutes = value
+            elif key == "max_steps_per_day":
+                self.max_steps_per_day = value
+            elif key == "high_threshold":
+                self.collector.high_threshold = value
+            elif key == "low_threshold":
+                self.collector.low_threshold = value
+        self.config.update(kwargs)
+        self._save_state()
+
+    def handle_low_rated(self, model_name: Optional[str] = None) -> List[FeedbackEntry]:
+        """Get low-rated entries for review or avoidance training."""
+        entries = self.collector.get_low_rated(model_name)
+        return entries
+
+    def get_metrics(self, model_name: str) -> Dict[str, Any]:
+        """Get training metrics for a specific model."""
+        from model_mgmt import MODEL_CATALOG
+        spec = MODEL_CATALOG.get(model_name)
+        if not spec:
+            return {}
+        
+        metrics = spec.metrics or {}
+        return {
+            "avg_rating": metrics.get("avg_rating", 0),
+            "train_count": metrics.get("train_count", 0),
+            "last_trained": metrics.get("last_trained", 0),
+            "last_loss": metrics.get("last_loss"),
+            "improvement_delta": metrics.get("improvement_delta", 0),
+            "pending_feedback": len(self._pending.get(model_name, [])),
         }
 
 

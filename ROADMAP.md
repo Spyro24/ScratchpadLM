@@ -55,7 +55,7 @@
 - [x] **RatingCollector**: `collect(prompt, response, model_name, rating, metadata)` — stores `(prompt, response, model, rating)` in `feedback.jsonl`
 - [x] **Rating thresholds**: `HIGH_THRESHOLD=4/5`, `LOW_THRESHOLD=2/5` — configurable
 - [x] **ModelSelector**: `select_model_for_input(prompt)` — uses router + catalog domain_keywords → best model
-- [ ] **AutoTrainer**: background worker that:
+- [x] **AutoTrainer**: background worker that:
   - Monitors `feedback.jsonl` for new high-rated entries (rating ≥ HIGH_THRESHOLD)
   - Groups by model_name
   - Batches entries (min batch=8, max_wait=60s)
@@ -63,8 +63,8 @@
   - Updates model in catalog, saves checkpoint
   - Logs: `autotrain.log` — timestamp, model, batch_size, loss_before, loss_after
 - [ ] **Low-rating handler**: rating ≤ LOW_THRESHOLD → flags for review, optionally trains "avoidance" (negative examples)
-- [ ] **Deduplication**: hash prompts, skip near-duplicates (edit distance < 0.2)
-- [ ] **Rate limiting**: max 1 auto-train per model per 5 min, max 100 steps/day per model
+- [x] **Deduplication**: hash prompts, skip near-duplicates (edit distance < 0.2)
+- [x] **Rate limiting**: max 1 auto-train per model per 5 min, max 100 steps/day per model
 - [ ] **CLI**: `tinylm autotrain status`, `tinylm autotrain enable/disable`, `tinylm autotrain config --threshold 4 --batch 16`
 - [ ] **Harness integration**: `autotrain on`, `autotrain off`, `autotrain config`, `rate last <1-5>` commands
 - [ ] **Metrics**: tracks per-model `avg_rating`, `train_count`, `last_trained`, `improvement_delta`

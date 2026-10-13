@@ -34,7 +34,7 @@
 - [x] **Model selector**: dropdown to switch between registered models (router + specialized)
 - [x] **Training monitor**: progress bar with step counter + live loss (loss chart/LR display still open)
 - [x] **Generation controls**: temperature, top-k, top-p, repetition penalty sliders
-- [ ] **Tokenizer manager**: view vocab size, learned patterns, extend vocab button
+- [x] **Tokenizer manager**: view vocab size, learned patterns, extend vocab button
 - [ ] **Config editor**: YAML editor with validation, save/load presets
 - [ ] **Log viewer**: scrollable training/generation logs with filtering
 - [x] **Model inspector**: parameter count, memory usage, architecture summary

@@ -847,17 +847,40 @@ class Router:
         return [sum(self.W_out[i][j].data * x[j] for j in range(self.config.emb)) + self.b_out[i].data
                 for i in range(self.config.vocab_size)]
     
-    def split(self, prompt: str, tokenizer, max_subtasks: int = 4) -> List[dict]:
+    def split(self, prompt: str, tokenizer, max_subtasks: int = 4, catalog=None) -> List[dict]:
         """Decompose prompt into subtasks with model assignments.
         
         Returns list of dicts: [{model: str, prompt: str, context_tokens: List[int]}]
-        """
-        # For now, simple heuristic-based routing
-        # In future, this will use the trained model
-        ids = tokenizer.encode(prompt)
         
-        # Simple keyword-based routing
+        Args:
+            prompt: Input prompt to route
+            tokenizer: BPETokenizer for encoding
+            max_subtasks: Maximum number of subtasks to return
+            catalog: Optional ModelCatalog to use domain_keywords for routing
+        """
+        ids = tokenizer.encode(prompt)
         prompt_lower = prompt.lower()
+        
+        # If catalog provided, use domain_keywords for routing
+        if catalog is not None:
+            # Score each model by keyword matches
+            scores = {}
+            for spec in catalog.list():
+                if spec.name == "router":
+                    continue  # Skip router itself
+                score = sum(1 for kw in spec.domain_keywords if kw in prompt_lower)
+                if score > 0:
+                    scores[spec.name] = score
+            
+            if scores:
+                # Return top-scoring models (up to max_subtasks)
+                sorted_models = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+                return [
+                    {"model": model_name, "prompt": prompt, "context_tokens": ids}
+                    for model_name, _ in sorted_models[:max_subtasks]
+                ]
+        
+        # Fallback to hardcoded keyword-based routing
         if any(kw in prompt_lower for kw in ["code", "function", "class", "debug", "python", "javascript"]):
             return [{"model": "tiny-code", "prompt": prompt, "context_tokens": ids}]
         elif any(kw in prompt_lower for kw in ["math", "calculate", "solve", "prove", "logic"]):

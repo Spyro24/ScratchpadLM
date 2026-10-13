@@ -12,13 +12,13 @@ Do only one task.
 | Component | File | Description |
 |-----------|------|-------------|
 | Tokenizer | `tokenizer.py` | Byte-level BPE. `extend()` adds tokens without changing existing IDs. |
-| Model & Autograd | `ai.py` | `Value` (autograd), `TinyLM`, training (SGD + sampled softmax), generation, 4-bit save/load. Training extras: `LR_Scheduler`, `clip_grads`, `evaluate`, `EarlyStopping`, `Checkpoint`/`save_checkpoint`/`load_checkpoint`/`resume_from_checkpoint`, `AutoAdjust`. |
+| Model & Autograd | `ai.py` | `Value` (autograd), `TinyLM`, `Router`, `SpecializedLM`, training (SGD + sampled softmax), generation, 4-bit save/load. Training extras: `LR_Scheduler`, `clip_grads`, `evaluate`, `EarlyStopping`, `Checkpoint`, `AutoAdjust`. Router training: `train_router()`, `generate_router_training_data()`. |
 | Config | `config.py` | YAML/JSON config with validation, defaults, merging. Stdlib only. |
 | Registries | `registry.py` | `ModelRegistry`, `TaskRegistry`, `TokenizerManager` (singleton). |
 | Model Management | `model_mgmt.py` | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`. |
 | C Acceleration | `accel.py` + `csrc/train_kernel.c` | Optional fused C kernel (ctypes). Supports LR-per-step and gradient clipping (`max_norm`). Built via `./build.sh`. |
 | Tests | `test_all.py` | Fast unit test suite (stdlib only). Run `python3 test_all.py` after every change. |
-| UI | `ui.py` | Tkinter app: input box, steps field, Train/Generate buttons, history. |
+| UI | `ui.py` | Tkinter app: tabbed layout (Chat, Training, Model Info, Admin, Settings). |
 | Legacy Demo | `main.py` | N-gram model demo (not used by main app). |
 
 **Saved artifacts** (keep together, do not delete):
@@ -129,6 +129,9 @@ model = load_model("tinyLM")  # Rebuilds TinyLM, dequantizes into Value.data
 - `TinyLM.params`: Flat list of all `Value` objects in fixed order
 - `_WorkerState`: Module-level namespace for persistent worker model
 - `_flat_params()` / `_set_flat_params()`: Convert between `List[Value]` and `List[float]`
+- **Router**: `RouterConfig`, `Router` class — 2-layer transformer for task decomposition
+- **SpecializedLM**: `SpecializedConfig`, `SpecializedLM` class — 1-layer transformer (≤100K params)
+- **Router training**: `train_router()`, `generate_router_training_data()`, `RouterTrainingExample`
 
 ### `config.py`
 - `Config.from_file(path)`: Loads `.yaml`/`.yml` (custom parser) or `.json`

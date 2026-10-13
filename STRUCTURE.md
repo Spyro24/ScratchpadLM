@@ -12,7 +12,7 @@
 | File | Purpose | Key Classes/Functions |
 |------|---------|----------------------|
 | `tokenizer.py` | Byte-level BPE tokenizer | `BPETokenizer`, `extend()`, `train()`, `encode()`, `decode()`, `save()`, `load()` |
-| `ai.py` | Autograd, model, training, generation, 4-bit I/O | `Value`, `TinyLM`, `train()`, `train_parallel()`, `generate()`, `save_model()`, `load_model()`, `sync_vocab()`, `count_params()`, `enforce_param_limit()` |
+| `ai.py` | Autograd, models, training, generation, 4-bit I/O | `Value`, `TinyLM`, `Router`, `SpecializedLM`, `train()`, `train_parallel()`, `generate()`, `save_model()`, `load_model()`, `sync_vocab()`, `count_params()`, `enforce_param_limit()`, `train_router()`, `generate_router_training_data()` |
 | `accel.py` | Optional C training kernel via ctypes (loads `libtinylm_accel.so` from `build.sh`) | `AVAILABLE`, `batch_loss_grads()`, `train_step()`, `CAccelError` |
 | `csrc/train_kernel.c` | C source for fused sampled-softmax fwd/bwd + SGD | `tl_batch_loss_grads()`, `tl_train_step()` |
 | `config.py` | Config system (YAML/JSON, validation, defaults) | `Config`, `load_yaml()`, `model_config()`, `training_config()`, `merge_configs()` |
@@ -31,7 +31,7 @@
 ```
 ui.py
   ├─ tokenizer.py (BPETokenizer)
-  ├─ ai.py (TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel)
+  ├─ ai.py (TinyLM, Router, SpecializedLM, train, generate, load_model, save_model, sync_vocab, train_parallel)
   ├─ config.py (Config)
   └─ registry.py (TokenizerManager, MODEL_REGISTRY, TASK_REGISTRY)
 
@@ -42,11 +42,11 @@ ai.py
 
 registry.py
   ├─ tokenizer.py (BPETokenizer)
-  ├─ ai.py (TinyLM)  ← only in __main__ demo
+  ├─ ai.py (TinyLM, Router, SpecializedLM)  ← only in __main__ demo
   └─ config.py (Config)  ← for future config-driven registration
 
 model_mgmt.py
-  ├─ ai.py (TinyLM, save_model, load_model, count_params)
+  ├─ ai.py (TinyLM, Router, SpecializedLM, save_model, load_model, count_params)
   ├─ registry.py (TokenizerManager)
   └─ config.py (Config)
 
@@ -86,6 +86,28 @@ config.py
   - `logits(context) → List[Value]`
   - `loss(context, target) → Value`
   - `sampled_loss(context, target, n_negatives, vocab_size) → Value` — negative sampling
+
+### `Router` (ai.py)
+- **Architecture**: Token embeddings + positional embeddings → 2 TransformerBlocks → LM head
+- **Config**: `RouterConfig(vocab_size, ctx, emb, hidden, n_layers=2, d_ff=512)`
+- **Params**: ~300K (embeddings + 2 blocks + output head)
+- **Methods**:
+  - `_embed_context(context) → List[Value]`
+  - `logits(context) → List[Value]`
+  - `sampled_loss(context, target, n_negatives, vocab_size) → Value`
+  - `fast_logits(context) → List[float]` (inference)
+  - `split(prompt, tokenizer, max_subtasks=4, catalog=None) → List[dict]` — task decomposition with optional catalog-based routing
+
+### `SpecializedLM` (ai.py)
+- **Architecture**: Token embeddings + positional embeddings → 1 TransformerBlock → LM head
+- **Config**: `SpecializedConfig(vocab_size, ctx, emb, hidden, n_layers=1, d_ff=128, model_type)`
+- **Params**: ≤100K (enforced at init via `enforce_param_limit`)
+- **Methods**:
+  - `_embed_context(context) → List[Value]`
+  - `logits(context) → List[Value]`
+  - `sampled_loss(context, target, n_negatives, vocab_size) → Value`
+  - `fast_logits(context) → List[float]` (inference)
+- **Factory**: `create_specialized_model(config)`, `get_specialized_presets()` — 8 preset configs (code, reason, prose, embed, sql, docs, shell, data)
 
 ### `Config` (config.py)
 - Loads YAML/JSON, merges with `DEFAULTS`, validates against `SCHEMA`
@@ -282,11 +304,11 @@ python3 ai.py
 
 ## Next Integration Points
 
-1. **Wire Config into ui.py**: Replace hardcoded `VOCAB_SIZE, CTX, EMB, HIDDEN` with `Config`
-2. **Wire Config into ai.py**: Use `Config` for `train()`, `train_parallel()`, `generate()`
-3. **Add ModelRegistry** (roadmap 0): `registry.py` with `register/get/list`
-4. **Add TaskRegistry** (roadmap 0): `task_registry.py`
-5. **Add TokenizerManager** (roadmap 0): singleton wrapper for `BPETokenizer`
+1. **Router-Catalog integration**: Router reads catalog `domain_keywords` for routing decisions (partially done in `Router.split()`)
+2. **Multi-Model Runtime**: Load router + specialized models, route prompts collaboratively
+3. **Task System**: Task definitions, planner, executor, built-in tasks
+4. **CLI / API**: `tinylm` entry point with subcommands (train, generate, serve, model mgmt)
+5. **Documentation**: README, CONFIG, HARNESS, MODELS, API docs
 
 ---
 

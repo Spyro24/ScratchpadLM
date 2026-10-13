@@ -444,7 +444,8 @@ class App:
         self.delete_btn.pack(side="left")
 
     def _build_settings_tab(self, tab):
-        """Settings tab: edit generation/training/tokenizer/model config, save to config.yaml."""
+        """Settings tab: edit generation/training/tokenizer/model config, save to config.yaml.
+        Includes Tokenizer Manager section for viewing/extending vocabulary."""
         tab.columnconfigure(1, weight=1)
 
         # (section, key, label, type) for each editable setting
@@ -500,9 +501,62 @@ class App:
             self._settings_entries[(section, key)] = (entry, cast)
             row += 1
 
+        # ---- Tokenizer Manager Section ----
+        row += 1
+        tk.Label(tab, text="TOKENIZER MANAGER", font=("Consolas", 10, "bold")).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(10, 2)
+        )
+        row += 1
+
+        # Vocab size display
+        tk.Label(tab, text="Current Vocab Size:").grid(row=row, column=0, sticky="w", padx=(10, 5))
+        self.tok_vocab_label = tk.Label(tab, text=str(len(self.tok.vocab)), font=("Consolas", 9, "bold"))
+        self.tok_vocab_label.grid(row=row, column=1, sticky="w", pady=1)
+        row += 1
+
+        # Number of learned merges
+        tk.Label(tab, text="Learned Merges:").grid(row=row, column=0, sticky="w", padx=(10, 5))
+        self.tok_merges_label = tk.Label(tab, text=str(len(self.tok.merges)), font=("Consolas", 9, "bold"))
+        self.tok_merges_label.grid(row=row, column=1, sticky="w", pady=1)
+        row += 1
+
+        # Extend vocab text area
+        tk.Label(tab, text="Extend with text:").grid(row=row, column=0, sticky="nw", padx=(10, 5))
+        self.tok_extend_text = scrolledtext.ScrolledText(tab, wrap="word", width=40, height=4, font=("Consolas", 9))
+        self.tok_extend_text.grid(row=row, column=1, sticky="ew", pady=2)
+        row += 1
+
+        # Extend vocab controls
+        extend_row = tk.Frame(tab)
+        extend_row.grid(row=row, column=1, sticky="w", pady=2)
+        tk.Label(extend_row, text="Target vocab size:").pack(side="left", padx=(0, 5))
+        self.tok_target_vocab_var = tk.Entry(extend_row, width=10)
+        self.tok_target_vocab_var.insert(0, str(self.cfg["tokenizer"]["vocab_size"]))
+        self.tok_target_vocab_var.pack(side="left", padx=(0, 10))
+        tk.Label(extend_row, text="Min freq:").pack(side="left", padx=(0, 5))
+        self.tok_min_freq_var = tk.Entry(extend_row, width=8)
+        self.tok_min_freq_var.insert(0, str(self.cfg["tokenizer"]["min_frequency"]))
+        self.tok_min_freq_var.pack(side="left", padx=(0, 10))
+        tk.Button(extend_row, text="Extend Vocab", command=self.on_extend_vocab).pack(side="left", padx=5)
+        row += 1
+
+        # Learned patterns viewer
+        tk.Label(tab, text="Learned Patterns (sample):").grid(row=row, column=0, sticky="nw", padx=(10, 5))
+        self.tok_patterns_text = scrolledtext.ScrolledText(tab, wrap="word", width=40, height=8, font=("Consolas", 9), state="disabled")
+        self.tok_patterns_text.grid(row=row, column=1, sticky="ew", pady=2)
+        row += 1
+
+        tk.Button(tab, text="Refresh Patterns", command=self.refresh_tokenizer_patterns).grid(
+            row=row, column=1, sticky="w", pady=(2, 0)
+        )
+        row += 1
+
         tk.Button(tab, text="Save Config", command=self.on_save_config, width=15).grid(
             row=row + 1, column=0, columnspan=2, pady=(15, 0)
         )
+
+        # Initial pattern refresh
+        self.refresh_tokenizer_patterns()
 
     def _append_history(self, role, text):
         """Append a message to conversation history with role styling."""
@@ -843,6 +897,127 @@ class App:
         self.rep_penalty_var.insert(0, str(new_data["generation"]["repetition_penalty"]))
 
         self._append_history("system", f"[Config saved to {CONFIG_PATH}]")
+
+    # ---- tokenizer manager actions -------------------------------------------
+
+    def refresh_tokenizer_patterns(self):
+        """Refresh the tokenizer patterns display."""
+        try:
+            patterns = self.tok.learned_patterns(min_len=2)
+            # Show first 100 patterns to avoid UI overload
+            display_patterns = patterns[:100]
+            self.tok_patterns_text.configure(state="normal")
+            self.tok_patterns_text.delete("1.0", "end")
+            if display_patterns:
+                self.tok_patterns_text.insert("1.0", "\n".join(display_patterns))
+                if len(patterns) > 100:
+                    self.tok_patterns_text.insert("end", f"\n... ({len(patterns)} total patterns)")
+            else:
+                self.tok_patterns_text.insert("1.0", "(no patterns learned yet)")
+            self.tok_patterns_text.configure(state="disabled")
+            # Update vocab/merges labels
+            self.tok_vocab_label.configure(text=str(len(self.tok.vocab)))
+            self.tok_merges_label.configure(text=str(len(self.tok.merges)))
+            self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
+        except Exception as exc:
+            self.tok_patterns_text.configure(state="normal")
+            self.tok_patterns_text.delete("1.0", "end")
+            self.tok_patterns_text.insert("1.0", f"Error: {exc}")
+            self.tok_patterns_text.configure(state="disabled")
+
+    def on_extend_vocab(self):
+        """Extend tokenizer vocabulary with new text."""
+        if self.busy:
+            return
+        text = self.tok_extend_text.get("1.0", "end-1c").strip()
+        if not text:
+            messagebox.showwarning("No input", "Enter some text to extend the vocabulary.")
+            return
+        try:
+            target_vocab = int(self.tok_target_vocab_var.get())
+            min_freq = int(self.tok_min_freq_var.get())
+            if target_vocab < 256:
+                raise ValueError("Target vocab size must be at least 256")
+            if min_freq < 1:
+                raise ValueError("Min frequency must be at least 1")
+        except ValueError as e:
+            messagebox.showwarning("Invalid input", str(e))
+            return
+
+        self._log_train(f"Extending vocab: +{len(text)} chars, target={target_vocab}, min_freq={min_freq}")
+        self._run_in_background("Extending vocab", self._extend_vocab_job, text, target_vocab, min_freq)
+
+    def _extend_vocab_job(self, text, target_vocab, min_freq):
+        """Background job to extend vocabulary."""
+        # Extend the shared tokenizer
+        TOKENIZER_MANAGER.extend(text, vocab_size=target_vocab, min_frequency=min_freq)
+        TOKENIZER_MANAGER.save(TOKENIZER_PATH)
+        
+        # Sync model vocabulary (grows embeddings in place)
+        sync_vocab(self.model, len(self.tok.vocab))
+        
+        # Save updated model
+        save_model(self.model, MODEL_PATH)
+        
+        return target_vocab, min_freq
+
+    def _handle_result(self, kind, label, payload):
+        if kind == "error":
+            self._set_busy(False, "Error")
+            self._append_history("error", f"Error: {payload}")
+            if label == "Training":
+                self._log_train(f"{label} failed: {payload}", is_error=True)
+                self.progress_label.configure(text="Failed")
+            elif label == "Extending vocab":
+                self._log_train(f"Vocab extension failed: {payload}", is_error=True)
+            messagebox.showerror("Error", f"{label} failed:\n{payload}")
+            return
+
+        if label == "Training":
+            prompt, steps = payload
+            save_model(self.model, MODEL_PATH)
+            self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
+            self._append_history("system", f"[Trained on {len(prompt)} chars, {steps} steps, model saved. Vocab: {len(self.tok.vocab)}]")
+            self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}")
+            self.train_progress.configure(maximum=max(steps, 1), value=steps)
+            self.progress_label.configure(text=f"Done ({steps} steps)")
+            self._set_busy(False, "Training done")
+            self.update_model_inspector()
+        elif label.startswith("Loading "):
+            self.model = payload
+            model_name = label.replace("Loading ", "")
+            self._append_history("system", f"[Loaded model: {model_name} ({len(self.model.C)} vocab, {self.model.ctx} ctx)]")
+            self._set_busy(False, "Ready")
+            self.update_model_inspector()
+        elif label == "Generating":
+            prompt, text = payload
+            self._append_history("assistant", text)
+            self._set_busy(False, "Ready")
+        elif label == "Creating model":
+            spec = payload
+            self._append_history("system", f"[Created model '{spec.name}' ({spec.param_count:,} params, domains: {', '.join(spec.domain_keywords)})]")
+            self.refresh_catalog_list()
+            self.refresh_models()
+            self._set_busy(False, "Model created")
+        elif label == "Deleting model":
+            name, removed = payload
+            if removed:
+                self._append_history("system", f"[Deleted model '{name}' from catalog]")
+            else:
+                self._append_history("system", f"[Model '{name}' was not in catalog]")
+            self.refresh_catalog_list()
+            self.refresh_models()
+            self._set_busy(False, "Model deleted")
+        elif label == "Extending vocab":
+            target_vocab, min_freq = payload
+            self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
+            self.tok_vocab_label.configure(text=str(len(self.tok.vocab)))
+            self.tok_merges_label.configure(text=str(len(self.tok.merges)))
+            self._append_history("system", f"[Extended vocab to {len(self.tok.vocab)} tokens (target={target_vocab}, min_freq={min_freq}), model saved]")
+            self._log_train(f"Vocab extended to {len(self.tok.vocab)} tokens, model saved")
+            self._set_busy(False, "Vocab extended")
+            self.refresh_tokenizer_patterns()
+            self.update_model_inspector()
 
     def update_model_inspector(self):
         """Update the model inspector with current model details."""

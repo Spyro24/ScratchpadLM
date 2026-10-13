@@ -38,6 +38,7 @@
 - [ ] **Config editor**: YAML editor with validation, save/load presets
 - [ ] **Log viewer**: scrollable training/generation logs with filtering
 - [x] **Model inspector**: parameter count, memory usage, architecture summary
+- [ ] **UI polish & layout fixes**: Fix spacing issues, elements going off-screen, consistent padding/margins, responsive resizing, scrollable tabs for overflow content, improve visual hierarchy and alignment
 
 ### 0b. Dynamic Model Management (runtime)
 - [x] **ModelSpec**: dataclass `{name, path, domain_keywords, param_count, config, created_at, metrics}`

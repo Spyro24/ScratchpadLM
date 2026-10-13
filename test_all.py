@@ -728,6 +728,25 @@ def t_train_momentum():
 # parallel training + gradient clipping
 # ---------------------------------------------------------------------------
 
+@test("train_parallel: auto-adjust cuts LR on plateaus")
+def t_parallel_autoadjust():
+    import io, contextlib
+    from tinylm import train_parallel
+    tok, ids = tiny_tok_and_ids()
+    kw = dict(lr=0.0, batch_size=4, n_negatives=8, workers=2, steps=6,
+              auto_patience=2)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        train_parallel(tiny_model(vocab=len(tok.vocab)), ids, auto_adjust=True,
+                       **kw)
+    check("auto-adjust" in buf.getvalue())
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        train_parallel(tiny_model(vocab=len(tok.vocab)), ids, auto_adjust=False,
+                       **kw)
+    check("auto-adjust" not in buf.getvalue())
+
+
 @test("train_multicore: best-of-N trials keep the lowest-loss update")
 def t_train_multicore():
     from tinylm import train_multicore
@@ -1530,6 +1549,43 @@ def t_ui_train_box():
         check(str(app.train_text.cget("state")) == "normal")
     finally:
         root.destroy()
+
+
+@test("ui: auto-adjust checkbox defaults to checked")
+def t_ui_autoadjust():
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+    except Exception:
+        print("    (no display - skipping Tk)")
+    else:
+        try:
+            from uitk.app import App
+            app = App(root)
+            check(hasattr(app, "auto_adjust_cb"))
+            check(app.auto_adjust_var.get() is True)
+        finally:
+            root.destroy()
+    from ui_base import has_pyside6
+    if not has_pyside6():
+        print("    (PySide6 not installed - skipping Qt)")
+        return
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication
+        from uiqt.window import MainWindow
+    except Exception as exc:
+        print(f"    (PySide6 unavailable: {exc} - skipping)")
+        return
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    try:
+        check(hasattr(win, "auto_adjust_cb"))
+        check(win.auto_adjust_cb.isChecked() is True)
+    finally:
+        win.close()
+        win.deleteLater()
 
 
 @test("ui: toolkit auto-detect prefers pyside6, tkinter fallback honors override")

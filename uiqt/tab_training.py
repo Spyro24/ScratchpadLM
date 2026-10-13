@@ -128,6 +128,9 @@ class TrainingTabMixin:
         self.cancel_train_btn.setEnabled(False)
         self.cancel_train_btn.clicked.connect(self.on_cancel_training)
         controls.addWidget(self.cancel_train_btn)
+        self.auto_adjust_cb = QCheckBox("Auto-adjust")
+        self.auto_adjust_cb.setChecked(bool(self.cfg["training"]["auto_adjust"]))
+        controls.addWidget(self.auto_adjust_cb)
         controls.addStretch(1)
         v.addLayout(controls)
 

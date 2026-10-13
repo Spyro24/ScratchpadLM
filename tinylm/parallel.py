@@ -10,7 +10,7 @@ except Exception:  # pragma: no cover
     accel = None
 
 from tinylm.checkpoint import _flat_params, _set_flat_params
-from tinylm.sched import RollbackGuard, clip_grads
+from tinylm.sched import RollbackGuard, clip_grads, AutoAdjust
 
 class _WorkerState:
     """Holds a model instance in each worker process to avoid reconstruction."""
@@ -167,14 +167,18 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
                    progress_cb=None, grad_clip: float = 0.0, cancel_callback=None,
                    save_on_cancel_callback=None, momentum: float = 0.9,
                    rollback_window: int = 0, rollback_tol: float = 1e-4,
-                   rollback_callback=None):
+                   rollback_callback=None, auto_adjust: bool = True,
+                   auto_factor: float = 0.5, auto_patience: int = 10,
+                   auto_clip_relax: bool = True):
     """Data-parallel version of train. Uses persistent worker pool to avoid
     rebuilding the model each step. The batch is split across processes and
     the gradients are summed before one SGD update (with momentum).
 
     Matches `train()`: gradients are averaged over the batch, clipped once by
     global norm, then applied as `v = momentum * v + g ; p -= lr * v`
-    (`momentum=0` -> plain SGD).
+    (`momentum=0` -> plain SGD). Automatic adjustment (`auto_adjust`: LR cut
+    by `auto_factor` on plateaus + clip relaxation via `auto_clip_relax`)
+    mirrors `train()` with `rollback_tol` as its `min_delta`.
 
     `rollback_window` snapshots every step and restores the lowest-loss step
     in the window when the current loss spikes above it by more than
@@ -210,6 +214,13 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
     velocity = [0.0] * len(params)
     rb_guard = RollbackGuard(window=rollback_window, tol=rollback_tol)
 
+    # Automatic adjustment (LR on plateau + clip relaxation), as in train().
+    adjuster = AutoAdjust(
+        enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
+        min_delta=rollback_tol, warmup_ignore=0,
+        max_grad_clip=grad_clip, clip_relax=auto_clip_relax,
+    )
+
     # Pre-create initial flat params for worker initialization.
     # Workers only compute gradients: clipping is applied once in the parent
     # on the batch-averaged gradient, so the in-worker clip stays off.
@@ -227,7 +238,7 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
                 steps_done = step
                 break
 
-            rate = lr * (1.0 - step / steps)
+            rate = lr * (1.0 - step / steps) * adjuster.multiplier
             batch = [(ids[i:i + ctx], ids[i + ctx])
                      for i in (random.choice(starts) for _ in range(batch_size))]
             chunks = [batch[k::workers] for k in range(workers)]
@@ -274,18 +285,23 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
             last_loss = step_loss
             steps_done = step + 1
 
-            # Gradient clipping on the mean gradient (same rule as train())
-            if grad_clip > 0:
-                import math
-                total_norm = math.sqrt(sum(g * g for g in grad))
-                if total_norm > grad_clip and total_norm > 0:
-                    scale = grad_clip / total_norm
-                    grad = [g * scale for g in grad]
+            # Gradient clipping on the mean gradient (same rule as train()),
+            # with automatic relaxation when clipping fires chronically.
+            clip_now = adjuster.grad_clip_now()
+            total_norm = math.sqrt(sum(g * g for g in grad))
+            adjuster.note_grad_clip(total_norm)
+            if clip_now > 0 and total_norm > clip_now and total_norm > 0:
+                scale = clip_now / total_norm
+                grad = [g * scale for g in grad]
 
             # SGD with momentum: v = momentum * v + g ; p -= rate * v
             for i, p in enumerate(params):
                 velocity[i] = momentum * velocity[i] + grad[i]
                 p.data -= rate * velocity[i]
+
+            # Automatic adjustment: reduce LR when loss plateaus
+            if adjuster.check(step + 1, step_loss):
+                print(f"step {step:5d}  auto-adjust: lr multiplier -> {adjuster.multiplier:.4f}")
 
             if progress_cb is not None:
                 progress_cb(step + 1, steps, step_loss)

@@ -113,7 +113,7 @@ class TrainingActionsMixin:
         self.train_text.setPlainText(insert_markers(prompt))
         self.train_text.setReadOnly(True)
         self.worker.submit("Training", self._train_job, prompt, steps,
-                           self._model_name)
+                           self._model_name, self.auto_adjust_cb.isChecked())
         self.set_busy(True, "Training...")
 
     def _restore_training_text(self):
@@ -124,7 +124,7 @@ class TrainingActionsMixin:
             del self._train_text_raw
         self.train_text.setReadOnly(False)
 
-    def _train_job(self, prompt, steps, model_name):
+    def _train_job(self, prompt, steps, model_name, auto_adjust):
         tokenizer_cfg = self.cfg["tokenizer"]
         training_cfg = self.cfg["training"]
 
@@ -182,6 +182,10 @@ class TrainingActionsMixin:
             grad_clip=training_cfg.get("grad_clip", 0.0),
             rollback_window=training_cfg.get("rollback_window", 2),
             rollback_callback=on_rollback,
+            auto_adjust=auto_adjust,
+            auto_factor=training_cfg.get("auto_factor", 0.5),
+            auto_patience=training_cfg.get("auto_patience", 10),
+            auto_clip_relax=training_cfg.get("auto_clip_relax", True),
             cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel,
         )
         stats_info = apply_stats(model_name, self.model, result)

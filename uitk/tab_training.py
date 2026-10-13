@@ -72,6 +72,10 @@ class TrainingTabMixin:
         self.cancel_train_btn = tk.Button(train_controls, text="Cancel Training", width=15, command=self.on_cancel_training, state="disabled")
         self.cancel_train_btn.pack(side="left", padx=5)
 
+        self.auto_adjust_var = tk.BooleanVar(value=bool(self.cfg["training"]["auto_adjust"]))
+        self.auto_adjust_cb = tk.Checkbutton(train_controls, text="Auto-adjust", variable=self.auto_adjust_var)
+        self.auto_adjust_cb.pack(side="left", padx=5)
+
         # Progress bar row
         progress_row = tk.Frame(tab)
         progress_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))

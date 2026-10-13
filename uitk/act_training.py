@@ -63,7 +63,7 @@ class TrainingActionsMixin:
         self._train_text_raw = prompt
         self._show_marked_training_text(insert_markers(prompt))
         self._run_in_background("Training", self._train_job, prompt, steps,
-                                self.model_var.get())
+                                self.model_var.get(), self.auto_adjust_var.get())
 
     def _show_marked_training_text(self, marked):
         """Display marked training text with yellow marker tags, input locked."""
@@ -91,7 +91,7 @@ class TrainingActionsMixin:
             self.train_text.insert("1.0", raw)
             del self._train_text_raw
 
-    def _train_job(self, prompt, steps, model_name):
+    def _train_job(self, prompt, steps, model_name, auto_adjust):
         # Use config for tokenizer and training settings
         tokenizer_cfg = self.cfg["tokenizer"]
         training_cfg = self.cfg["training"]
@@ -146,6 +146,10 @@ class TrainingActionsMixin:
                        grad_clip=training_cfg.get("grad_clip", 0.0),
                        rollback_window=training_cfg.get("rollback_window", 2),
                        rollback_callback=on_rollback,
+                       auto_adjust=auto_adjust,
+                       auto_factor=training_cfg.get("auto_factor", 0.5),
+                       auto_patience=training_cfg.get("auto_patience", 10),
+                       auto_clip_relax=training_cfg.get("auto_clip_relax", True),
                        cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel)
         stats_info = apply_stats(model_name, self.model, result)
         result = {**result, "stats_improved": stats_info["improved"],

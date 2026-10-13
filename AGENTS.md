@@ -15,6 +15,7 @@ Read only code needed for the task, and only after picking it. Keep replies shor
 | C accel | `accel.py` + `csrc/train_kernel.c` (build: `./build.sh` → `libtinylm_accel.so`) |
 | UI | `uitk/app.py` (Tk fallback) + `uiqt/window.py` (PySide6 primary) + `ui_base.py` (shared layer); boot via `main.py`, toolkit override `SCRATCHPADLM_UI=pyside6\|tkinter` |
 | Entry | `main.py` — CLI (`tinylm` subcommands) + GUI boot |
+| Skills | `opencodeSkill/` — skills for the agent coding this system (`SKILL.md` index); `readpy.py` file-structure reader (`tree`/`treefull`/`class`/`function`) |
 | Tests | `test_all.py` — run after EVERY change |
 
 Never delete: `tinyLM` (weights), `bpe_merges.txt` (merges).
@@ -38,6 +39,7 @@ Stdlib only. Never renumber token IDs (`extend()` keeps IDs). Never recreate a m
 - Tokenizer: share `TOKENIZER_MANAGER`; on growth use `extend()`, never `train()`.
 - Catalog: `ModelCatalog` JSON file; create/load/hot-swap via Creator/Loader/Updater.
 - Tasks: `TaskTemplate` + `TaskRegistry`; debug autograd by walking `Value._prev` after `backward()`.
+- Skills: read `opencodeSkill/SKILL.md`; scout unfamiliar files with `readpy.py tree` before full reads.
 - Full patterns: see STRUCTURE.md.
 
 ## Commands

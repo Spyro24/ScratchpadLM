@@ -499,6 +499,22 @@ def t_auto_adjust():
     check(adj.reduce_count >= 1)
 
 
+@test("auto adjust: momentum decays alongside LR on plateaus")
+def t_auto_adjust_momentum():
+    from tinylm import AutoAdjust
+    adj = AutoAdjust(enabled=True, factor=0.5, patience=2, min_delta=1e-2,
+                     momentum=0.9)
+    check(adj.momentum == 0.9)
+    adj.check(1, 3.0)
+    check(adj.check(2, 3.0) is False)
+    check(adj.check(3, 3.0) is True)
+    check(adj.multiplier == 0.5 and adj.momentum == 0.45)
+    check(adj.check(4, 3.0) is False)
+    check(adj.check(5, 3.0) is True)
+    check(adj.momentum == 0.225)
+    check(adj.momentum >= 0.0)
+
+
 @test("auto adjust: warmup steps ignored")
 def t_auto_adjust_warmup():
     from tinylm import AutoAdjust

@@ -68,6 +68,8 @@ class AutoAdjust:
 
     Also exposes `grad_clip_now()` so the effective gradient-clip threshold
     can be relaxed if clipping is firing on every step (clip too tight).
+    Every LR reduction also decays `momentum` (toward 0) to damp oscillation
+    around plateaus; training loops should step with `adjuster.momentum`.
     """
 
     def __init__(self, enabled: bool = True, factor: float = 0.5,
@@ -75,7 +77,7 @@ class AutoAdjust:
                  floor: float = 1e-4, warmup_ignore: int = 0,
                  check_every: int = 1, clip_relax_after: int = 5,
                  clip_relax_factor: float = 2.0, max_grad_clip: float = 0.0,
-                 clip_relax: bool = True):
+                 clip_relax: bool = True, momentum: float = 0.9):
         self.enabled = enabled
         self.factor = factor
         self.patience = patience
@@ -87,6 +89,7 @@ class AutoAdjust:
         self.clip_relax_factor = clip_relax_factor
         self.max_grad_clip = max_grad_clip   # 0 = no clipping at all
         self.clip_relax = clip_relax   # allow the clip limit to grow when it keeps firing
+        self.momentum = momentum   # decayed alongside the LR on plateaus
 
         self.multiplier = 1.0
         self.best_loss = None
@@ -118,6 +121,8 @@ class AutoAdjust:
             new_mult = max(self.floor, self.multiplier * self.factor)
             if new_mult < self.multiplier:
                 self.multiplier = new_mult
+                # Plateau + high momentum oscillates: damp momentum too.
+                self.momentum = max(0.0, self.momentum * self.factor)
                 self.bad_checks = 0
                 self.reduce_count += 1
                 return True

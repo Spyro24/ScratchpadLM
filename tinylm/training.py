@@ -85,7 +85,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
     adjuster = AutoAdjust(
         enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
         min_delta=min_delta, warmup_ignore=warmup_steps,
-        max_grad_clip=grad_clip,
+        max_grad_clip=grad_clip, momentum=momentum,
     )
 
     # Setup checkpoint directory
@@ -135,7 +135,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
         # C kernel with gradient clipping
         loss, flat = accel.train_step(flat, windows, dims, n_negatives,
                                       rate, random.randrange(1 << 62),
-                                      momentum=momentum,
+                                      momentum=adjuster.momentum,
                                       max_norm=adjuster.grad_clip_now())
 
         # Loss-spike rollback: discard the fused update and jump back to the
@@ -177,7 +177,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
         # Automatic adjustment: reduce LR when loss plateaus
         if adjuster.check(step + 1, loss):
             rate = scheduler.get_lr(step) * adjuster.multiplier
-            print(f"step {step:5d}  auto-adjust: lr multiplier -> {adjuster.multiplier:.4f}")
+            print(f"step {step:5d}  auto-adjust: lr multiplier -> {adjuster.multiplier:.4f}  momentum -> {adjuster.momentum:.4f}")
 
         # Validation evaluation
         val_loss = None
@@ -380,7 +380,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     adjuster = AutoAdjust(
         enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
         min_delta=min_delta, warmup_ignore=warmup_steps,
-        max_grad_clip=grad_clip, clip_relax=auto_clip_relax,
+        max_grad_clip=grad_clip, clip_relax=auto_clip_relax, momentum=momentum,
     )
 
     # Setup checkpoint directory
@@ -488,8 +488,9 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
             # average across accumulation steps - dividing by batch_size again
             # would silently shrink the effective LR by batch_size.
             scale = 1.0 / gradient_accumulation
+            mom = adjuster.momentum
             for i, p in enumerate(params):
-                velocity[i] = momentum * velocity[i] + accumulated_grads[i] * scale
+                velocity[i] = mom * velocity[i] + accumulated_grads[i] * scale
                 p.data -= rate * velocity[i]
                 accumulated_grads[i] = 0.0
             accumulation_counter = 0
@@ -497,7 +498,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
         # Automatic adjustment: reduce LR when loss plateaus
         if adjuster.check(step + 1, loss.data):
             rate = scheduler.get_lr(step) * adjuster.multiplier
-            print(f"step {step:5d}  auto-adjust: lr multiplier -> {adjuster.multiplier:.4f}")
+            print(f"step {step:5d}  auto-adjust: lr multiplier -> {adjuster.multiplier:.4f}  momentum -> {adjuster.momentum:.4f}")
 
         # Validation evaluation
         val_loss = None

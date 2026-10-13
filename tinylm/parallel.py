@@ -218,7 +218,7 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
     adjuster = AutoAdjust(
         enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
         min_delta=rollback_tol, warmup_ignore=0,
-        max_grad_clip=grad_clip, clip_relax=auto_clip_relax,
+        max_grad_clip=grad_clip, clip_relax=auto_clip_relax, momentum=momentum,
     )
 
     # Pre-create initial flat params for worker initialization.
@@ -295,13 +295,14 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
                 grad = [g * scale for g in grad]
 
             # SGD with momentum: v = momentum * v + g ; p -= rate * v
+            mom = adjuster.momentum
             for i, p in enumerate(params):
-                velocity[i] = momentum * velocity[i] + grad[i]
+                velocity[i] = mom * velocity[i] + grad[i]
                 p.data -= rate * velocity[i]
 
             # Automatic adjustment: reduce LR when loss plateaus
             if adjuster.check(step + 1, step_loss):
-                print(f"step {step:5d}  auto-adjust: lr multiplier -> {adjuster.multiplier:.4f}")
+                print(f"step {step:5d}  auto-adjust: lr multiplier -> {adjuster.multiplier:.4f}  momentum -> {adjuster.momentum:.4f}")
 
             if progress_cb is not None:
                 progress_cb(step + 1, steps, step_loss)

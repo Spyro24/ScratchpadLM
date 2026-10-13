@@ -69,6 +69,7 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 - [x] Multicore best-of-N trials (`train_multicore` in `tinylm/parallel.py`): one full training step per core from shared weights, shared probe batch picks the lowest-loss trial, winner's weights + velocity adopted; same result contract + `rollback_callback` (total divergence falls back to the best snapshot); fixed persistent-worker grad accumulation on the Python path (grads are now zeroed before each `backward()`)
 - [x] Rollback monitor: `rollback_callback(step,loss,best)` in all training paths → training monitor logs each rollback and the Training tab shows the gap (current loss − smallest loss in run); completion/cancel summaries include the rollback count (Tk + Qt)
 - [x] Auto-adjust in `train_parallel()` (plateau LR cuts + clip relaxation, same contract as `train()`) + Auto-adjust checkbox on the training page (both toolkits, default on from config)
+- [x] Auto-adjust tunes LR, momentum (decayed toward 0 on plateaus to damp oscillation), and grad-clip in `train()`/`_train_c()`/`train_parallel()` — every adjusted value is stepped through `AutoAdjust`
 - [ ] Same auto-adjust support in `train_multicore()`
 - [x] C-path window sampling: `_train_c` chose on `list(starts)` (rebuilt an `len(ids)`-sized list per window, ~4.7s/1600 windows at 100k tokens) → chooses on the range directly (~7x end-to-end on the C path)
 - [ ] Data loaders (`CodeDataset/ReasoningDataset/ProseDataset/EmbeddingDataset/SQLDataset/ShellDataset/DataAnalysisDataset/AutoDataset`)

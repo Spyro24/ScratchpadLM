@@ -173,8 +173,12 @@
 - [ ] **CLI**: `tinylm harness run script.tlm --reporter json --output report.json`
 
 ### 12. CLI / API
-- [ ] `tinylm` entry point (argparse subcommands)
-- [ ] `tinylm train --config config.yaml`
+- [x] `tinylm` entry point (argparse subcommands) - basic implementation in main.py
+- [x] `tinylm router train` - pretrain router on corpus
+- [x] `tinylm model list/info/create` - model management
+- [x] `tinylm autotrain status/enable/disable/config` - auto-training control
+- [x] `tinylm generate` - generate text from prompt
+- [x] `tinylm train` - train model on data
 - [ ] `tinylm eval --checkpoint path --data val.jsonl`
 - [ ] `tinylm serve --port 8080` — HTTP `/generate`, `/embed`, `/route`
 - [ ] `tinylm "prompt"` — interactive, auto-plans via router + tasks
@@ -195,7 +199,7 @@
 
 ### 15. Build & Distribution (HIGH PRIORITY)
 - [x] `main.py` — entry point: no args → GUI boot, `--cli` → CLI, `--mcp` → MCP system
-- [ ] `main.py --cli` — implement CLI (train, generate, serve, model mgmt) → section 12
+- [x] `main.py --cli` — CLI implemented (router train, model mgmt, autotrain, generate, train)
 - [ ] `main.py --mcp` — implement MCP system → section 11 (MCP support)
 - [x] `build.sh` — build script for optional C extensions
 - [x] C source for training hot path: `csrc/train_kernel.c` + `accel.py` (ctypes) — fused sampled-softmax fwd/bwd + SGD with gradient clipping (`max_norm`), ~14x faster, pure-Python fallback

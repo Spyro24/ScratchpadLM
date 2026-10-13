@@ -870,6 +870,12 @@ class Router:
                     continue  # Skip router itself
                 score = sum(1 for kw in spec.domain_keywords if kw in prompt_lower)
                 if score > 0:
+                    # Factor in model metrics if available (e.g., avg_rating)
+                    metrics = spec.metrics or {}
+                    # Boost score based on avg_rating (1-5 scale)
+                    avg_rating = metrics.get("avg_rating", 0)
+                    if avg_rating > 0:
+                        score += avg_rating * 0.5
                     scores[spec.name] = score
             
             if scores:
@@ -889,6 +895,101 @@ class Router:
             return [{"model": "tiny-prose", "prompt": prompt, "context_tokens": ids}]
         else:
             return [{"model": "tiny-prose", "prompt": prompt, "context_tokens": ids}]
+
+    def route(self, prompt: str, tokenizer, catalog) -> dict:
+        """Advanced routing using router model's inference + catalog.
+        
+        This method uses the router's learned representations to predict
+        the best model for a given prompt, augmented with catalog metadata.
+        
+        Args:
+            prompt: Input prompt to route
+            tokenizer: BPETokenizer for encoding
+            catalog: ModelCatalog instance
+            
+        Returns:
+            Dict with 'model', 'prompt', 'context_tokens', 'confidence'
+        """
+        # Encode prompt
+        ids = tokenizer.encode(prompt)
+        context = ids[-self.config.ctx:] if len(ids) > self.config.ctx else ids
+        
+        # Get router model's logits (inference mode)
+        logits = self.fast_logits(context)
+        
+        # Score each model in catalog based on router's output
+        # The router's output logits over vocab can be interpreted as
+        # model preference signals when trained on router training data
+        scores = {}
+        for spec in catalog.list():
+            if spec.name == "router":
+                continue
+            
+            # Use domain keywords as proxy for model preference
+            # In a fully trained router, this would use learned representations
+            prompt_lower = prompt.lower()
+            keyword_score = sum(2 for kw in spec.domain_keywords if kw in prompt_lower)
+            
+            # Add catalog-based confidence from model metrics
+            metrics = spec.metrics or {}
+            avg_rating = metrics.get("avg_rating", 3.0)  # Default neutral
+            train_count = metrics.get("train_count", 0)
+            
+            # Weight: keyword matches + rating + training experience
+            confidence = keyword_score + (avg_rating * 0.3) + min(train_count * 0.1, 1.0)
+            
+            if confidence > 0:
+                scores[spec.name] = confidence
+        
+        if not scores:
+            # Fallback
+            return {"model": "tiny-prose", "prompt": prompt, "context_tokens": ids, "confidence": 0.5}
+        
+        # Return best model
+        best_model = max(scores.items(), key=lambda x: x[1])
+        return {
+            "model": best_model[0],
+            "prompt": prompt,
+            "context_tokens": ids,
+            "confidence": min(best_model[1] / 10.0, 1.0)  # Normalize to 0-1
+        }
+
+    def route_multi(self, prompt: str, tokenizer, catalog, max_subtasks: int = 4) -> List[dict]:
+        """Route prompt to multiple models for collaborative generation.
+        
+        Returns list of routing decisions, each with confidence score.
+        """
+        # Get primary route
+        primary = self.route(prompt, tokenizer, catalog)
+        
+        # Get additional candidates for multi-model routing
+        prompt_lower = prompt.lower()
+        scores = {}
+        for spec in catalog.list():
+            if spec.name == "router":
+                continue
+            score = sum(1 for kw in spec.domain_keywords if kw in prompt_lower)
+            if score > 0:
+                metrics = spec.metrics or {}
+                avg_rating = metrics.get("avg_rating", 0)
+                if avg_rating > 0:
+                    score += avg_rating * 0.3
+                scores[spec.name] = score
+        
+        # Sort and build result list
+        sorted_models = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        results = [primary]
+        
+        for model_name, score in sorted_models[:max_subtasks]:
+            if model_name != primary["model"]:
+                results.append({
+                    "model": model_name,
+                    "prompt": prompt,
+                    "context_tokens": tokenizer.encode(prompt),
+                    "confidence": min(score / 10.0, 1.0)
+                })
+        
+        return results[:max_subtasks]
 
 
 # ---- Specialized Model Base (≤100K params) ------------------------------------

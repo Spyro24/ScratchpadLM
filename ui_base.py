@@ -35,7 +35,8 @@ CONFIG_PATH = "config.yaml"
 # Theme palette — shared so both toolkits look consistent
 # ---------------------------------------------------------------------------
 
-PALETTE = {
+# Light theme (default)
+PALETTE_LIGHT = {
     "accent": "#2E86C1",    # user / training / primary actions
     "success": "#27AE60",   # assistant / generation
     "muted": "#7F8C8D",     # system messages
@@ -47,45 +48,155 @@ PALETTE = {
     "border": "#D5DBDB",    # borders
 }
 
+# Dark theme
+PALETTE_DARK = {
+    "accent": "#5DADE2",    # user / training / primary actions
+    "success": "#58D68D",   # assistant / generation
+    "muted": "#85929E",     # system messages
+    "error": "#EC7063",     # errors
+    "warning": "#F4D03F",   # warnings / middling ratings
+    "bg": "#1B2631",        # window background
+    "surface": "#2C3E50",   # card / panel background
+    "text": "#ECF0F1",      # primary text
+    "border": "#34495E",    # borders
+}
 
-def qss_theme() -> str:
-    """Qt stylesheet derived from the shared PALETTE."""
-    p = PALETTE
+# Default palette (light)
+PALETTE = PALETTE_LIGHT
+
+
+def get_palette(theme: str = "light") -> dict:
+    """Get palette for theme: 'light', 'dark', or 'system'."""
+    if theme == "dark":
+        return PALETTE_DARK
+    if theme == "light":
+        return PALETTE_LIGHT
+    # system - detect OS preference
+    return _detect_system_palette()
+
+
+def _detect_system_palette() -> dict:
+    """Detect system color scheme preference."""
+    try:
+        # Try Qt first (if available)
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            from PySide6.QtGui import QGuiApplication
+            style_hints = QGuiApplication.styleHints()
+            if hasattr(style_hints, "colorScheme"):
+                scheme = style_hints.colorScheme()
+                from PySide6.QtGui import QColorScheme
+                if scheme == QColorScheme.Dark:
+                    return PALETTE_DARK
+    except Exception:
+        pass
+    
+    # Fallback: Linux gsettings / XDG heuristics
+    import subprocess, os
+    try:
+        # GNOME
+        result = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+            capture_output=True, text=True, timeout=1
+        )
+        if "dark" in result.stdout.lower():
+            return PALETTE_DARK
+    except Exception:
+        pass
+    
+    try:
+        # KDE / generic XDG
+        desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+        if "kde" in desktop:
+            result = subprocess.run(
+                ["kreadconfig5", "--group", "General", "--key", "ColorScheme"],
+                capture_output=True, text=True, timeout=1
+            )
+            if "breeze" in result.stdout.lower() and "dark" in result.stdout.lower():
+                return PALETTE_DARK
+    except Exception:
+        pass
+    
+    return PALETTE_LIGHT
+
+
+def qss_theme(theme: str = "light") -> str:
+    """Qt stylesheet derived from the shared palette for given theme."""
+    p = get_palette(theme)
     return f"""
     QMainWindow, QDialog {{ background: {p['bg']}; }}
     QWidget {{ font-size: 13px; color: {p['text']}; }}
     QTabWidget::pane {{ border: 1px solid {p['border']}; background: {p['surface']}; top: -1px; }}
-    QTabBar::tab {{ padding: 8px 18px; background: #EAECEE; border: 1px solid {p['border']};
-                    border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; }}
+    QTabBar::tab {{ padding: 8px 18px; background: {p['bg']}; border: 1px solid {p['border']};
+                    border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; color: {p['text']}; }}
     QTabBar::tab:selected {{ background: {p['surface']}; color: {p['accent']}; font-weight: bold; }}
-    QTabBar::tab:hover {{ background: #FDFEFE; }}
-    QPushButton {{ padding: 5px 12px; border: 1px solid #CCD1D1; border-radius: 4px;
-                   background: {p['surface']}; }}
+    QTabBar::tab:hover {{ background: {p['border']}; }}
+    QPushButton {{ padding: 5px 12px; border: 1px solid {p['border']}; border-radius: 4px;
+                   background: {p['surface']}; color: {p['text']}; }}
     QPushButton:hover {{ border-color: {p['accent']}; }}
-    QPushButton:pressed {{ background: #EAF2F8; }}
-    QPushButton:disabled {{ color: #AAB7B8; background: #ECF0F1; border-color: #E5E7E9; }}
+    QPushButton:pressed {{ background: {p['bg']}; }}
+    QPushButton:disabled {{ color: {p['muted']}; background: {p['bg']}; border-color: {p['border']}; }}
     QPushButton#sendButton {{ background: {p['accent']}; color: white; font-weight: bold;
                               border: none; padding: 7px 20px; }}
-    QPushButton#sendButton:hover {{ background: #2471A3; }}
-    QPushButton#sendButton:disabled {{ background: #AEB6BF; }}
+    QPushButton#sendButton:hover {{ background: {p['accent']}; opacity: 0.85; }}
+    QPushButton#sendButton:disabled {{ background: {p['muted']}; }}
     QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox, QListWidget {{
-        border: 1px solid #CCD1D1; border-radius: 4px; padding: 4px;
-        background: {p['surface']}; selection-background-color: {p['accent']};
+        border: 1px solid {p['border']}; border-radius: 4px; padding: 4px;
+        background: {p['surface']}; color: {p['text']}; selection-background-color: {p['accent']};
     }}
     QGroupBox {{ border: 1px solid {p['border']}; border-radius: 4px; margin-top: 10px;
-                 padding: 10px 6px 6px 6px; font-weight: bold; }}
+                 padding: 10px 6px 6px 6px; font-weight: bold; color: {p['text']}; }}
     QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 4px; }}
-    QProgressBar {{ border: 1px solid #CCD1D1; border-radius: 4px; text-align: center;
-                    background: {p['surface']}; min-height: 18px; }}
+    QProgressBar {{ border: 1px solid {p['border']}; border-radius: 4px; text-align: center;
+                    background: {p['surface']}; min-height: 18px; color: {p['text']}; }}
     QProgressBar::chunk {{ background: {p['accent']}; border-radius: 3px; }}
-    QScrollBar:vertical {{ width: 12px; background: #ECF0F1; margin: 0; }}
-    QScrollBar::handle:vertical {{ background: #BDC3C7; border-radius: 6px; min-height: 24px; }}
+    QScrollBar:vertical {{ width: 12px; background: {p['bg']}; margin: 0; }}
+    QScrollBar::handle:vertical {{ background: {p['muted']}; border-radius: 6px; min-height: 24px; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-    QScrollBar:horizontal {{ height: 12px; background: #ECF0F1; margin: 0; }}
-    QScrollBar::handle:horizontal {{ background: #BDC3C7; border-radius: 6px; min-width: 24px; }}
+    QScrollBar:horizontal {{ height: 12px; background: {p['bg']}; margin: 0; }}
+    QScrollBar::handle:horizontal {{ background: {p['muted']}; border-radius: 6px; min-width: 24px; }}
     QCheckBox::indicator, QRadioButton::indicator {{ width: 14px; height: 14px; }}
-    QStatusBar {{ background: #EAECEE; border-top: 1px solid {p['border']}; }}
+    QStatusBar {{ background: {p['bg']}; border-top: 1px solid {p['border']}; color: {p['text']}; }}
+    QToolTip {{ background: {p['surface']}; color: {p['text']}; border: 1px solid {p['border']}; }}
     """
+
+
+def apply_tk_theme(root, theme: str = "light") -> dict:
+    """Apply theme to Tkinter root window and return palette dict."""
+    p = get_palette(theme)
+    root.configure(bg=p["bg"])
+    # Style ttk widgets if available
+    try:
+        import tkinter.ttk as ttk
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure(".", background=p["bg"], foreground=p["text"], fieldbackground=p["surface"])
+        style.configure("TFrame", background=p["bg"])
+        style.configure("TLabel", background=p["bg"], foreground=p["text"])
+        style.configure("TButton", background=p["surface"], foreground=p["text"], bordercolor=p["border"])
+        style.map("TButton", background=[("active", p["accent"]), ("pressed", p["bg"])],
+                  foreground=[("active", "white")])
+        style.configure("TEntry", fieldbackground=p["surface"], foreground=p["text"], bordercolor=p["border"])
+        style.configure("TCombobox", fieldbackground=p["surface"], foreground=p["text"], bordercolor=p["border"])
+        style.configure("TSpinbox", fieldbackground=p["surface"], foreground=p["text"], bordercolor=p["border"])
+        style.configure("TNotebook", background=p["bg"], borderwidth=0)
+        style.configure("TNotebook.Tab", background=p["bg"], foreground=p["text"], padding=[12, 8],
+                        bordercolor=p["border"])
+        style.map("TNotebook.Tab", background=[("selected", p["surface"])], foreground=[("selected", p["accent"])])
+        style.configure("TLabelframe", background=p["bg"], foreground=p["text"], bordercolor=p["border"])
+        style.configure("TLabelframe.Label", background=p["bg"], foreground=p["text"])
+        style.configure("TProgressbar", background=p["accent"], troughcolor=p["surface"],
+                        bordercolor=p["border"], lightcolor=p["accent"], darkcolor=p["accent"])
+        style.configure("Horizontal.TProgressbar", background=p["accent"])
+        style.configure("Vertical.TProgressbar", background=p["accent"])
+        style.configure("TScrollbar", background=p["bg"], troughcolor=p["bg"],
+                        bordercolor=p["bg"], arrowcolor=p["text"])
+        style.configure("TCheckbutton", background=p["bg"], foreground=p["text"])
+        style.configure("TRadiobutton", background=p["bg"], foreground=p["text"])
+    except Exception:
+        pass
+    return p
 
 
 # ---------------------------------------------------------------------------

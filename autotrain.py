@@ -9,7 +9,7 @@ import threading
 import math
 from pathlib import Path
 from dataclasses import dataclass, asdict
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 from collections import defaultdict
 import hashlib
 
@@ -736,6 +736,163 @@ class AutoTrainer:
                 "max_steps_per_day": self.max_steps_per_day,
             }
         }
+
+
+# =============================================================================
+# Training Priority Queue: Scores models by (domain_gap * data_volume * performance_delta)
+# =============================================================================
+
+class TrainingPriorityQueue:
+    """Priority queue for model training based on domain gaps, data availability, and performance."""
+    
+    def __init__(self, catalog, collector: RatingCollector, tokenizer_manager=None):
+        self.catalog = catalog
+        self.collector = collector
+        if tokenizer_manager is None:
+            from registry import TOKENIZER_MANAGER
+            self.tokenizer_manager = TOKENIZER_MANAGER
+        else:
+            self.tokenizer_manager = tokenizer_manager
+        
+        self._queue: List[Tuple[float, str, Dict[str, Any]]] = []  # (priority, model_name, metadata)
+        self._training_history: Dict[str, List[Dict]] = {}  # model_name -> list of training records
+    
+    def _calculate_domain_gap(self, model_name: str) -> float:
+        """Calculate domain coverage gap for a model."""
+        spec = self.catalog.get(model_name)
+        if not spec:
+            return 1.0  # New model = max gap
+        
+        # Check how well the model's domains are covered by training data
+        domain_keywords = spec.domain_keywords
+        if not domain_keywords:
+            return 0.5
+        
+        # Get recent feedback for this model
+        entries = self.collector.get_recent(model_name, limit=1000)
+        
+        # Count keyword coverage in feedback prompts
+        covered_keywords = set()
+        for entry in entries:
+            prompt_lower = entry.prompt.lower()
+            for kw in domain_keywords:
+                if kw in prompt_lower:
+                    covered_keywords.add(kw)
+        
+        if not domain_keywords:
+            return 0.0
+        
+        gap = 1.0 - (len(covered_keywords) / len(domain_keywords))
+        return max(0.0, gap)
+    
+    def _calculate_data_volume(self, model_name: str) -> float:
+        """Calculate available training data volume for a model."""
+        entries = self.collector.get_recent(model_name, limit=10000)
+        high_rated = [e for e in entries if self.collector.is_high_rated(e.rating)]
+        
+        # Normalize: 100+ high-rated entries = 1.0
+        return min(len(high_rated) / 100.0, 1.0)
+    
+    def _calculate_performance_delta(self, model_name: str) -> float:
+        """Calculate performance improvement potential."""
+        spec = self.catalog.get(model_name)
+        if not spec:
+            return 0.5  # New model has high potential
+        
+        metrics = spec.metrics or {}
+        avg_rating = metrics.get("avg_rating", 3.0)
+        train_count = metrics.get("train_count", 0)
+        improvement_delta = metrics.get("improvement_delta", 0.0)
+        
+        # Low rating + few training sessions = high potential
+        rating_gap = max(0.0, (4.0 - avg_rating) / 4.0)  # 4.0 is target
+        experience_factor = min(train_count / 10.0, 1.0)  # Diminishes with experience
+        recent_improvement = max(0.0, improvement_delta)  # Positive improvement reduces priority
+        
+        # High potential if: low rating, few training sessions, no recent improvement
+        potential = rating_gap * (1.0 - experience_factor * 0.5) * (1.0 - min(recent_improvement, 1.0))
+        return potential
+    
+    def score_model(self, model_name: str, data_volume_override: float = None) -> Tuple[float, Dict[str, float]]:
+        """Calculate training priority score for a model.
+        
+        Score = domain_gap * data_volume * performance_delta
+        
+        Returns:
+            (priority_score, component_scores)
+        """
+        domain_gap = self._calculate_domain_gap(model_name)
+        data_volume = data_volume_override if data_volume_override is not None else self._calculate_data_volume(model_name)
+        performance_delta = self._calculate_performance_delta(model_name)
+        
+        priority = domain_gap * data_volume * performance_delta
+        
+        components = {
+            "domain_gap": domain_gap,
+            "data_volume": data_volume,
+            "performance_delta": performance_delta,
+            "priority": priority,
+        }
+        
+        return priority, components
+    
+    def get_training_priorities(self, max_models: int = 10, 
+                                data_volume_overrides: Dict[str, float] = None) -> List[Dict[str, Any]]:
+        """Get prioritized list of models for training.
+        
+        Args:
+            max_models: Maximum number of models to return
+            data_volume_overrides: Optional dict of model_name -> data_volume (e.g., from new user data)
+            
+        Returns:
+            List of dicts with model_name, priority, components, sorted by priority descending
+        """
+        data_volume_overrides = data_volume_overrides or {}
+        results = []
+        
+        for spec in self.catalog.list():
+            if spec.name == "router":
+                continue  # Skip router
+            
+            priority, components = self.score_model(spec.name, 
+                                                   data_volume_overrides.get(spec.name))
+            
+            results.append({
+                "model_name": spec.name,
+                "priority": priority,
+                "components": components,
+                "domains": spec.domain_keywords,
+                "param_count": spec.param_count,
+            })
+        
+        # Sort by priority descending
+        results.sort(key=lambda x: x["priority"], reverse=True)
+        
+        return results[:max_models]
+    
+    def should_train_model(self, model_name: str, threshold: float = 0.1) -> bool:
+        """Check if a model should be trained based on priority threshold."""
+        priority, _ = self.score_model(model_name)
+        return priority >= threshold
+    
+    def record_training(self, model_name: str, data_volume: float, loss_before: float, 
+                        loss_after: float, steps: int) -> None:
+        """Record a training session for future priority calculations."""
+        if model_name not in self._training_history:
+            self._training_history[model_name] = []
+        
+        self._training_history[model_name].append({
+            "timestamp": time.time(),
+            "data_volume": data_volume,
+            "loss_before": loss_before,
+            "loss_after": loss_after,
+            "improvement": loss_before - loss_after,
+            "steps": steps,
+        })
+        
+        # Keep only last 50 training records
+        if len(self._training_history[model_name]) > 50:
+            self._training_history[model_name] = self._training_history[model_name][-50:]
 
 
 def create_autotrain_system(model_loader_factory: Callable[[], Any],

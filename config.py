@@ -139,6 +139,9 @@ class Config:
             "vocab_size": 1000,
             "min_frequency": 2,
         },
+        "ui": {
+            "theme": "system",  # dark, light, system
+        },
     }
 
     SCHEMA = {
@@ -180,6 +183,9 @@ class Config:
         "tokenizer": {
             "vocab_size": (int, lambda x: x >= 256, "vocab_size must be >= 256"),
             "min_frequency": (int, lambda x: x > 0, "min_frequency must be > 0"),
+        },
+        "ui": {
+            "theme": (str, lambda x: x in ("dark", "light", "system"), "ui.theme must be dark, light, or system"),
         },
     }
 

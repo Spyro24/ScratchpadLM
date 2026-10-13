@@ -109,6 +109,23 @@ def run_cli(argv=None):
     train_parser.add_argument("--steps", type=int, default=1000, help="Training steps")
     train_parser.add_argument("--lr", type=float, default=0.05, help="Learning rate")
 
+    # Eval command
+    eval_parser = subparsers.add_parser("eval", help="Evaluate a model checkpoint")
+    eval_parser.add_argument("--checkpoint", required=True, help="Path to checkpoint file")
+    eval_parser.add_argument("--data", required=True, help="Validation data file")
+    eval_parser.add_argument("--model", help="Model name (loads from checkpoint if not specified)")
+    eval_parser.add_argument("--batch-size", type=int, default=16, help="Batch size for evaluation")
+    eval_parser.add_argument("--n-negatives", type=int, default=256, help="Negative samples for sampled softmax")
+
+    # Serve command
+    serve_parser = subparsers.add_parser("serve", help="Start HTTP server for generation/embedding/routing")
+    serve_parser.add_argument("--port", type=int, default=8080, help="Server port")
+    serve_parser.add_argument("--host", default="127.0.0.1", help="Server host")
+    serve_parser.add_argument("--model", help="Default model to serve")
+
+    # Interactive prompt command (alias for generate without subcommand)
+    # This allows: tinylm "your prompt here"
+
     # Scratchpad command
     scratchpad_parser = subparsers.add_parser("scratchpad", help="Scratchpad commands")
     scratchpad_subparsers = scratchpad_parser.add_subparsers(dest="scratchpad_command", help="Scratchpad subcommands")
@@ -151,6 +168,10 @@ def run_cli(argv=None):
         cmd_generate(args)
     elif args.command == "train":
         cmd_train(args)
+    elif args.command == "eval":
+        cmd_eval(args)
+    elif args.command == "serve":
+        cmd_serve(args)
     elif args.command == "scratchpad":
         cmd_scratchpad(args)
     elif args.command == "taskpad":
@@ -397,6 +418,61 @@ def cmd_train(args):
     print("Training complete")
 
 
+def cmd_eval(args):
+    """Evaluate a model checkpoint."""
+    from ai import evaluate, load_checkpoint, load_model, resume_from_checkpoint
+    from registry import TOKENIZER_MANAGER
+
+    tokenizer = TOKENIZER_MANAGER.tokenizer
+    if os.path.exists("bpe_merges.txt"):
+        tokenizer.load("bpe_merges.txt")
+
+    # Load validation data
+    with open(args.data, "r", encoding="utf-8") as f:
+        val_text = f.read()
+
+    if args.model:
+        model = load_model(f"models/{args.model}.tlm")
+    else:
+        # Load from checkpoint
+        ckpt = load_checkpoint(args.checkpoint)
+        model = load_model("tinyLM")  # Will be replaced by resume
+        resume_from_checkpoint(model, ckpt)
+
+    ids = tokenizer.encode(val_text)
+    if len(ids) <= model.ctx:
+        raise ValueError(f"Need more than {model.ctx} tokens, got {len(ids)}")
+
+    print(f"Evaluating on {len(ids)} tokens...")
+    perplexity = evaluate(model, ids, batch_size=args.batch_size, n_negatives=args.n_negatives)
+    print(f"Perplexity: {perplexity:.4f}")
+
+
+def cmd_serve(args):
+    """Start HTTP server for generation/embedding/routing."""
+    print(f"Starting server on {args.host}:{args.port}...")
+    print("Note: HTTP server not yet implemented. See ROADMAP.md section 12 (CLI/API).")
+    # TODO: Implement HTTP server with endpoints:
+    # POST /generate - text generation
+    # POST /embed - embeddings
+    # POST /route - model routing
+    # GET /health - health check
+
+
+def cmd_prompt(args):
+    """Interactive prompt - generate text from prompt (allows: tinylm "prompt")."""
+    from ai import generate, load_model
+    from registry import TOKENIZER_MANAGER
+
+    tokenizer = TOKENIZER_MANAGER.tokenizer
+    if os.path.exists("bpe_merges.txt"):
+        tokenizer.load("bpe_merges.txt")
+
+    model = load_model("tinyLM")
+    text = generate(model, tokenizer, args.prompt, n_tokens=60, temperature=0.8)
+    print(text)
+
+
 def cmd_scratchpad(args):
     """Scratchpad commands."""
     from scratchpad import Scratchpad, TaskType
@@ -477,6 +553,11 @@ def main(argv=None):
         return
     elif "--mcp" in argv:
         run_mcp()
+        return
+    elif len(argv) > 0 and not argv[0].startswith("-"):
+        # Interactive prompt: tinylm "your prompt here"
+        # Wrap as CLI generate command
+        run_cli(["generate", argv[0]] + argv[1:])
         return
     
     # Default: run GUI

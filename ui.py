@@ -26,9 +26,13 @@ from ui_base import (
     CONFIG_PATH,
     MODEL_PATH,
     PALETTE,
+    PALETTE_LIGHT,
+    PALETTE_DARK,
     TOKENIZER_PATH,
     get_available_models,
     load_config,
+    apply_tk_theme,
+    get_palette,
 )
 from ui_base import parse_bool as _parse_bool
 from ui_base import write_config_yaml as _write_config_yaml
@@ -51,6 +55,11 @@ class App:
         self.queue = queue.Queue()
         self.busy = False
         self.cfg = cfg  # Store config reference
+
+        # Apply theme from config
+        theme = self.cfg.get("ui", "theme", "system")
+        self.current_theme = theme
+        apply_tk_theme(root, theme)
 
         # Use shared tokenizer manager
         self.tok = TOKENIZER_MANAGER.tokenizer
@@ -451,6 +460,7 @@ class App:
         create_frame = tk.LabelFrame(tab, text="Create Model", padx=10, pady=10)
         create_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         create_frame.columnconfigure(1, weight=1)
+        create_frame.columnconfigure(3, weight=1)
 
         tk.Label(create_frame, text="Name:").grid(row=0, column=0, padx=(0, 5))
         self.create_name_var = tk.Entry(create_frame, width=20)
@@ -461,7 +471,18 @@ class App:
         self.create_domains_var.grid(row=0, column=3, sticky="w", padx=(0, 10))
 
         self.create_btn = tk.Button(create_frame, text="Create", command=self.on_create_model)
-        self.create_btn.grid(row=0, column=4)
+        self.create_btn.grid(row=0, column=4, padx=5)
+
+        # Auto name from training data
+        analyze_row = tk.Frame(create_frame)
+        analyze_row.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(5, 0))
+        tk.Label(analyze_row, text="Auto-name from training data:").pack(side="left", padx=(0, 5))
+        self.analyze_data_var = tk.Entry(analyze_row, width=40)
+        self.analyze_data_var.pack(side="left", padx=5, fill="x", expand=True)
+        self.analyze_data_var.insert(0, "Paste training text here to analyze...")
+        tk.Button(analyze_row, text="Analyze & Suggest Name", command=self.on_analyze_data).pack(side="left", padx=5)
+        self.analyze_result_var = tk.Label(analyze_row, text="", font=("Consolas", 9), fg="#27AE60")
+        self.analyze_result_var.pack(side="left", padx=10)
 
         # Delete model row
         delete_frame = tk.LabelFrame(tab, text="Delete Model", padx=10, pady=10)
@@ -508,6 +529,7 @@ class App:
             ("model", "ctx", "Context length", int),
             ("model", "emb", "Embedding dim", int),
             ("model", "hidden", "Hidden dim", int),
+            ("ui", "theme", "UI Theme", str),
         ]
 
         self._settings_entries = {}  # (section, key) -> (Entry, type)
@@ -531,11 +553,22 @@ class App:
                     row=row, column=col, columnspan=2, sticky="w", pady=(10 if row else 0, 2)
                 )
                 row += 1
-            tk.Label(tab, text=label + ":").grid(row=row, column=col, sticky="w", padx=(10, 5))
-            entry = tk.Entry(tab, width=12)
-            entry.insert(0, str(self.cfg[section][key]))
-            entry.grid(row=row, column=col + 1, sticky="ew", pady=1)
-            self._settings_entries[(section, key)] = (entry, cast)
+            
+            # Special handling for theme setting - use Combobox
+            if section == "ui" and key == "theme":
+                tk.Label(tab, text=label + ":").grid(row=row, column=col, sticky="w", padx=(10, 5))
+                self.theme_var = tk.StringVar(value=str(self.cfg[section][key]))
+                theme_combo = ttk.Combobox(tab, textvariable=self.theme_var, values=["light", "dark", "system"], state="readonly", width=10)
+                theme_combo.grid(row=row, column=col + 1, sticky="ew", pady=1)
+                theme_combo.bind("<<ComboboxSelected>>", self._on_theme_change)
+                # Store with a dummy cast for consistency
+                self._settings_entries[(section, key)] = (theme_combo, cast)
+            else:
+                tk.Label(tab, text=label + ":").grid(row=row, column=col, sticky="w", padx=(10, 5))
+                entry = tk.Entry(tab, width=12)
+                entry.insert(0, str(self.cfg[section][key]))
+                entry.grid(row=row, column=col + 1, sticky="ew", pady=1)
+                self._settings_entries[(section, key)] = (entry, cast)
             row += 1
 
         # ---- Tokenizer Manager Section (spans both columns) ----
@@ -586,6 +619,35 @@ class App:
         tk.Button(tab, text="Refresh Patterns", command=self.refresh_tokenizer_patterns).grid(
             row=tokenizer_row, column=1, sticky="w", pady=(2, 0)
         )
+        tokenizer_row += 1
+
+        # ---- Config Editor Section ----
+        tokenizer_row += 1
+        tk.Label(tab, text="CONFIG EDITOR", font=("Consolas", 10, "bold")).grid(
+            row=tokenizer_row, column=0, columnspan=4, sticky="w", pady=(15, 2)
+        )
+        tokenizer_row += 1
+
+        self.config_editor = scrolledtext.ScrolledText(tab, wrap="word", width=80, height=15, font=("Consolas", 9))
+        self.config_editor.grid(row=tokenizer_row, column=0, columnspan=4, sticky="ew", pady=2)
+        tokenizer_row += 1
+
+        config_btn_row = tk.Frame(tab)
+        config_btn_row.grid(row=tokenizer_row, column=0, columnspan=4, sticky="w", pady=2)
+        tk.Button(config_btn_row, text="Load Current Config", command=self.on_load_config_editor).pack(side="left", padx=5)
+        tk.Button(config_btn_row, text="Validate Config", command=self.on_validate_config_editor).pack(side="left", padx=5)
+        tk.Button(config_btn_row, text="Save Config from Editor", command=self.on_save_config_editor).pack(side="left", padx=5)
+        tokenizer_row += 1
+
+        # Preset management
+        preset_row = tk.Frame(tab)
+        preset_row.grid(row=tokenizer_row, column=0, columnspan=4, sticky="w", pady=2)
+        tk.Label(preset_row, text="Preset:").pack(side="left", padx=(0, 5))
+        self.preset_var = tk.StringVar(value="Default")
+        preset_combo = ttk.Combobox(preset_row, textvariable=self.preset_var, values=["Default", "Fast Training", "High Quality", "Low Memory", "Custom..."], state="readonly", width=15)
+        preset_combo.pack(side="left", padx=5)
+        preset_combo.bind("<<ComboboxSelected>>", self.on_preset_changed)
+        tk.Button(preset_row, text="Save as Preset", command=self.on_save_preset).pack(side="left", padx=5)
         tokenizer_row += 1
 
         tk.Button(tab, text="Save Config", command=self.on_save_config, width=15).grid(
@@ -1191,6 +1253,238 @@ class App:
                 pass
         return name, removed
 
+    def on_analyze_data(self):
+        """Analyze training data and suggest model name."""
+        text = self.analyze_data_var.get().strip()
+        if not text or text == "Paste training text here to analyze...":
+            messagebox.showwarning("No input", "Paste some training text to analyze.")
+            return
+        
+        # Get existing model names
+        existing_names = {spec.name for spec in MODEL_CATALOG.list()}
+        
+        # Run analysis in background
+        self._run_in_background("Analyzing data", self._analyze_data_job, text, existing_names)
+
+    def _analyze_data_job(self, text, existing_names):
+        """Background job to analyze training data."""
+        from tokenizer import analyze_training_data
+        result = analyze_training_data(text, existing_names)
+        return result
+
+    def _handle_analyze_result(self, result):
+        """Handle the analysis result."""
+        domains_str = ", ".join(result["domains"]) if result["domains"] else "none detected"
+        msg = (f"Domains: {domains_str} | "
+               f"Suggested: {result['suggested_name']} | "
+               f"Confidence: {result['confidence']:.1%} | "
+               f"Action: {result['train_or_create']}")
+        self.analyze_result_var.configure(text=msg)
+        # Auto-fill the name and domains
+        self.create_name_var.delete(0, "end")
+        self.create_name_var.insert(0, result["suggested_name"])
+        self.create_domains_var.delete(0, "end")
+        self.create_domains_var.insert(0, ", ".join(result["domains"]))
+
+    def _on_theme_change(self, event=None):
+        """Handle theme change from combobox."""
+        new_theme = self.theme_var.get()
+        if new_theme != self.current_theme:
+            self.current_theme = new_theme
+            apply_tk_theme(self.root, new_theme)
+            # Refresh tag colors for history text
+            p = get_palette(new_theme)
+            self.history.tag_configure("user", foreground=p["accent"], font=("Consolas", 10, "bold"))
+            self.history.tag_configure("assistant", foreground=p["success"], font=("Consolas", 10, "bold"))
+            self.history.tag_configure("system", foreground=p["muted"], font=("Consolas", 9, "italic"))
+            self.history.tag_configure("error", foreground=p["error"], font=("Consolas", 10, "bold"))
+            self.train_log.tag_configure("ts", foreground=p["muted"])
+            self.train_log.tag_configure("err", foreground=p["error"])
+            self.unified_log.tag_configure("training", foreground=p["accent"])
+            self.unified_log.tag_configure("generation", foreground=p["success"])
+            self.unified_log.tag_configure("system", foreground=p["muted"], font=("Consolas", 9, "italic"))
+            self.unified_log.tag_configure("error", foreground=p["error"], font=("Consolas", 9, "bold"))
+            self.unified_log.tag_configure("timestamp", foreground="#95A5A6")
+            self.status.configure(bg=p["bg"], fg=p["text"])
+
+    def _handle_result(self, kind, label, payload):
+        if kind == "error":
+            self._stream_active = False
+            self._set_busy(False, "Error")
+            self._append_history("error", f"Error: {payload}")
+            if label == "Training":
+                self._log_train(f"{label} failed: {payload}", is_error=True)
+                self.progress_label.configure(text="Failed")
+            elif label == "Extending vocab":
+                self._log_train(f"Vocab extension failed: {payload}", is_error=True)
+            messagebox.showerror("Error", f"{label} failed:\n{payload}")
+            return
+
+        if label == "Training":
+            prompt, steps = payload
+            save_model(self.model, MODEL_PATH)
+            self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
+            self._append_history("system", f"[Trained on {len(prompt)} chars, {steps} steps, model saved. Vocab: {len(self.tok.vocab)}]")
+            self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}")
+            self.train_progress.configure(maximum=max(steps, 1), value=steps)
+            self.progress_label.configure(text=f"Done ({steps} steps)")
+            self._set_busy(False, "Training done")
+            self.update_model_inspector()
+        elif label == "Training Router":
+            steps = payload
+            self._log_train(f"Router training done: {steps} steps")
+            self.train_progress.configure(maximum=max(steps, 1), value=steps)
+            self.progress_label.configure(text=f"Done ({steps} steps)")
+            self._set_busy(False, "Router training done")
+        elif label.startswith("Loading "):
+            self.model = payload
+            model_name = label.replace("Loading ", "")
+            self._append_history("system", f"[Loaded model: {model_name} ({len(self.model.C)} vocab, {self.model.ctx} ctx)]")
+            self._set_busy(False, "Ready")
+            self.update_model_inspector()
+        elif label == "Generating":
+            # Plain generation finished (tokens may have been streamed live)
+            prompt, text, routed_model = payload
+            if self._stream_active:
+                # Close the streamed block and attach rating buttons
+                self.history.configure(state="normal")
+                self.history.insert("end", "\n\n")
+                self._add_rating_buttons(text)
+                self.history.see("end")
+                self.history.configure(state="disabled")
+                self._last_assistant_response = (prompt, text, routed_model)
+                self._stream_active = False
+            else:
+                # Nothing streamed (e.g. empty output); show the full response
+                self._append_history("assistant", text)
+                self._last_assistant_response = (prompt, text, routed_model)
+            self._set_busy(False, "Ready")
+            self.status.configure(text="Ready")
+        elif label == "Generating (Preview)":
+            prompt, result = payload
+            # Result already printed to console by generate_with_preview
+            # Just add to history if not already there
+            self._append_history("assistant", result["text"])
+            self._set_busy(False, "Ready")
+            self.status.configure(text=f"Ready ({result['tokens_per_sec']:.1f} tok/s)")
+        elif label == "Creating model":
+            spec = payload
+            self._append_history("system", f"[Created model '{spec.name}' ({spec.param_count:,} params, domains: {', '.join(spec.domain_keywords)})]")
+            self.refresh_catalog_list()
+            self.refresh_models()
+            self._set_busy(False, "Model created")
+        elif label == "Deleting model":
+            name, removed = payload
+            if removed:
+                self._append_history("system", f"[Deleted model '{name}' from catalog]")
+            else:
+                self._append_history("system", f"[Model '{name}' was not in catalog]")
+            self.refresh_catalog_list()
+            self.refresh_models()
+            self._set_busy(False, "Model deleted")
+        elif label == "Analyzing data":
+            self._handle_analyze_result(payload)
+            self._set_busy(False, "Analysis done")
+        elif label == "Extending vocab":
+            target_vocab, min_freq = payload
+            self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
+            self.tok_vocab_label.configure(text=str(len(self.tok.vocab)))
+            self.tok_merges_label.configure(text=str(len(self.tok.merges)))
+            self._append_history("system", f"[Extended vocab to {len(self.tok.vocab)} tokens (target={target_vocab}, min_freq={min_freq}), model saved]")
+            self._log_train(f"Vocab extended to {len(self.tok.vocab)} tokens, model saved")
+            self._set_busy(False, "Vocab extended")
+            self.refresh_tokenizer_patterns()
+            self.update_model_inspector()
+
+    # ---- config editor actions --------------------------------------------------
+
+    def on_load_config_editor(self):
+        """Load current config into the YAML editor."""
+        import yaml
+        try:
+            data = self.cfg.to_dict()
+            yaml_text = yaml.dump(data, default_flow_style=False, sort_keys=False)
+            self.config_editor.delete("1.0", "end")
+            self.config_editor.insert("1.0", yaml_text)
+        except Exception as e:
+            messagebox.showerror("Load Config", f"Failed to load config: {e}")
+
+    def on_validate_config_editor(self):
+        """Validate the YAML in the editor."""
+        from config import Config, ConfigError
+        import yaml
+        text = self.config_editor.get("1.0", "end-1c")
+        try:
+            data = yaml.safe_load(text)
+            Config.from_dict(data)
+            messagebox.showinfo("Validation", "Config is valid!")
+        except ConfigError as e:
+            messagebox.showerror("Validation Error", str(e))
+        except Exception as e:
+            messagebox.showerror("YAML Error", f"Invalid YAML: {e}")
+
+    def on_save_config_editor(self):
+        """Save config from the YAML editor."""
+        from config import Config, ConfigError
+        import yaml
+        text = self.config_editor.get("1.0", "end-1c")
+        try:
+            data = yaml.safe_load(text)
+            cfg = Config.from_dict(data)
+            _write_config_yaml(CONFIG_PATH, data)
+            self.cfg = cfg
+            # Refresh settings entries
+            for (section, key), (entry, cast) in self._settings_entries.items():
+                if section in data and key in data[section]:
+                    val = data[section][key]
+                    if isinstance(entry, ttk.Combobox):
+                        entry.set(str(val))
+                    else:
+                        entry.delete(0, "end")
+                        entry.insert(0, str(val))
+            self._append_history("system", f"[Config saved from editor to {CONFIG_PATH}]")
+        except ConfigError as e:
+            messagebox.showerror("Validation Error", str(e))
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save config: {e}")
+
+    def on_preset_changed(self, event=None):
+        """Apply a preset configuration."""
+        presets = {
+            "Default": {},
+            "Fast Training": {
+                "training": {"steps": 100, "lr": 0.1, "batch_size": 32, "workers": 4}
+            },
+            "High Quality": {
+                "training": {"steps": 2000, "lr": 0.01, "batch_size": 16, "n_negatives": 512, "val_split": 0.2}
+            },
+            "Low Memory": {
+                "model": {"emb": 32, "hidden": 64, "ctx": 64},
+                "training": {"batch_size": 8, "n_negatives": 128}
+            },
+        }
+        preset_name = self.preset_var.get()
+        if preset_name in presets and preset_name != "Custom...":
+            preset = presets[preset_name]
+            data = self.cfg.to_dict()
+            for section, values in preset.items():
+                if section not in data:
+                    data[section] = {}
+                data[section].update(values)
+            import yaml
+            yaml_text = yaml.dump(data, default_flow_style=False, sort_keys=False)
+            self.config_editor.delete("1.0", "end")
+            self.config_editor.insert("1.0", yaml_text)
+
+    def on_save_preset(self):
+        """Save current editor content as a custom preset."""
+        # For now, just show the YAML in a dialog
+        text = self.config_editor.get("1.0", "end-1c")
+        name = tk.simpledialog.askstring("Save Preset", "Enter preset name:")
+        if name and name.strip():
+            # In a full implementation, we'd save to a presets file
+            messagebox.showinfo("Preset Saved", f"Preset '{name}' saved (in-memory only in this demo).")
+
     # ---- settings actions --------------------------------------------------
 
     def on_save_config(self):
@@ -1417,6 +1711,9 @@ class App:
             self.refresh_catalog_list()
             self.refresh_models()
             self._set_busy(False, "Model deleted")
+        elif label == "Analyzing data":
+            self._handle_analyze_result(payload)
+            self._set_busy(False, "Analysis done")
         elif label == "Extending vocab":
             target_vocab, min_freq = payload
             self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")

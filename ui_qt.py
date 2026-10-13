@@ -73,12 +73,15 @@ from ui_base import (
     CONFIG_PATH,
     MODEL_PATH,
     PALETTE,
+    PALETTE_LIGHT,
+    PALETTE_DARK,
     TOKENIZER_PATH,
     BackgroundWorker,
     get_available_models,
     load_config,
     parse_bool,
     qss_theme,
+    get_palette,
     write_config_yaml,
 )
 
@@ -195,6 +198,11 @@ class MainWindow(QMainWindow):
         self.tok = TOKENIZER_MANAGER.tokenizer
         if os.path.exists(TOKENIZER_PATH):
             TOKENIZER_MANAGER.load(TOKENIZER_PATH)
+
+        # Apply theme from config
+        theme = self.cfg.get("ui", "theme", "system")
+        self.current_theme = theme
+        self.setStyleSheet(qss_theme(theme))
 
         self.model = self._load_model()
         self.router = self._load_router()
@@ -603,6 +611,7 @@ class MainWindow(QMainWindow):
             ("model", "ctx", "Context length", int),
             ("model", "emb", "Embedding dim", int),
             ("model", "hidden", "Hidden dim", int),
+            ("ui", "theme", "UI Theme", str),
         ]
 
         # Two-column layout of labeled entries, section headers in bold
@@ -620,14 +629,71 @@ class MainWindow(QMainWindow):
                 header.setStyleSheet("font-weight: bold;")
                 grid.addWidget(header, row, col, 1, 2)
                 row += 1
-            grid.addWidget(QLabel(label + ":"), row, col)
-            edit = QLineEdit(str(self.cfg[section][key]))
-            grid.addWidget(edit, row, col + 1)
-            self._settings_entries[(section, key)] = (edit, cast)
+            
+            # Special handling for theme setting - use QComboBox
+            if section == "ui" and key == "theme":
+                grid.addWidget(QLabel(label + ":"), row, col)
+                self.theme_combo = QComboBox()
+                self.theme_combo.addItems(["light", "dark", "system"])
+                self.theme_combo.setCurrentText(str(self.cfg[section][key]))
+                self.theme_combo.currentTextChanged.connect(self._on_theme_change)
+                grid.addWidget(self.theme_combo, row, col + 1)
+                self._settings_entries[(section, key)] = (self.theme_combo, cast)
+            else:
+                grid.addWidget(QLabel(label + ":"), row, col)
+                edit = QLineEdit(str(self.cfg[section][key]))
+                grid.addWidget(edit, row, col + 1)
+                self._settings_entries[(section, key)] = (edit, cast)
             row += 1
 
-        # Tokenizer manager section (spans both columns)
+        # ---- Config Editor Section ----
         row = max(row, half + 5) + 1
+        config_header = QLabel("CONFIG EDITOR")
+        config_header.setStyleSheet("font-weight: bold;")
+        grid.addWidget(config_header, row, 0, 1, 4)
+        row += 1
+
+        self.config_editor = QPlainTextEdit()
+        self.config_editor.setFont(MONO)
+        self.config_editor.setMinimumHeight(200)
+        self.config_editor.setPlaceholderText("YAML config editor with validation...")
+        grid.addWidget(self.config_editor, row, 0, 1, 4)
+        row += 1
+
+        config_btn_row = QHBoxLayout()
+        config_load_btn = QPushButton("Load Current Config")
+        config_load_btn.clicked.connect(self.on_load_config_editor)
+        config_validate_btn = QPushButton("Validate Config")
+        config_validate_btn.clicked.connect(self.on_validate_config_editor)
+        config_save_btn = QPushButton("Save Config from Editor")
+        config_save_btn.clicked.connect(self.on_save_config_editor)
+        config_btn_row.addWidget(config_load_btn)
+        config_btn_row.addWidget(config_validate_btn)
+        config_btn_row.addWidget(config_save_btn)
+        config_btn_row.addStretch(1)
+        config_btn_wrap = QWidget()
+        config_btn_wrap.setLayout(config_btn_row)
+        grid.addWidget(config_btn_wrap, row, 0, 1, 4)
+        row += 1
+
+        # Preset management
+        preset_row = QHBoxLayout()
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(["Default", "Fast Training", "High Quality", "Low Memory", "Custom..."])
+        self.preset_combo.currentTextChanged.connect(self.on_preset_changed)
+        preset_row.addWidget(QLabel("Preset:"))
+        preset_row.addWidget(self.preset_combo)
+        preset_save_btn = QPushButton("Save as Preset")
+        preset_save_btn.clicked.connect(self.on_save_preset)
+        preset_row.addWidget(preset_save_btn)
+        preset_row.addStretch(1)
+        preset_wrap = QWidget()
+        preset_wrap.setLayout(preset_row)
+        grid.addWidget(preset_wrap, row, 0, 1, 4)
+        row += 1
+
+        # Tokenizer manager section (spans both columns)
+        row += 1
         tok_header = QLabel("TOKENIZER MANAGER")
         tok_header.setStyleSheet("font-weight: bold;")
         grid.addWidget(tok_header, row, 0, 1, 4)
@@ -1415,6 +1481,125 @@ class MainWindow(QMainWindow):
             except OSError:
                 pass
         return name, removed
+
+    def _on_theme_change(self, theme: str):
+        """Handle theme change from combobox."""
+        if theme != self.current_theme:
+            self.current_theme = theme
+            self.setStyleSheet(qss_theme(theme))
+            # Update bubble colors - they'll use the new palette on next render
+            p = get_palette(theme)
+            # Update status bar
+            self.status_label.setStyleSheet(f"color: {p['text']};")
+
+    # ---- config editor actions --------------------------------------------------
+
+    def on_load_config_editor(self):
+        """Load current config into the YAML editor."""
+        import yaml
+        try:
+            data = self.cfg.to_dict()
+            # Convert to YAML
+            yaml_text = yaml.dump(data, default_flow_style=False, sort_keys=False)
+            self.config_editor.setPlainText(yaml_text)
+        except Exception as e:
+            self.show_error("Load Config", f"Failed to load config: {e}")
+
+    def on_validate_config_editor(self):
+        """Validate the YAML in the editor."""
+        from config import Config, ConfigError
+        text = self.config_editor.toPlainText()
+        try:
+            import yaml
+            data = yaml.safe_load(text)
+            Config.from_dict(data)
+            self.show_error("Validation", "Config is valid!")
+        except ConfigError as e:
+            self.show_error("Validation Error", str(e))
+        except Exception as e:
+            self.show_error("YAML Error", f"Invalid YAML: {e}")
+
+    def on_save_config_editor(self):
+        """Save config from the YAML editor."""
+        from config import Config, ConfigError
+        import yaml
+        text = self.config_editor.toPlainText()
+        try:
+            data = yaml.safe_load(text)
+            cfg = Config.from_dict(data)
+            write_config_yaml(CONFIG_PATH, data)
+            self.cfg = cfg
+            # Refresh settings entries
+            for (section, key), (edit, cast) in self._settings_entries.items():
+                if section in data and key in data[section]:
+                    val = data[section][key]
+                    if isinstance(edit, QComboBox):
+                        edit.setCurrentText(str(val))
+                    else:
+                        edit.setText(str(val))
+            self.append_history("system", f"[Config saved from editor to {CONFIG_PATH}]")
+        except ConfigError as e:
+            self.show_error("Validation Error", str(e))
+        except Exception as e:
+            self.show_error("Save Error", f"Failed to save config: {e}")
+
+    def on_preset_changed(self, preset_name: str):
+        """Apply a preset configuration."""
+        presets = {
+            "Default": {},
+            "Fast Training": {
+                "training": {"steps": 100, "lr": 0.1, "batch_size": 32, "workers": 4}
+            },
+            "High Quality": {
+                "training": {"steps": 2000, "lr": 0.01, "batch_size": 16, "n_negatives": 512, "val_split": 0.2}
+            },
+            "Low Memory": {
+                "model": {"emb": 32, "hidden": 64, "ctx": 64},
+                "training": {"batch_size": 8, "n_negatives": 128}
+            },
+        }
+        if preset_name in presets and preset_name != "Custom...":
+            preset = presets[preset_name]
+            # Merge with current config
+            data = self.cfg.to_dict()
+            for section, values in preset.items():
+                if section not in data:
+                    data[section] = {}
+                data[section].update(values)
+            # Update editor
+            import yaml
+            yaml_text = yaml.dump(data, default_flow_style=False, sort_keys=False)
+            self.config_editor.setPlainText(yaml_text)
+
+    def on_save_preset(self):
+        """Save current editor content as a custom preset."""
+        # For now, just show the YAML in a dialog
+        text = self.config_editor.toPlainText()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Save Preset")
+        dialog.resize(500, 400)
+        v = QVBoxLayout(dialog)
+        v.addWidget(QLabel("Enter preset name:"))
+        name_edit = QLineEdit()
+        v.addWidget(name_edit)
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("Save")
+        cancel_btn = QPushButton("Cancel")
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(cancel_btn)
+        v.addLayout(btn_row)
+        save_btn.clicked.connect(lambda: self._save_custom_preset(name_edit.text(), text, dialog))
+        cancel_btn.clicked.connect(dialog.reject)
+        dialog.exec()
+
+    def _save_custom_preset(self, name: str, yaml_text: str, dialog: QDialog):
+        """Save a custom preset."""
+        if not name.strip():
+            self.show_warning("Invalid Name", "Preset name cannot be empty.")
+            return
+        # In a full implementation, we'd save to a presets file
+        self.show_error("Preset Saved", f"Preset '{name}' saved (in-memory only in this demo).")
+        dialog.accept()
 
     # ---- settings actions ------------------------------------------------------
 

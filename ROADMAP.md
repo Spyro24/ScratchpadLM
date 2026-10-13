@@ -46,23 +46,23 @@
   - [ ] **Privilege Level Descriptions**: Tooltip/help text explaining each privilege level
   - [ ] **Path Validation**: Real-time validation of harness root path existence/permissions
   - [ ] **Harness Status Indicator**: Visual indicator showing current harness mode (enabled/disabled) and active privilege level
-- [ ] **Theme system (dark / white / follow system)**: UI theme selectable as **dark**, **white (light)**, or **system** (follow the OS/desktop setting)
-  - [ ] Config option `ui.theme`: `dark` | `light` | `system` (default `system`) + selector in Settings tab
-  - [ ] Shared theme palettes in `ui_base.py`: light + dark variants (`PALETTE_LIGHT` / `PALETTE_DARK`), `qss_theme(theme)` for Qt, per-theme tag colors for Tkinter
-  - [ ] System detection: Qt `QStyleHints.colorScheme`; stdlib fallback on Linux (`gsettings get org.gnome.desktop.interface color-scheme`, `XDG_CURRENT_DESKTOP` heuristics)
-  - [ ] Live theme switch without app restart (re-apply Qt stylesheet / retag Tk widgets in place)
-  - [ ] React to OS theme changes at runtime when `system` is selected (Qt signal, periodic check fallback)
+- [x] **Theme system (dark / white / follow system)**: UI theme selectable as **dark**, **white (light)**, or **system** (follow the OS/desktop setting)
+  - [x] Config option `ui.theme`: `dark` | `light` | `system` (default `system`) + selector in Settings tab
+  - [x] Shared theme palettes in `ui_base.py`: light + dark variants (`PALETTE_LIGHT` / `PALETTE_DARK`), `qss_theme(theme)` for Qt, per-theme tag colors for Tkinter
+  - [x] System detection: Qt `QStyleHints.colorScheme`; stdlib fallback on Linux (`gsettings get org.gnome.desktop.interface color-scheme`, `XDG_CURRENT_DESKTOP` heuristics)
+  - [x] Live theme switch without app restart (re-apply Qt stylesheet / retag Tk widgets in place)
+  - [x] React to OS theme changes at runtime when `system` is selected (Qt signal, periodic check fallback)
 - [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
 - [ ] **Training data provider**: User provides training data directly — file upload, text paste, URL fetch, folder watch, data preview, auto domain detection, train/val split
-- [ ] **Auto model naming**: System generates model name from training data domain — shows preview `tiny-{detected_domain}` before creation
-- [ ] **Train vs Create advisor**: Analyzes user data → "Fine-tune existing tiny-X (92% match)" vs "Create new tiny-Y (new domain)" with confidence
+- [x] **Auto model naming**: System generates model name from training data domain — shows preview `tiny-{detected_domain}` before creation
+- [x] **Train vs Create advisor**: Analyzes user data → "Fine-tune existing tiny-X (92% match)" vs "Create new tiny-Y (new domain)" with confidence
 - [ ] **Variable batch tokenizer**: Training batches with mixed-domain detection — routes tokens to appropriate model trainers, prevents single-model training on heterogeneous data
 - [ ] **Control panel**: PySide6-based dashboard with model status, training controls, generation settings (Tkinter fallback)
 - [x] **Model selector**: dropdown to switch between registered models (router + specialized)
 - [x] **Training monitor**: progress bar with step counter + live loss (loss chart/LR display still open)
 - [x] **Generation controls**: temperature, top-k, top-p, repetition penalty sliders
 - [x] **Tokenizer manager**: view vocab size, learned patterns, extend vocab button
-- [ ] **Config editor**: YAML editor with validation, save/load presets
+- [x] **Config editor**: YAML editor with validation, save/load presets
 - [x] **Log viewer**: scrollable training/generation logs with filtering
 - [x] **Model inspector**: parameter count, memory usage, architecture summary
 - [x] **UI polish & layout fixes**: Fix spacing issues, elements going off-screen, consistent padding/margins, responsive resizing, scrollable tabs for overflow content, improve visual hierarchy and alignment
@@ -158,21 +158,21 @@
 ### 7. Training Pipeline
 - [x] `train(model, data, steps, config)` — works for any model type
 - [x] **Training efficiency improvements**: pre-computed negative samples, gradient accumulation, optimized sampled softmax, batched processing, reduced memory allocations
-- [ ] **Data cleaning & sorting**: normalize text (whitespace, unicode, encoding fixes), deduplicate lines, strip boilerplate, sort/classify cleaned data by domain → feeds per-model training queues
+- [x] **Data cleaning & sorting**: normalize text (whitespace, unicode, encoding fixes), deduplicate lines, strip boilerplate, sort/classify cleaned data by domain → feeds per-model training queues
 - [ ] Data loaders: `CodeDataset`, `ReasoningDataset`, `ProseDataset`, `EmbeddingDataset`, `SQLDataset`, `ShellDataset`, `DataAnalysisDataset`, `AutoDataset` (from user data)
 - [ ] **Variable batch token router**: Analyzes batch tokens → routes to correct model trainer (code→tiny-code, math→tiny-reason, etc.), prevents cross-domain contamination
-- [ ] **Model selection for training**: Given user-provided training data, evaluates catalog → returns (existing_model_to_finetune OR new_model_spec_with_autogenerated_name) with confidence score
+- [x] **Model selection for training**: Given user-provided training data, evaluates catalog → returns (existing_model_to_finetune OR new_model_spec_with_autogenerated_name) with confidence score
 - [x] LR scheduler: `CosineWithWarmup(lr, warmup_steps, total_steps)`
 - [x] Gradient clipping: `clip_grads(params, max_norm=1.0)`
 - [x] Validation: `evaluate(model, val_data)` → perplexity / accuracy
 - [x] Early stopping: patience, min_delta, restore best
 - [x] **Automatic adjustment**: plateau LR reduction (`AutoAdjust`) + auto grad-clip relaxation — wired into `train()`, `_train_c()`, C kernel path
 - [ ] Router fine-tune: `train_router(router, decomposition_data, steps)`
-- [ ] **Training priority queue**: Scores models by (domain_gap * data_volume * performance_delta) → trains highest priority first
+- [x] **Training priority queue**: Scores models by (domain_gap * data_volume * performance_delta) → trains highest priority first
 - [ ] **User-driven training**: UI accepts training data → auto-detects domain → creates/updates model with generated name → queues for training
 
 ### 8. Tokenizer Enhancements
-- [ ] `word_freq` cache: `save_word_freq(path)`, `load_word_freq(path)`
+- [x] `word_freq` cache: `save_word_freq(path)`, `load_word_freq(path)`
 - [ ] Streaming corpus: `CorpusIterator(folder, pattern)` — yields chunks
 - [ ] `extend()` uses cache, merges incrementally
 - [ ] Vocab growth triggers `sync_vocab()` on all loaded models
@@ -231,9 +231,9 @@
 - [x] `tinylm autotrain low-rated/review/avoidance` - low-rating handler
 - [x] `tinylm generate` - generate text from prompt
 - [x] `tinylm train` - train model on data
-- [ ] `tinylm eval --checkpoint path --data val.jsonl`
-- [ ] `tinylm serve --port 8080` — HTTP `/generate`, `/embed`, `/route`
-- [ ] `tinylm "prompt"` — interactive, auto-plans via router + tasks
+- [x] `tinylm eval --checkpoint path --data val.jsonl`
+- [x] `tinylm serve --port 8080` — HTTP `/generate`, `/embed`, `/route`
+- [x] `tinylm "prompt"` — interactive, auto-plans via router + tasks
 
 ### 13. Testing & Validation
 - [x] Unit tests: autograd, tokenizer, model forward/backward, quantize/dequantize (`test_all.py`)
@@ -243,8 +243,8 @@
 - [ ] CI: GitHub Actions (lint, test, bench)
 
 ### 14. Documentation (HIGH PRIORITY)
-- [ ] `README.md` — quickstart, architecture, constraints
-- [ ] `CONFIG.md` — all config options
+- [x] `README.md` — quickstart, architecture, constraints
+- [x] `CONFIG.md` — all config options
 - [ ] `HARNESS.md` — script DSL reference, examples
 - [ ] `MODELS.md` — adding custom specialized models
 - [ ] `API.md` — Python API, HTTP API

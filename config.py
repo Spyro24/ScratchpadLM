@@ -140,7 +140,7 @@ class Config:
             "min_frequency": 2,
         },
         "ui": {
-            "theme": "system",  # dark, light, system
+            "theme": "dark",  # dark, light, system
         },
     }
 

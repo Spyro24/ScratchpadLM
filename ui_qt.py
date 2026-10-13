@@ -199,10 +199,10 @@ class MainWindow(QMainWindow):
         if os.path.exists(TOKENIZER_PATH):
             TOKENIZER_MANAGER.load(TOKENIZER_PATH)
 
-        # Apply theme from config
-        theme = self.cfg.get("ui", "theme", "system")
+        # Apply theme from config at application level
+        theme = self.cfg.get("ui", "theme", "dark")
         self.current_theme = theme
-        self.setStyleSheet(qss_theme(theme))
+        QApplication.instance().setStyleSheet(qss_theme(theme))
 
         self.model = self._load_model()
         self.router = self._load_router()
@@ -1487,7 +1487,7 @@ class MainWindow(QMainWindow):
         """Handle theme change from combobox."""
         if theme != self.current_theme:
             self.current_theme = theme
-            self.setStyleSheet(qss_theme(theme))
+            QApplication.instance().setStyleSheet(qss_theme(theme))
             # Update bubble colors - they'll use the new palette on next render
             p = get_palette(theme)
             # Update status bar
@@ -1735,9 +1735,17 @@ def run_qt_app() -> int:
     """Launch the PySide6 app (called by ui_base.run_gui)."""
     import sys
 
+    # Load config early to get theme
+    from config import Config
+    try:
+        cfg = Config.from_file(CONFIG_PATH)
+        theme = cfg.get("ui", "theme", "dark")
+    except Exception:
+        theme = "dark"
+
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("ScratchpadLM")
-    app.setStyleSheet(qss_theme())
+    app.setStyleSheet(qss_theme(theme))
     window = MainWindow()
     window.show()
     return app.exec()

@@ -32,13 +32,20 @@
   - [ ] Auto-detect available toolkit at startup (PySide6 preferred, Tkinter fallback)
   - [ ] Consistent styling/theme across both toolkits
 - [ ] **Chat Layout (PySide6)**: Modern chat interface layout
-  - [ ] **Tabs at top**: Main navigation tabs (Chat, Training, Model Info, Admin, Settings, Logs)
+  - [ ] **Tabs at top**: Main navigation tabs (Chat, Training, Model Info, Admin, Settings, Logs, **Harness**)
   - [ ] **Chats list at left**: Sidebar with conversation list/sessions
   - [ ] **Chat area center**: Main chat display with messages
   - [ ] **Chat input at bottom**: Text input area at bottom of chat
   - [ ] **Send button right of chat input**: Send button positioned to the right of input field
   - [ ] **Thumbs up/down on each answer**: Every AI response has thumbs up/down buttons for reinforcement learning feedback
   - [ ] **Reinforcement Learning integration**: Thumbs up/down feeds into auto-training system (RatingCollector → AutoTrainer)
+- [ ] **Harness Tab (PySide6)**: Harness configuration and control
+  - [ ] **Privilege Level Selector**: Dropdown/combo box to select AI privilege level (Read-only, Read-Write, Full Access, Admin)
+  - [ ] **Harness Root Path**: Text input with browse button to set harness root directory path
+  - [ ] **Harness Mode Toggle**: Slider/toggle switch to enable/disable harness mode
+  - [ ] **Privilege Level Descriptions**: Tooltip/help text explaining each privilege level
+  - [ ] **Path Validation**: Real-time validation of harness root path existence/permissions
+  - [ ] **Harness Status Indicator**: Visual indicator showing current harness mode (enabled/disabled) and active privilege level
 - [ ] **Image processor**: Image upload/preview, preprocessing (resize, normalize), vision model integration for multimodal prompts
 - [ ] **Training data provider**: User provides training data directly — file upload, text paste, URL fetch, folder watch, data preview, auto domain detection, train/val split
 - [ ] **Auto model naming**: System generates model name from training data domain — shows preview `tiny-{detected_domain}` before creation

@@ -47,6 +47,7 @@ from tinylm import (
     generate,
     generate_with_preview,
     insert_markers,
+    load_best,
     load_model,
     mark_and_encode,
     render_marked,
@@ -145,6 +146,12 @@ class TrainingActionsMixin:
                 f"The input has {len(ids)} tokens, but training needs more than {self.model.ctx}."
             )
 
+        # Start from the persisted best weights so training continues from
+        # the best known point instead of drifted weights.
+        if load_best(model_name, self.model):
+            self.worker.post("log", "Training",
+                             f"Resuming '{model_name}' from best weights.")
+
         def on_progress(done, total, loss):
             self.worker.post("progress", "Training", (done, total, loss))
 
@@ -158,7 +165,12 @@ class TrainingActionsMixin:
             return self._cancel_training
 
         def save_on_cancel(model, loss, step):
-            # Save the model if loss improved (train() already kept best weights)
+            # Save only when the run also beats the stored best, so a
+            # cancelled run can never regress the model file.
+            prev = TrainingStats().best_loss(model_name)
+            if prev is not None and loss >= prev:
+                self.worker.post("log", "system", f"Training cancelled at step {step}. No improvement over best ({prev:.4f}), model file kept.")
+                return
             save_model(model, MODEL_PATH)
             self.worker.post("log", "system", f"Training cancelled at step {step}. Loss improved ({loss:.3f}), model saved.")
 

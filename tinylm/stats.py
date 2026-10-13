@@ -73,6 +73,29 @@ def best_path(name: str, best_dir: str = BEST_DIR) -> str:
     return str(Path(best_dir) / f"best_{_safe_name(name)}.tlm")
 
 
+def load_best(name: str, model, best_dir: str = BEST_DIR) -> bool:
+    """Load persisted best weights into `model` in place (warm start).
+
+    Returns True when loaded. Refuses when no snapshot exists or the
+    parameter count differs (renamed/recreated model) so foreign weights
+    never clobber the model.
+    """
+    from tinylm.serialization import load_model
+
+    target = Path(best_path(name, best_dir))
+    if not target.exists():
+        return False
+    try:
+        best_model = load_model(str(target))
+    except Exception:
+        return False
+    if len(best_model.params) != len(model.params):
+        return False
+    for p, q in zip(model.params, best_model.params):
+        p.data = q.data
+    return True
+
+
 def apply_stats(name: str, model, result: Dict[str, Any], stats=None,
                 stats_path: str = STATS_PATH, best_dir: str = BEST_DIR) -> Dict[str, Any]:
     """Enforce a non-increasing best loss for `name` given a train result.
@@ -115,16 +138,21 @@ def apply_stats(name: str, model, result: Dict[str, Any], stats=None,
 
 def train_with_stats(name: str, model, ids, stats=None,
                      stats_path: str = STATS_PATH, best_dir: str = BEST_DIR,
+                     warm_start: bool = True,
                      **train_kwargs) -> Dict[str, Any]:
     """Run `train()` and enforce a non-increasing best loss for `name`.
 
-    Returns `{result, improved, reverted, prev_best, best_loss}` (see
+    With `warm_start` (default) the run begins from the persisted best
+    weights, so training always continues from the best known point.
+    Returns `{result, improved, reverted, warmed, prev_best, best_loss}` (see
     `apply_stats()`).
     """
     from tinylm.training import train
 
+    warmed = load_best(name, model, best_dir) if warm_start else False
     result = train(model, ids, **train_kwargs)
     info = apply_stats(name, model, result, stats=stats,
                        stats_path=stats_path, best_dir=best_dir)
     info["result"] = result
+    info["warmed"] = warmed
     return info

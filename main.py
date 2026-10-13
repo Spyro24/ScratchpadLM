@@ -432,6 +432,8 @@ def cmd_train(args):
         print(f"Previous best loss for '{name}': {prev:.4f}")
     info = train_with_stats(name, model, ids, stats=store, steps=args.steps,
                             lr=args.lr, progress_cb=progress_cb)
+    if info["warmed"]:
+        print(f"Resumed '{name}' from best weights.")
     if info["improved"]:
         save_model(model, out_path)
         print(f"Training complete: best loss {info['best_loss']:.4f}, model saved")

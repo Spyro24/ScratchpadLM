@@ -1051,6 +1051,7 @@ def t_stats():
         info = train_with_stats("m", model, ids, stats=store,
                                 best_dir=os.path.join(d, "best"), **kw)
         check(info["improved"] is True and info["reverted"] is False)
+        check(info["warmed"] is False)
         check(os.path.exists(best_path("m", os.path.join(d, "best"))))
         best1 = info["best_loss"]
         check(best1 is not None and best1 < float("inf"))
@@ -1067,6 +1068,7 @@ def t_stats():
         check(info["improved"] is False and info["reverted"] is True)
         check(any(p != s for p, s in zip([p.data for p in model.params],
                                          sabotaged)))
+        check(info["warmed"] is True)
         check(store.best_loss("m") == best1)
         restored = load_model(best_path("m", os.path.join(d, "best")))
         check(all(p.data == q.data
@@ -1099,6 +1101,13 @@ def t_stats_apply():
         saved = load_model(best_path("n", best_dir))
         check(all(p.data == q.data
                   for p, q in zip(model.params, saved.params)))
+        # Warm start refuses missing snapshots and foreign architectures
+        from tinylm import load_best
+        check(load_best("missing", model, best_dir=best_dir) is False)
+        other = tiny_model(vocab=len(tok.vocab), ctx=6, emb=8, hidden=24)
+        flat_before = [p.data for p in other.params]
+        check(load_best("n", other, best_dir=best_dir) is False)
+        check([p.data for p in other.params] == flat_before)
 
 
 @test("router: output depends on the full context window")

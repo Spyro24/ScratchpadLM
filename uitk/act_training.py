@@ -9,7 +9,7 @@ from tkinter import scrolledtext, messagebox, ttk, filedialog
 from pathlib import Path
 
 from tokenizer import BPETokenizer
-from tinylm import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample, insert_markers, mark_and_encode, render_marked, TrainingStats, apply_stats
+from tinylm import TinyLM, train, generate, load_model, save_model, sync_vocab, train_parallel, count_params, Router, RouterTrainingExample, insert_markers, mark_and_encode, render_marked, TrainingStats, apply_stats, load_best
 from registry import MODEL_REGISTRY, TASK_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
 from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, MODEL_CATALOG
 from config import Config
@@ -110,6 +110,12 @@ class TrainingActionsMixin:
                 f"The input has {len(ids)} tokens, but training needs more than {self.model.ctx}."
             )
 
+        # Start from the persisted best weights so training continues from
+        # the best known point instead of drifted weights.
+        if load_best(model_name, self.model):
+            self.queue.put(("log", "Training",
+                            f"Resuming '{model_name}' from best weights."))
+
         # Progress callback: thread-safe, only puts messages on the queue
         def on_progress(done, total, loss):
             self.queue.put(("progress", "Training", (done, total, loss)))
@@ -124,7 +130,12 @@ class TrainingActionsMixin:
             return self._cancel_training
 
         def save_on_cancel(model, loss, step):
-            # Save the model if loss improved (train() already kept best weights)
+            # Save only when the run also beats the stored best, so a
+            # cancelled run can never regress the model file.
+            prev = TrainingStats().best_loss(model_name)
+            if prev is not None and loss >= prev:
+                self.queue.put(("log", "system", f"Training cancelled at step {step}. No improvement over best ({prev:.4f}), model file kept."))
+                return
             save_model(model, MODEL_PATH)
             self.queue.put(("log", "system", f"Training cancelled at step {step}. Loss improved ({loss:.3f}), model saved."))
 

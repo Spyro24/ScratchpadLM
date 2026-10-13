@@ -52,8 +52,8 @@
 - [ ] **Harness integration**: `model load <name>`, `model create <name> --domain "..."` commands in `.tlm` scripts
 
 ### 0c. Auto-Training System (online learning from feedback)
-- [ ] **RatingCollector**: `collect(prompt, response, model_name, rating, metadata)` — stores `(prompt, response, model, rating)` in `feedback.jsonl`
-- [ ] **Rating thresholds**: `HIGH_THRESHOLD=4/5`, `LOW_THRESHOLD=2/5` — configurable
+- [x] **RatingCollector**: `collect(prompt, response, model_name, rating, metadata)` — stores `(prompt, response, model, rating)` in `feedback.jsonl`
+- [x] **Rating thresholds**: `HIGH_THRESHOLD=4/5`, `LOW_THRESHOLD=2/5` — configurable
 - [ ] **ModelSelector**: `select_model_for_input(prompt)` — uses router + catalog domain_keywords → best model
 - [ ] **AutoTrainer**: background worker that:
   - Monitors `feedback.jsonl` for new high-rated entries (rating ≥ HIGH_THRESHOLD)

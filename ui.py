@@ -12,6 +12,7 @@ from ai import TinyLM, train, generate, load_model, save_model, sync_vocab, trai
 from registry import MODEL_REGISTRY, TASK_REGISTRY, TOKENIZER_MANAGER, get_tokenizer
 from model_mgmt import ModelCatalog, ModelCreator, ModelLoader, MODEL_CATALOG
 from config import Config
+from autotrain import RatingCollector, FeedbackEntry, create_autotrain_system
 
 MODEL_PATH = "tinyLM"
 TOKENIZER_PATH = "bpe_merges.txt"
@@ -92,6 +93,10 @@ class App:
         if os.path.exists(TOKENIZER_PATH):
             TOKENIZER_MANAGER.load(TOKENIZER_PATH)
         self.model = self._load_model()
+
+        # Rating collector for auto-training feedback
+        self.rating_collector = RatingCollector()
+        self._last_assistant_response = None  # (prompt, response, model_name)
 
         self._catalog_names = []  # names shown in Admin listbox (parallel order)
 
@@ -632,9 +637,15 @@ class App:
         if role == "user":
             self.history.insert("end", "You: ", "user")
             self.history.insert("end", text + "\n\n")
+            # Store user prompt for rating the next response
+            self._last_user_prompt = text
         elif role == "assistant":
             self.history.insert("end", "AI: ", "assistant")
             self.history.insert("end", text + "\n\n")
+            # Store for rating
+            self._last_assistant_response = (getattr(self, '_last_user_prompt', ''), text, self.model_var.get())
+            # Add rating buttons after the response
+            self._add_rating_buttons(text)
         elif role == "system":
             self.history.insert("end", text + "\n\n", "system")
         elif role == "error":
@@ -645,6 +656,49 @@ class App:
         
         # Also log to unified log viewer
         self._log_unified("system" if role != "error" else "error", text)
+
+    def _add_rating_buttons(self, response_text):
+        """Add rating buttons (1-5) after an assistant response."""
+        # Create a frame for rating buttons
+        rating_frame = tk.Frame(self.history)
+        
+        tk.Label(rating_frame, text="Rate: ", font=("Consolas", 8), foreground="#7F8C8D").pack(side="left")
+        
+        for i in range(1, 6):
+            btn = tk.Button(rating_frame, text=str(i), width=2, 
+                          command=lambda r=i: self._on_rate_response(r),
+                          font=("Consolas", 8),
+                          bg="#ECF0F1" if i <= 2 else ("#F39C12" if i == 3 else "#27AE60"),
+                          fg="white" if i >= 4 else "black")
+            btn.pack(side="left", padx=1)
+        
+        tk.Label(rating_frame, text="  ", font=("Consolas", 8)).pack(side="left")  # Spacer
+        
+        # Embed the frame in the text widget
+        self.history.window_create("end", window=rating_frame)
+        self.history.insert("end", "\n\n")  # Add spacing after rating buttons
+
+    def _on_rate_response(self, rating):
+        """Handle rating button click for the last assistant response."""
+        if self._last_assistant_response is None:
+            messagebox.showwarning("No response", "No response to rate.")
+            return
+        
+        prompt, response, model_name = self._last_assistant_response
+        
+        try:
+            entry = self.rating_collector.collect(
+                prompt=prompt,
+                response=response,
+                model_name=model_name,
+                rating=rating,
+                metadata={"timestamp": time.time()}
+            )
+            self._append_history("system", f"[Rated {rating}/5 for '{model_name}']")
+            self._log_unified("system", f"Feedback collected: {rating}/5 for {model_name}")
+        except Exception as e:
+            self._append_history("error", f"[Failed to record rating: {e}]")
+            self._log_unified("error", f"Failed to record rating: {e}")
 
     def _log_train(self, message, is_error=False):
         """Append a timestamped line to the training monitor."""

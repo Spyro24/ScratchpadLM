@@ -300,3 +300,52 @@ class Router:
         
         return results[:max_subtasks]
 
+    def decompose(self, prompt: str, tokenizer, max_subtasks: int = 4,
+                  max_tokens: int = 128, temperature: float = 0.0) -> List[dict]:
+        """Decompose prompt with the trained model weights (inference usage).
+
+        Autoregressively extends `[prompt_tokens, SEP]` via `fast_logits`
+        (greedy by default, temperature sampling when `temperature > 0`) and
+        decodes the sequence with `decode_router_sequence`, so a trained
+        router's learned decomposition is used instead of the keyword
+        heuristics in `split()`. Stops after `max_subtasks` SEP-terminated
+        segments or `max_tokens`. Returns `[{model, prompt, context_tokens}]`;
+        falls back to a single `tiny-prose` subtask when nothing decodes.
+        """
+        import math
+        from tinylm.router_data import decode_router_sequence
+        vocab = len(tokenizer.vocab)
+        SEP = vocab - 1
+        ids = tokenizer.encode(prompt)
+        seq = (ids[-self.config.ctx:] if len(ids) > self.config.ctx else list(ids))
+        seq.append(SEP)
+        segments = 0
+        for _ in range(max_tokens):
+            window = seq[-self.config.ctx:]
+            window = [0] * (self.config.ctx - len(window)) + window
+            logits = self.fast_logits(window)
+            if temperature > 0:
+                m = max(logits)
+                weights = [math.exp((x - m) / temperature) for x in logits]
+                nxt = random.choices(range(len(weights)), weights=weights)[0]
+            else:
+                nxt = max(range(len(logits)), key=logits.__getitem__)
+            seq.append(nxt)
+            if nxt == SEP:
+                segments += 1
+                if segments >= max_subtasks:
+                    break
+        example = decode_router_sequence(seq, tokenizer, vocab)
+        subtasks = example.subtasks
+        if not subtasks:
+            subtasks = [{"model": "tiny-prose", "prompt": prompt}]
+        out = []
+        for sub in subtasks[:max_subtasks]:
+            sub_prompt = sub.get("prompt", prompt)
+            out.append({
+                "model": sub.get("model", "tiny-prose"),
+                "prompt": sub_prompt,
+                "context_tokens": tokenizer.encode(sub_prompt),
+            })
+        return out
+

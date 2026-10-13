@@ -981,6 +981,60 @@ def t_planner():
         check(len(TaskPad(path=path).list_tasks()) == 3)
 
 
+@test("router: decompose runs on trained weights + plan() prefers it")
+def t_router_decompose():
+    import io, contextlib
+    from tinylm import Router, RouterConfig, RouterTrainingExample, train_router
+    from tokenizer import BPETokenizer
+    from scratchpad import TaskPad, TaskType, plan
+    tok = BPETokenizer()
+    tok.train("write python function calculate fibonacci. " * 50, vocab_size=500)
+    cfg = RouterConfig(vocab_size=len(tok.vocab), ctx=16, emb=8, hidden=16,
+                       n_layers=1, d_ff=32)
+    router = Router(cfg, seed=0)
+    ex = RouterTrainingExample(
+        prompt="write python function",
+        subtasks=[{"model": "tiny-code", "prompt": "def fib(n): return n"}])
+    with contextlib.redirect_stdout(io.StringIO()):
+        train_router(router, tok, [ex], steps=2, lr=0.05, batch_size=2,
+                     n_negatives=8, use_c=False, early_stopping=False,
+                     eval_every=0, checkpoint_every=0)
+    subs = router.decompose("write python function", tok, max_subtasks=2,
+                            max_tokens=20)
+    check(isinstance(subs, list) and len(subs) >= 1)
+    for s in subs:
+        check("model" in s and "prompt" in s and "context_tokens" in s)
+    # plan() prefers decompose() when the router offers it ...
+    with tempfile.TemporaryDirectory() as d:
+        pad = TaskPad(path=os.path.join(d, "taskpad.jsonl"))
+
+        class ModelRouter:
+            def __init__(self):
+                self.called = False
+            def decompose(self, prompt, tokenizer, max_subtasks=4):
+                self.called = True
+                return [{"model": "tiny-reason", "prompt": "p",
+                         "context_tokens": [7]}]
+            def split(self, *a, **k):
+                raise AssertionError("split should not be called")
+
+        mr = ModelRouter()
+        tasks = plan("x", mr, tokenizer=object(), taskpad=pad)
+        check(mr.called and len(tasks) == 1)
+        check(tasks[0].type == TaskType.REASON)
+        check(tasks[0].metadata["context_tokens"] == [7])
+        # ... and falls back to split() when decompose() fails
+        class BrokenRouter:
+            def decompose(self, prompt, tokenizer, max_subtasks=4):
+                raise RuntimeError("no weights")
+            def split(self, prompt, tokenizer, max_subtasks=4, catalog=None):
+                return [{"model": "tiny-code", "prompt": prompt,
+                         "context_tokens": [1]}]
+
+        tasks = plan("y", BrokenRouter(), tokenizer=object(), taskpad=pad)
+        check(tasks[-1].type == TaskType.CODE)
+
+
 @test("router: train_router runs and reduces loss")
 def t_router_train():
     from tinylm import Router, RouterConfig, train_router, generate_router_training_data

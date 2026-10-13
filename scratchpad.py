@@ -358,8 +358,18 @@ def plan(prompt: str, router, tokenizer, taskpad: Optional["TaskPad"] = None,
             available = {spec.name for spec in catalog.list()}
         except Exception:
             available = None
-    subtasks = router.split(prompt, tokenizer, max_subtasks=max_subtasks,
-                            catalog=catalog)
+    # Prefer the router's learned decomposition when it offers inference
+    # (`Router.decompose`); otherwise fall back to heuristic `split()`.
+    decompose = getattr(router, "decompose", None)
+    if callable(decompose) and tokenizer is not None:
+        try:
+            subtasks = decompose(prompt, tokenizer, max_subtasks=max_subtasks)
+        except Exception:
+            subtasks = router.split(prompt, tokenizer, max_subtasks=max_subtasks,
+                                    catalog=catalog)
+    else:
+        subtasks = router.split(prompt, tokenizer, max_subtasks=max_subtasks,
+                                catalog=catalog)
     tasks = []
     for sub in subtasks:
         model_name = sub.get("model") or None

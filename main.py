@@ -495,40 +495,32 @@ def cmd_scratchpad(args):
         print(f"Added entry for model '{args.model}'")
 
 
-def _default_task_executors():
+def _default_task_executors(catalog=None):
     """Generate-backed executors so `taskpad execute`/`run-all` work from the CLI.
 
-    Each task runs on its own `model_name` via `ModelRuntime` (catalog lookup),
-    falling back to `./tinyLM` when the model is missing or unlisted. Text task
-    types share one runner; `max_tokens` may be overridden per task via
-    `task.parameters`.
+    Models resolve ONLY through the catalog (no hardwired names or fallback
+    files — only the `router` identity is fixed elsewhere): a task whose
+    `model_name` is unlisted fails with a clear error. `max_tokens` may be
+    overridden per task via `task.parameters`.
     """
-    from scratchpad import TaskPad, TaskType
-    from tinylm import ModelRuntime, generate, load_model
+    from scratchpad import TaskType
+    from tinylm import generate, load_model
     from registry import TOKENIZER_MANAGER
 
+    if catalog is None:
+        from model_mgmt import MODEL_CATALOG as catalog
     tokenizer = TOKENIZER_MANAGER.tokenizer
     if os.path.exists("bpe_merges.txt"):
         tokenizer.load("bpe_merges.txt")
-    runtime = ModelRuntime(tokenizer=tokenizer)
-
-    def _model_for(task):
-        if task.model_name:
-            try:
-                return runtime.load_model(task.model_name)
-            except Exception:
-                pass
-        if os.path.exists("tinyLM"):
-            return load_model("tinyLM")
-        return None
 
     def _run(task):
-        model = _model_for(task)
-        if model is None:
+        spec = catalog.get(task.model_name) if task.model_name else None
+        if spec is None:
             raise RuntimeError(
-                "No model available (catalog lookup failed and ./tinyLM missing)")
+                f"Model '{task.model_name}' is not in the catalog")
         max_tokens = (task.parameters or {}).get("max_tokens", 60)
-        return generate(model, tokenizer, task.prompt, max_tokens=max_tokens)
+        return generate(load_model(spec.path), tokenizer, task.prompt,
+                        max_tokens=max_tokens)
 
     return {t: _run for t in (TaskType.GENERATE, TaskType.CODE, TaskType.ANALYZE,
                               TaskType.REASON, TaskType.SEARCH, TaskType.CUSTOM)}

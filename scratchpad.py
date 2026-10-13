@@ -363,7 +363,8 @@ def plan(prompt: str, router, tokenizer, taskpad: Optional["TaskPad"] = None,
     decompose = getattr(router, "decompose", None)
     if callable(decompose) and tokenizer is not None:
         try:
-            subtasks = decompose(prompt, tokenizer, max_subtasks=max_subtasks)
+            subtasks = decompose(prompt, tokenizer, max_subtasks=max_subtasks,
+                                 catalog=catalog)
         except Exception:
             subtasks = router.split(prompt, tokenizer, max_subtasks=max_subtasks,
                                     catalog=catalog)

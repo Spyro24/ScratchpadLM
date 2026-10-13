@@ -171,9 +171,13 @@ class Router:
     
     def split(self, prompt: str, tokenizer, max_subtasks: int = 4, catalog=None) -> List[dict]:
         """Decompose prompt into subtasks with model assignments.
-        
+
+        Model names come ONLY from `catalog` (plus the fixed `router`
+        identity, which is skipped): without a catalog — or when nothing
+        scores — this returns [] rather than inventing model names.
+
         Returns list of dicts: [{model: str, prompt: str, context_tokens: List[int]}]
-        
+
         Args:
             prompt: Input prompt to route
             tokenizer: BPETokenizer for encoding
@@ -181,42 +185,33 @@ class Router:
             catalog: Optional ModelCatalog to use domain_keywords for routing
         """
         ids = tokenizer.encode(prompt)
+        if catalog is None:
+            return []
         prompt_lower = prompt.lower()
-        
-        # If catalog provided, use domain_keywords for routing
-        if catalog is not None:
-            # Score each model by keyword matches
-            scores = {}
-            for spec in catalog.list():
-                if spec.name == "router":
-                    continue  # Skip router itself
-                score = sum(1 for kw in spec.domain_keywords if kw in prompt_lower)
-                if score > 0:
-                    # Factor in model metrics if available (e.g., avg_rating)
-                    metrics = spec.metrics or {}
-                    # Boost score based on avg_rating (1-5 scale)
-                    avg_rating = metrics.get("avg_rating", 0)
-                    if avg_rating > 0:
-                        score += avg_rating * 0.5
-                    scores[spec.name] = score
-            
-            if scores:
-                # Return top-scoring models (up to max_subtasks)
-                sorted_models = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-                return [
-                    {"model": model_name, "prompt": prompt, "context_tokens": ids}
-                    for model_name, _ in sorted_models[:max_subtasks]
-                ]
-        
-        # Fallback to hardcoded keyword-based routing
-        if any(kw in prompt_lower for kw in ["code", "function", "class", "debug", "python", "javascript"]):
-            return [{"model": "tiny-code", "prompt": prompt, "context_tokens": ids}]
-        elif any(kw in prompt_lower for kw in ["math", "calculate", "solve", "prove", "logic"]):
-            return [{"model": "tiny-reason", "prompt": prompt, "context_tokens": ids}]
-        elif any(kw in prompt_lower for kw in ["write", "summarize", "explain", "story", "article"]):
-            return [{"model": "tiny-prose", "prompt": prompt, "context_tokens": ids}]
-        else:
-            return [{"model": "tiny-prose", "prompt": prompt, "context_tokens": ids}]
+
+        # Score each model by keyword matches
+        scores = {}
+        for spec in catalog.list():
+            if spec.name == "router":
+                continue  # Skip router itself
+            score = sum(1 for kw in spec.domain_keywords if kw in prompt_lower)
+            if score > 0:
+                # Factor in model metrics if available (e.g., avg_rating)
+                metrics = spec.metrics or {}
+                # Boost score based on avg_rating (1-5 scale)
+                avg_rating = metrics.get("avg_rating", 0)
+                if avg_rating > 0:
+                    score += avg_rating * 0.5
+                scores[spec.name] = score
+
+        if not scores:
+            return []
+        # Return top-scoring models (up to max_subtasks)
+        sorted_models = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        return [
+            {"model": model_name, "prompt": prompt, "context_tokens": ids}
+            for model_name, _ in sorted_models[:max_subtasks]
+        ]
 
     def route(self, prompt: str, tokenizer, catalog) -> dict:
         """Advanced routing using router model's inference + catalog.
@@ -264,8 +259,13 @@ class Router:
                 scores[spec.name] = confidence
         
         if not scores:
-            # Fallback
-            return {"model": "tiny-prose", "prompt": prompt, "context_tokens": ids, "confidence": 0.5}
+            # No signal: fall back to the first catalogued model rather than
+            # inventing a name. Only the `router` identity is fixed.
+            models = [s.name for s in catalog.list() if s.name != "router"]
+            if not models:
+                raise RuntimeError("route(): no models available in catalog")
+            return {"model": models[0], "prompt": prompt,
+                    "context_tokens": ids, "confidence": 0.0}
         
         # Return best model
         best_model = max(scores.items(), key=lambda x: x[1])
@@ -314,16 +314,18 @@ class Router:
         return results[:max_subtasks]
 
     def decompose(self, prompt: str, tokenizer, max_subtasks: int = 4,
-                  max_tokens: int = 128, temperature: float = 0.0) -> List[dict]:
+                  max_tokens: int = 128, temperature: float = 0.0,
+                  catalog=None) -> List[dict]:
         """Decompose prompt with the trained model weights (inference usage).
 
         Autoregressively extends `[prompt_tokens, SEP]` via `fast_logits`
         (greedy by default, temperature sampling when `temperature > 0`) and
         decodes the sequence with `decode_router_sequence`, so a trained
-        router's learned decomposition is used instead of the keyword
-        heuristics in `split()`. Stops after `max_subtasks` SEP-terminated
-        segments or `max_tokens`. Returns `[{model, prompt, context_tokens}]`;
-        falls back to a single `tiny-prose` subtask when nothing decodes.
+        router's learned decomposition is used instead of heuristics.
+        Stops after `max_subtasks` SEP-terminated segments or `max_tokens`.
+        Returns `[{model, prompt, context_tokens}]`; when `catalog` is given,
+        decoded names outside the catalog are dropped; nothing decodable (or
+        nothing catalogued) yields [] — model names are never invented.
         """
         import math
         from tinylm.router_data import decode_router_sequence
@@ -349,14 +351,20 @@ class Router:
                 if segments >= max_subtasks:
                     break
         example = decode_router_sequence(seq, tokenizer, vocab)
-        subtasks = example.subtasks
-        if not subtasks:
-            subtasks = [{"model": "tiny-prose", "prompt": prompt}]
+        available = None
+        if catalog is not None:
+            try:
+                available = {s.name for s in catalog.list()}
+            except Exception:
+                available = None
         out = []
-        for sub in subtasks[:max_subtasks]:
+        for sub in example.subtasks[:max_subtasks]:
+            name = sub.get("model")
+            if available is not None and name not in available:
+                continue
             sub_prompt = sub.get("prompt", prompt)
             out.append({
-                "model": sub.get("model", "tiny-prose"),
+                "model": name,
                 "prompt": sub_prompt,
                 "context_tokens": tokenizer.encode(sub_prompt),
             })

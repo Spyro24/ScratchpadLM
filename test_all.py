@@ -1046,6 +1046,22 @@ def t_router_decompose():
     check(isinstance(subs, list) and len(subs) >= 1)
     for s in subs:
         check("model" in s and "prompt" in s and "context_tokens" in s)
+    # With a catalog, decoded names outside it are dropped, listed ones kept
+    from model_mgmt import ModelCatalog, ModelSpec
+    with tempfile.TemporaryDirectory() as d:
+        code_only = ModelCatalog(os.path.join(d, "c1.json"))
+        code_only.add(ModelSpec(name="tiny-code", path="x",
+                                domain_keywords=["code"], param_count=1,
+                                config={}))
+        check(router.decompose("write python function", tok, max_subtasks=2,
+                               max_tokens=20, catalog=code_only) == [])
+        prose = ModelCatalog(os.path.join(d, "c2.json"))
+        prose.add(ModelSpec(name="tiny-prose", path="x",
+                            domain_keywords=["write"], param_count=1,
+                            config={}))
+        kept = router.decompose("write python function", tok, max_subtasks=2,
+                                max_tokens=20, catalog=prose)
+        check(len(kept) == 1 and kept[0]["model"] == "tiny-prose")
     # plan() prefers decompose() when the router offers it ...
     with tempfile.TemporaryDirectory() as d:
         pad = TaskPad(path=os.path.join(d, "taskpad.jsonl"))
@@ -1053,7 +1069,7 @@ def t_router_decompose():
         class ModelRouter:
             def __init__(self):
                 self.called = False
-            def decompose(self, prompt, tokenizer, max_subtasks=4):
+            def decompose(self, prompt, tokenizer, max_subtasks=4, catalog=None):
                 self.called = True
                 return [{"model": "tiny-reason", "prompt": "p",
                          "context_tokens": [7]}]
@@ -1067,7 +1083,7 @@ def t_router_decompose():
         check(tasks[0].metadata["context_tokens"] == [7])
         # ... and falls back to split() when decompose() fails
         class BrokenRouter:
-            def decompose(self, prompt, tokenizer, max_subtasks=4):
+            def decompose(self, prompt, tokenizer, max_subtasks=4, catalog=None):
                 raise RuntimeError("no weights")
             def split(self, prompt, tokenizer, max_subtasks=4, catalog=None):
                 return [{"model": "tiny-code", "prompt": prompt,
@@ -1122,18 +1138,31 @@ def t_run_cycle():
 @test("taskpad cli: default executors run tasks end to end")
 def t_taskpad_executors():
     from scratchpad import TaskPad, TaskStatus, TaskType
+    from model_mgmt import ModelCatalog, ModelSpec
     from main import _default_task_executors
-    executors = _default_task_executors()
-    check(TaskType.GENERATE in executors and TaskType.CODE in executors)
+    root = os.path.dirname(os.path.abspath(__file__))
     with tempfile.TemporaryDirectory() as d:
+        catalog = ModelCatalog(os.path.join(d, "catalog.json"))
+        catalog.add(ModelSpec(name="exec-model",
+                              path=os.path.join(root, "tinyLM"),
+                              domain_keywords=["text"], param_count=1,
+                              config={}))
+        executors = _default_task_executors(catalog)
+        check(TaskType.GENERATE in executors and TaskType.CODE in executors)
         pad = TaskPad(path=os.path.join(d, "taskpad.jsonl"))
         for ttype, fn in executors.items():
             pad.register_executor(ttype, fn)
         task = pad.create_task(TaskType.GENERATE, "hello world",
+                               model_name="exec-model",
                                parameters={"max_tokens": 5})
         done = pad.execute_task(task.id)
         check(done.status == TaskStatus.COMPLETED)
         check(isinstance(done.result, str) and len(done.result) > 0)
+        # Unlisted models fail with a clear error instead of running nowhere
+        bad = pad.create_task(TaskType.CODE, "x", model_name="ghost-model")
+        failed = pad.execute_task(bad.id)
+        check(failed.status == TaskStatus.FAILED)
+        check("not in the catalog" in (failed.error or ""))
 
 
 @test("router: train_router runs and reduces loss")

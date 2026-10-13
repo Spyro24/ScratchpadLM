@@ -33,6 +33,8 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 - [x] Context fix: blocks read only the first `emb` inputs, so concat-embedding left positions 1+ unread (proven: 0.0 output change) → mean-pooled window in `_embed_context`/`fast_logits` (shapes unchanged, old `router.tlm` files load)
 - [ ] Same unread-context flaw exists in `SpecializedLM._embed_context` (`specialized.py:115`) → apply the same pooling there
 - [x] Multi-subtask training data: `generate_router_training_data()` adds composite examples from consecutive sentences spanning distinct domains (`max_subtasks`, 1 = singles only)
+- [x] De-hardwired runtime routing: `split()`/`route()`/`decompose()` and taskpad executors resolve models from the catalog only (unknown → `[]` / first catalogued model / dropped / clear error; only `router` stays literal)
+- [ ] Same treatment for the rest: `router_data` slot map + `decode_router_sequence` + training-data keyword defaults; `ThinkEngine`/`HarnessRuntime` model defaults; `cmd_generate`/`cmd_train`/demo/benchmark `tinyLM` fallbacks; UI placeholders
 - [ ] **MCP tool use**: tool-calling head, schema awareness, multi-step chains, result→context
 
 ### 2. Specialized Base (≤100K each)

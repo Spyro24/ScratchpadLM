@@ -22,7 +22,7 @@ Never delete: `tinyLM` (weights), `bpe_merges.txt` (merges).
 
 ## Hard Constraints
 
-Stdlib only. Never renumber token IDs (`extend()` keeps IDs). Never recreate a model on vocab growth (use `sync_vocab`). In-place param updates only (`p.data -= rate * p.grad`). Send only floats to workers, never `Value`. Multiprocessing under `if __name__ == "__main__"`. Tk/Qt calls on main thread only (workers report via queue + timer). All models 4-bit via `save_model`/`load_model`. Specialized models ≤100K params (enforced at init); router 300K, pretrained, frozen by default. Single shared tokenizer. No fixed context length; variable model count; no folder corpus loader in UI.
+Stdlib only. Never renumber token IDs (`extend()` keeps IDs). Never recreate a model on vocab growth (use `sync_vocab`). In-place param updates only (`p.data -= rate * p.grad`). Send only floats to workers, never `Value`. Multiprocessing under `if __name__ == "__main__"`. Tk/Qt calls on main thread only (workers report via queue + timer). All models 4-bit via `save_model`/`load_model`. Specialized models ≤100K params (enforced at init); router 300K, pretrained, frozen by default. Single shared tokenizer. No fixed context length; variable model count; no folder corpus loader in UI. No hardwired models — only the `router` identity is fixed; every other model name resolves via the catalog.
 
 ## Protocols
 

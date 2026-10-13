@@ -237,8 +237,9 @@ def t_sample_topk():
     logits = [1.0, 2.0, 3.0, 4.0, 5.0]
     seen = set()
     for _ in range(30):
-        seen.add(_sample_next_token(logits[:], 1.0, top_k=2, top_p=0.0,
-                                    repetition_penalty=1.0, generated_ids=[]))
+        next_id, _ = _sample_next_token(logits[:], 1.0, top_k=2, top_p=0.0,
+                                        repetition_penalty=1.0, generated_ids=[])
+        seen.add(next_id)
     check(seen <= {3, 4}, f"top-k leaked: {seen}")
 
 
@@ -249,7 +250,8 @@ def t_sample_reppen():
     logits = [1.0, 1.0, 1.0, 1.0, 1.0]
     hits = 0
     for _ in range(50):
-        if _sample_next_token(logits[:], 1.0, 0, 0.0, 2.0, [3]) == 3:
+        next_id, _ = _sample_next_token(logits[:], 1.0, 0, 0.0, 2.0, [3])
+        if next_id == 3:
             hits += 1
     check(hits < 10, f"rep penalty ineffective: {hits}/50")
 
@@ -261,7 +263,8 @@ def t_sample_topp():
     logits = [0.0, 0.0, 0.0, 10.0]  # token 3 dominates
     seen = set()
     for _ in range(20):
-        seen.add(_sample_next_token(logits[:], 1.0, 0, 0.5, 1.0, []))
+        next_id, _ = _sample_next_token(logits[:], 1.0, 0, 0.5, 1.0, [])
+        seen.add(next_id)
     check(seen == {3}, f"top-p leaked: {seen}")
 
 
@@ -270,9 +273,34 @@ def t_generate():
     from ai import generate
     tok, _ = tiny_tok_and_ids()
     model = tiny_model(vocab=len(tok.vocab))
-    out = generate(model, tok, "the quick", n_tokens=8, temperature=0.7,
+    out = generate(model, tok, "the quick", max_tokens=8, temperature=0.7,
                    top_k=10, top_p=0.9, repetition_penalty=1.2)
     check(isinstance(out, str) and len(out) > 0)
+
+
+@test("generation: autostop with stop_token_ids")
+def t_autostop_token_ids():
+    from ai import generate
+    tok, _ = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    # Use token ID 1 as stop token
+    out = generate(model, tok, "hello", max_tokens=50, min_tokens=2,
+                   stop_token_ids=[1], temperature=1e-6)
+    # Should stop early when token 1 is generated
+    check(isinstance(out, str))
+    # The output should contain the prompt plus at least min_tokens
+
+
+@test("generation: autostop with stop_strings")
+def t_autostop_strings():
+    from ai import generate
+    tok, _ = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    # Use "END" as stop string
+    out = generate(model, tok, "start", max_tokens=50, min_tokens=2,
+                   stop_strings=["END"], temperature=1e-6)
+    check(isinstance(out, str))
+    # Should stop when "END" is generated
 
 
 # ---------------------------------------------------------------------------
@@ -705,7 +733,7 @@ def t_specialized_model():
     
     # Test generation
     from ai import generate
-    text = generate(model, tok, "hello", n_tokens=10, temperature=0.8)
+    text = generate(model, tok, "hello", max_tokens=10, temperature=0.8)
     check(isinstance(text, str) and len(text) > 0)
 
 
@@ -827,7 +855,8 @@ def t_ui_qt_smoke():
         tabs = [win.tabs.tabText(i) for i in range(win.tabs.count())]
         check(tabs == ["Chat", "Training", "Model Info", "Admin", "Settings", "Logs"], tabs)
         # Generation controls loaded from config (parity with Tkinter app)
-        check(win.n_tokens_spin.value() == win.cfg["generation"]["n_tokens"])
+        check(win.max_tokens_spin.value() == win.cfg["generation"]["max_tokens"])
+        check(win.min_tokens_spin.value() == win.cfg["generation"]["min_tokens"])
         check(win.top_k_spin.value() == win.cfg["generation"]["top_k"])
         check(("training", "grad_clip") in win._settings_entries)
         check(("training", "patience") in win._settings_entries)

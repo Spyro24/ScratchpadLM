@@ -366,17 +366,35 @@ def load_config(path: str = CONFIG_PATH) -> Config:
 
 def write_config_yaml(path: str, data: dict) -> None:
     """Write a 2-level config dict as YAML (matches config.py's parser)."""
+    def format_value(v, indent=0):
+        """Format a value for YAML output."""
+        prefix = "  " * indent
+        if v is None:
+            return "null"
+        elif isinstance(v, bool):
+            return "true" if v else "false"
+        elif isinstance(v, list):
+            if not v:
+                return "[]"  # Empty list
+            lines = []
+            for item in v:
+                lines.append(f"{prefix}- {format_value(item)}")
+            return "\n".join(lines)
+        else:
+            return str(v)
+    
     lines = ["# TinyLM Configuration"]
     for section, values in data.items():
         lines.append(f"{section}:")
         for key, value in values.items():
-            if value is None:
-                rendered = "null"
-            elif isinstance(value, bool):
-                rendered = "true" if value else "false"
+            formatted = format_value(value, 1)
+            if "\n" in formatted:
+                # Multi-line (list)
+                lines.append(f"  {key}:")
+                for line in formatted.split("\n"):
+                    lines.append(f"    {line.strip()}")
             else:
-                rendered = str(value)
-            lines.append(f"  {key}: {rendered}")
+                lines.append(f"  {key}: {formatted}")
         lines.append("")
     Path(path).write_text("\n".join(lines), encoding="utf-8")
 

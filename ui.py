@@ -294,9 +294,10 @@ class App:
         gen_frame.columnconfigure(5, weight=1)
         gen_frame.columnconfigure(7, weight=1)
 
-        # Row 0: Tokens, Temp, Top-k, Top-p
+        # Row 0: Max Tokens, Min Tokens, Temp, Top-k, Top-p
         settings_row1 = [
-            ("Tokens:", "n_tokens_var", "generation", "n_tokens", 8),
+            ("Max Tokens:", "max_tokens_var", "generation", "max_tokens", 8),
+            ("Min Tokens:", "min_tokens_var", "generation", "min_tokens", 8),
             ("Temp:", "temp_var", "generation", "temperature", 8),
             ("Top-k:", "top_k_var", "generation", "top_k", 8),
             ("Top-p:", "top_p_var", "generation", "top_p", 8),
@@ -309,17 +310,27 @@ class App:
             entry.grid(row=0, column=col+1, padx=(0, 15), sticky="ew")
             setattr(self, attr, entry)
 
-        # Row 1: Repetition penalty, Clear button
+        # Row 1: Repetition penalty, Stop tokens, Stop strings
         tk.Label(gen_frame, text="Rep. Penalty:").grid(row=1, column=0, padx=(0, 5), sticky="w", pady=(4, 0))
         self.rep_penalty_var = tk.Entry(gen_frame, width=8)
         self.rep_penalty_var.insert(0, str(self.cfg["generation"]["repetition_penalty"]))
         self.rep_penalty_var.grid(row=1, column=1, padx=(0, 15), sticky="ew", pady=(4, 0))
 
+        tk.Label(gen_frame, text="Stop IDs:").grid(row=1, column=2, padx=(0, 5), sticky="w", pady=(4, 0))
+        self.stop_tokens_var = tk.Entry(gen_frame, width=15)
+        self.stop_tokens_var.insert(0, ",".join(str(x) for x in self.cfg["generation"].get("stop_token_ids", [])))
+        self.stop_tokens_var.grid(row=1, column=3, columnspan=2, padx=(0, 15), sticky="ew", pady=(4, 0))
+
+        tk.Label(gen_frame, text="Stop Strings:").grid(row=1, column=5, padx=(0, 5), sticky="w", pady=(4, 0))
+        self.stop_strings_var = tk.Entry(gen_frame, width=15)
+        self.stop_strings_var.insert(0, ",".join(self.cfg["generation"].get("stop_strings", [])))
+        self.stop_strings_var.grid(row=1, column=6, columnspan=2, padx=(0, 15), sticky="ew", pady=(4, 0))
+
         self.clear_btn = tk.Button(gen_frame, text="Clear History", command=self.on_clear_history)
-        self.clear_btn.grid(row=1, column=2, columnspan=3, sticky="w", pady=(4, 0), padx=10)
+        self.clear_btn.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0), padx=10)
         
         self.preview_btn = tk.Button(gen_frame, text="Generate with Preview", command=self.on_generate_preview)
-        self.preview_btn.grid(row=1, column=5, columnspan=3, sticky="w", pady=(4, 0), padx=10)
+        self.preview_btn.grid(row=2, column=3, columnspan=3, sticky="w", pady=(4, 0), padx=10)
 
     def _build_training_tab(self, tab):
         """Training tab: data input, controls, training log monitor."""
@@ -498,11 +509,14 @@ class App:
 
         # (section, key, label, type) for each editable setting
         settings = [
-            ("generation", "n_tokens", "Generation tokens", int),
+            ("generation", "max_tokens", "Max tokens", int),
+            ("generation", "min_tokens", "Min tokens", int),
             ("generation", "temperature", "Temperature", float),
             ("generation", "top_k", "Top-k", int),
             ("generation", "top_p", "Top-p", float),
             ("generation", "repetition_penalty", "Repetition penalty", float),
+            ("generation", "stop_token_ids", "Stop token IDs (comma-separated)", str),
+            ("generation", "stop_strings", "Stop strings (comma-separated)", str),
             ("training", "steps", "Training steps", int),
             ("training", "lr", "Learning rate", float),
             ("training", "batch_size", "Batch size", int),
@@ -1069,17 +1083,22 @@ class App:
         self._append_history("user", prompt)
         # Get generation settings
         try:
-            n_tokens = int(self.n_tokens_var.get())
+            max_tokens = int(self.max_tokens_var.get())
+            min_tokens = int(self.min_tokens_var.get())
             temperature = float(self.temp_var.get())
             top_k = int(self.top_k_var.get())
             top_p = float(self.top_p_var.get())
             repetition_penalty = float(self.rep_penalty_var.get())
+            stop_token_ids = [int(x.strip()) for x in self.stop_tokens_var.get().split(",") if x.strip()]
+            stop_strings = [x.strip() for x in self.stop_strings_var.get().split(",") if x.strip()]
         except ValueError:
-            n_tokens, temperature, top_k, top_p, repetition_penalty = 60, 0.8, 0, 0.0, 1.0
+            max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty = 60, 0, 0.8, 0, 0.0, 1.0
+            stop_token_ids = []
+            stop_strings = []
         self._stream_active = False  # streamed tokens open a fresh "AI:" block
-        self._run_in_background("Generating", self._generate_job, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty)
+        self._run_in_background("Generating", self._generate_job, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings)
 
-    def _generate_job(self, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty):
+    def _generate_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings):
         # Route the prompt using Router
         model, model_name = self._route_prompt(prompt)
         
@@ -1090,8 +1109,9 @@ class App:
         # Collect routing data for Router training
         example = self._collect_routing_data(prompt, model_name, "")
         
-        text = generate(model, self.tok, prompt, n_tokens=n_tokens, temperature=temperature, 
+        text = generate(model, self.tok, prompt, max_tokens=max_tokens, min_tokens=min_tokens, temperature=temperature, 
                         top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty,
+                        stop_token_ids=stop_token_ids, stop_strings=stop_strings,
                         stream_callback=stream_callback)
         
         # Collect response for routing data
@@ -1173,13 +1193,18 @@ class App:
         
         # Get generation settings
         try:
-            n_tokens = int(self.n_tokens_var.get())
+            max_tokens = int(self.max_tokens_var.get())
+            min_tokens = int(self.min_tokens_var.get())
             temperature = float(self.temp_var.get())
             top_k = int(self.top_k_var.get())
             top_p = float(self.top_p_var.get())
             repetition_penalty = float(self.rep_penalty_var.get())
+            stop_token_ids = [int(x.strip()) for x in self.stop_tokens_var.get().split(",") if x.strip()]
+            stop_strings = [x.strip() for x in self.stop_strings_var.get().split(",") if x.strip()]
         except ValueError:
-            n_tokens, temperature, top_k, top_p, repetition_penalty = 60, 0.8, 0, 0.0, 1.0
+            max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty = 60, 0, 0.8, 0, 0.0, 1.0
+            stop_token_ids = []
+            stop_strings = []
         
         # Clear prompt entry
         self.prompt_var.delete(0, "end")
@@ -1190,15 +1215,16 @@ class App:
 
         # Run in background with preview
         self._run_in_background("Generating (Preview)", self._generate_preview_job, 
-                               prompt, n_tokens, temperature, top_k, top_p, repetition_penalty)
+                               prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings)
 
-    def _generate_preview_job(self, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty):
+    def _generate_preview_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings):
         """Background job for generate_with_preview."""
         from ai import generate_with_preview
         result = generate_with_preview(self.model, self.tok, prompt, 
-                                      n_tokens=n_tokens, temperature=temperature,
+                                      max_tokens=max_tokens, min_tokens=min_tokens, temperature=temperature,
                                       top_k=top_k, top_p=top_p, 
-                                      repetition_penalty=repetition_penalty)
+                                      repetition_penalty=repetition_penalty,
+                                      stop_token_ids=stop_token_ids, stop_strings=stop_strings)
         return prompt, result
 
     # ---- admin actions -----------------------------------------------------
@@ -1499,14 +1525,21 @@ class App:
         for (section, key), (entry, cast) in self._settings_entries.items():
             raw = entry.get().strip()
             try:
-                value = cast(raw)
+                if cast == str and key in ("stop_token_ids", "stop_strings"):
+                    # Special handling for comma-separated lists
+                    if key == "stop_token_ids":
+                        value = [int(x.strip()) for x in raw.split(",") if x.strip()]
+                    else:
+                        value = [x.strip() for x in raw.split(",") if x.strip()]
+                else:
+                    value = cast(raw)
             except ValueError:
                 messagebox.showwarning(
                     "Invalid value", f"{section}.{key}: '{raw}' is not a valid {cast.__name__}."
                 )
                 return
             # Validate integer fields: most must be positive; some allow zero
-            ZERO_OK = {"top_k", "warmup_steps", "eval_every", "checkpoint_every"}
+            ZERO_OK = {"top_k", "warmup_steps", "eval_every", "checkpoint_every", "min_tokens"}
             if isinstance(value, int) and not isinstance(value, bool):
                 if key in ZERO_OK:
                     if value < 0:
@@ -1528,6 +1561,9 @@ class App:
             return
         if gen["repetition_penalty"] < 1.0:
             messagebox.showwarning("Invalid value", "generation.repetition_penalty must be >= 1.0.")
+            return
+        if gen["max_tokens"] < 1:
+            messagebox.showwarning("Invalid value", "generation.max_tokens must be >= 1.")
             return
         tr = new_data["training"]
         if tr["lr_scheduler"] not in ("linear", "cosine_warmup", "constant"):
@@ -1566,8 +1602,10 @@ class App:
         # Sync quick-access entries with new defaults
         self.steps_var.delete(0, "end")
         self.steps_var.insert(0, str(new_data["training"]["steps"]))
-        self.n_tokens_var.delete(0, "end")
-        self.n_tokens_var.insert(0, str(new_data["generation"]["n_tokens"]))
+        self.max_tokens_var.delete(0, "end")
+        self.max_tokens_var.insert(0, str(new_data["generation"]["max_tokens"]))
+        self.min_tokens_var.delete(0, "end")
+        self.min_tokens_var.insert(0, str(new_data["generation"]["min_tokens"]))
         self.temp_var.delete(0, "end")
         self.temp_var.insert(0, str(new_data["generation"]["temperature"]))
         self.top_k_var.delete(0, "end")
@@ -1576,6 +1614,10 @@ class App:
         self.top_p_var.insert(0, str(new_data["generation"]["top_p"]))
         self.rep_penalty_var.delete(0, "end")
         self.rep_penalty_var.insert(0, str(new_data["generation"]["repetition_penalty"]))
+        self.stop_tokens_var.delete(0, "end")
+        self.stop_tokens_var.insert(0, ",".join(str(x) for x in new_data["generation"].get("stop_token_ids", [])))
+        self.stop_strings_var.delete(0, "end")
+        self.stop_strings_var.insert(0, ",".join(new_data["generation"].get("stop_strings", [])))
 
         self._append_history("system", f"[Config saved to {CONFIG_PATH}]")
 

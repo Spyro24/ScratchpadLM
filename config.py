@@ -79,7 +79,11 @@ def _parse_value(value: str) -> Any:
         return True
     if value.lower() == 'false':
         return False
-
+    
+    # Handle empty list
+    if value == '[]':
+        return []
+    
     # Try number
     try:
         if '.' in value or 'e' in value.lower():
@@ -129,11 +133,14 @@ class Config:
             "auto_clip_relax": True,
         },
         "generation": {
-            "n_tokens": 60,
+            "max_tokens": 60,
+            "min_tokens": 0,
             "temperature": 0.8,
             "top_k": 0,
             "top_p": 0.0,
             "repetition_penalty": 1.0,
+            "stop_token_ids": [],
+            "stop_strings": [],
         },
         "tokenizer": {
             "vocab_size": 1000,
@@ -174,11 +181,14 @@ class Config:
             "auto_clip_relax": (bool, lambda x: True, "auto_clip_relax must be boolean"),
         },
         "generation": {
-            "n_tokens": (int, lambda x: x > 0, "n_tokens must be > 0"),
+            "max_tokens": (int, lambda x: x > 0, "max_tokens must be > 0"),
+            "min_tokens": (int, lambda x: x >= 0, "min_tokens must be >= 0"),
             "temperature": (float, lambda x: x > 0, "temperature must be > 0"),
             "top_k": (int, lambda x: x >= 0, "top_k must be >= 0"),
             "top_p": (float, lambda x: 0.0 <= x <= 1.0, "top_p must be between 0.0 and 1.0"),
             "repetition_penalty": (float, lambda x: x >= 1.0, "repetition_penalty must be >= 1.0"),
+            "stop_token_ids": (list, lambda x: all(isinstance(i, int) for i in x), "stop_token_ids must be list of ints"),
+            "stop_strings": (list, lambda x: all(isinstance(s, str) for s in x), "stop_strings must be list of strings"),
         },
         "tokenizer": {
             "vocab_size": (int, lambda x: x >= 256, "vocab_size must be >= 256"),
@@ -295,9 +305,16 @@ def training_config(steps: int = 100, lr: float = 0.05, batch_size: int = 16,
                          "auto_patience": auto_patience, "auto_clip_relax": auto_clip_relax}}
 
 
-def generation_config(n_tokens: int = 60, temperature: float = 0.8, top_k: int = 0, top_p: float = 0.0, repetition_penalty: float = 1.0) -> Dict[str, Any]:
+def generation_config(max_tokens: int = 60, min_tokens: int = 0, temperature: float = 0.8, 
+                      top_k: int = 0, top_p: float = 0.0, repetition_penalty: float = 1.0,
+                      stop_token_ids: Optional[List[int]] = None,
+                      stop_strings: Optional[List[str]] = None) -> Dict[str, Any]:
     """Create a generation config dict."""
-    return {"generation": {"n_tokens": n_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p, "repetition_penalty": repetition_penalty}}
+    return {"generation": {"max_tokens": max_tokens, "min_tokens": min_tokens, 
+                           "temperature": temperature, "top_k": top_k, "top_p": top_p, 
+                           "repetition_penalty": repetition_penalty,
+                           "stop_token_ids": stop_token_ids or [],
+                           "stop_strings": stop_strings or []}}
 
 
 def tokenizer_config(vocab_size: int = 1000, min_frequency: int = 2) -> Dict[str, Any]:

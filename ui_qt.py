@@ -367,8 +367,10 @@ class MainWindow(QMainWindow):
         # Quick generation settings
         gen = QGroupBox("Generation Settings")
         g = QHBoxLayout(gen)
-        self.n_tokens_spin = QSpinBox()
-        self.n_tokens_spin.setRange(1, 10000)
+        self.max_tokens_spin = QSpinBox()
+        self.max_tokens_spin.setRange(1, 10000)
+        self.min_tokens_spin = QSpinBox()
+        self.min_tokens_spin.setRange(0, 10000)
         self.temperature_spin = QDoubleSpinBox()
         self.temperature_spin.setRange(0.05, 5.0)
         self.temperature_spin.setSingleStep(0.05)
@@ -380,12 +382,23 @@ class MainWindow(QMainWindow):
         self.rep_penalty_spin = QDoubleSpinBox()
         self.rep_penalty_spin.setRange(1.0, 2.0)
         self.rep_penalty_spin.setSingleStep(0.05)
+        # Stop token IDs (comma-separated)
+        self.stop_tokens_edit = QLineEdit()
+        self.stop_tokens_edit.setPlaceholderText("Stop token IDs (comma-separated)")
+        self.stop_tokens_edit.setMaximumWidth(150)
+        # Stop strings (comma-separated)
+        self.stop_strings_edit = QLineEdit()
+        self.stop_strings_edit.setPlaceholderText("Stop strings (comma-separated)")
+        self.stop_strings_edit.setMaximumWidth(150)
         for label, widget in (
-            ("Tokens", self.n_tokens_spin),
+            ("Max Tokens", self.max_tokens_spin),
+            ("Min Tokens", self.min_tokens_spin),
             ("Temp", self.temperature_spin),
             ("Top-k", self.top_k_spin),
             ("Top-p", self.top_p_spin),
             ("Rep. penalty", self.rep_penalty_spin),
+            ("Stop IDs", self.stop_tokens_edit),
+            ("Stop Strings", self.stop_strings_edit),
         ):
             g.addWidget(QLabel(label))
             g.addWidget(widget)
@@ -420,11 +433,14 @@ class MainWindow(QMainWindow):
 
     def _load_gen_settings(self):
         gen = self.cfg["generation"]
-        self.n_tokens_spin.setValue(gen["n_tokens"])
+        self.max_tokens_spin.setValue(gen["max_tokens"])
+        self.min_tokens_spin.setValue(gen["min_tokens"])
         self.temperature_spin.setValue(gen["temperature"])
         self.top_k_spin.setValue(gen["top_k"])
         self.top_p_spin.setValue(gen["top_p"])
         self.rep_penalty_spin.setValue(gen["repetition_penalty"])
+        self.stop_tokens_edit.setText(",".join(str(x) for x in gen.get("stop_token_ids", [])))
+        self.stop_strings_edit.setText(",".join(gen.get("stop_strings", [])))
 
     # -- Training tab --
 
@@ -584,11 +600,14 @@ class MainWindow(QMainWindow):
         grid.setColumnStretch(3, 1)
 
         settings = [
-            ("generation", "n_tokens", "Generation tokens", int),
+            ("generation", "max_tokens", "Max tokens", int),
+            ("generation", "min_tokens", "Min tokens", int),
             ("generation", "temperature", "Temperature", float),
             ("generation", "top_k", "Top-k", int),
             ("generation", "top_p", "Top-p", float),
             ("generation", "repetition_penalty", "Repetition penalty", float),
+            ("generation", "stop_token_ids", "Stop token IDs (comma-separated)", str),
+            ("generation", "stop_strings", "Stop strings (comma-separated)", str),
             ("training", "steps", "Training steps", int),
             ("training", "lr", "Learning rate", float),
             ("training", "batch_size", "Batch size", int),
@@ -1256,19 +1275,28 @@ class MainWindow(QMainWindow):
         self._last_user_prompt = prompt
         self._append_message("user", prompt)
         self._stream_bubble = None
+        try:
+            stop_token_ids = [int(x.strip()) for x in self.stop_tokens_edit.text().split(",") if x.strip()]
+            stop_strings = [x.strip() for x in self.stop_strings_edit.text().split(",") if x.strip()]
+        except ValueError:
+            stop_token_ids = []
+            stop_strings = []
         self.worker.submit(
             "Generating",
             self._generate_job,
             prompt,
-            self.n_tokens_spin.value(),
+            self.max_tokens_spin.value(),
+            self.min_tokens_spin.value(),
             self.temperature_spin.value(),
             self.top_k_spin.value(),
             self.top_p_spin.value(),
             self.rep_penalty_spin.value(),
+            stop_token_ids,
+            stop_strings,
         )
         self.set_busy(True, "Generating...")
 
-    def _generate_job(self, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty):
+    def _generate_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings):
         model, model_name = self._route_prompt(prompt)
 
         def stream_callback(token_str, token_idx, total_tokens, tps):
@@ -1277,8 +1305,9 @@ class MainWindow(QMainWindow):
         example = self._collect_routing_data(prompt, model_name, "")
         text = generate(
             model, self.tok, prompt,
-            n_tokens=n_tokens, temperature=temperature,
+            max_tokens=max_tokens, min_tokens=min_tokens, temperature=temperature,
             top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty,
+            stop_token_ids=stop_token_ids, stop_strings=stop_strings,
             stream_callback=stream_callback,
         )
         if example:
@@ -1299,23 +1328,33 @@ class MainWindow(QMainWindow):
         self.prompt_input.clear()
         self._last_user_prompt = prompt
         self._append_message("user", prompt)
+        try:
+            stop_token_ids = [int(x.strip()) for x in self.stop_tokens_edit.text().split(",") if x.strip()]
+            stop_strings = [x.strip() for x in self.stop_strings_edit.text().split(",") if x.strip()]
+        except ValueError:
+            stop_token_ids = []
+            stop_strings = []
         self.worker.submit(
             "Generating (Preview)",
             self._generate_preview_job,
             prompt,
-            self.n_tokens_spin.value(),
+            self.max_tokens_spin.value(),
+            self.min_tokens_spin.value(),
             self.temperature_spin.value(),
             self.top_k_spin.value(),
             self.top_p_spin.value(),
             self.rep_penalty_spin.value(),
+            stop_token_ids,
+            stop_strings,
         )
         self.set_busy(True, "Generating (Preview)...")
 
-    def _generate_preview_job(self, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty):
+    def _generate_preview_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings):
         result = generate_with_preview(
             self.model, self.tok, prompt,
-            n_tokens=n_tokens, temperature=temperature,
+            max_tokens=max_tokens, min_tokens=min_tokens, temperature=temperature,
             top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty,
+            stop_token_ids=stop_token_ids, stop_strings=stop_strings,
         )
         return prompt, result
 
@@ -1614,11 +1653,18 @@ class MainWindow(QMainWindow):
         for (section, key), (edit, cast) in self._settings_entries.items():
             raw = edit.text().strip()
             try:
-                value = cast(raw)
+                if cast == str and key in ("stop_token_ids", "stop_strings"):
+                    # Special handling for comma-separated lists
+                    if key == "stop_token_ids":
+                        value = [int(x.strip()) for x in raw.split(",") if x.strip()]
+                    else:
+                        value = [x.strip() for x in raw.split(",") if x.strip()]
+                else:
+                    value = cast(raw)
             except ValueError:
                 self.show_warning("Invalid value", f"{section}.{key}: '{raw}' is not a valid {cast.__name__}.")
                 return
-            ZERO_OK = {"top_k", "warmup_steps", "eval_every", "checkpoint_every"}
+            ZERO_OK = {"top_k", "warmup_steps", "eval_every", "checkpoint_every", "min_tokens"}
             if isinstance(value, int) and not isinstance(value, bool):
                 if key in ZERO_OK and value < 0:
                     self.show_warning("Invalid value", f"{section}.{key} must be >= 0.")
@@ -1630,6 +1676,8 @@ class MainWindow(QMainWindow):
 
         gen = new_data["generation"]
         checks = [
+            (gen["max_tokens"] >= 1, "generation.max_tokens must be >= 1."),
+            (gen["min_tokens"] >= 0, "generation.min_tokens must be >= 0."),
             (gen["temperature"] > 0, "generation.temperature must be greater than 0."),
             (gen["top_k"] >= 0, "generation.top_k must be >= 0."),
             (0.0 <= gen["top_p"] <= 1.0, "generation.top_p must be between 0.0 and 1.0."),

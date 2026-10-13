@@ -182,10 +182,13 @@
 - [x] Top-p (nucleus) sampling: `sample_top_p(logits, p)` (implemented in `_sample_next_token`)
 - [x] Repetition penalty: `apply_repetition_penalty(logits, generated, penalty)` (implemented in `_sample_next_token`)
 - [x] Unified `generate(model, prompt, config)` with all options
-- [x] **Generation speed optimizations**: optimized `_sample_next_token` with cached softmax, efficient sorting
+- [x] **Generation speed optimizations**: optimized `_sample_next_token` with cached softmax, efficient sorting, in-place operations
+- [x] **Variable generation with autostop**: `stop_token_ids`, `stop_strings`, `min_tokens`, `max_tokens` parameters
 - [x] **UI tokens/sec display**: live tokens/sec in status bar during generation
 - [x] **Live token preview**: streaming token output with "Generate with Preview" button showing tokens/sec
 - [x] `generate_with_preview()`: detailed timing stats and console output
+- [x] **Stream callback early stop**: callback can return `False` to stop generation early
+- [x] **ModelRuntime integration**: all new parameters wired through ModelRuntime.generate() and generate_with_preview()
 
 ### 10. Checkpointing
 - [x] `Checkpoint` class: `model_state`, `optimizer_state`, `step`, `config`

@@ -67,7 +67,7 @@
 - [x] **Rate limiting**: max 1 auto-train per model per 5 min, max 100 steps/day per model
 - [ ] **CLI**: `tinylm autotrain status`, `tinylm autotrain enable/disable`, `tinylm autotrain config --threshold 4 --batch 16`
 - [ ] **Harness integration**: `autotrain on`, `autotrain off`, `autotrain config`, `rate last <1-5>` commands
-- [ ] **Metrics**: tracks per-model `avg_rating`, `train_count`, `last_trained`, `improvement_delta`
+- [x] **Metrics**: tracks per-model `avg_rating`, `train_count`, `last_trained`, `improvement_delta`
 
 ### 1. Router Model (300K params, pretrained)
 - [x] Router config: `RouterConfig(vocab, ctx, emb, hidden, n_layers=2)`

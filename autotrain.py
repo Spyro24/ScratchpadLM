@@ -225,7 +225,8 @@ class AutoTrainer:
 
     def __init__(self, collector: RatingCollector,
                  model_loader_factory: Callable[[], Any],
-                 config: Optional[Dict[str, Any]] = None):
+                 config: Optional[Dict[str, Any]] = None,
+                 catalog=None):
         self.collector = collector
         self.model_loader_factory = model_loader_factory
         self.config = config or {}
@@ -235,6 +236,13 @@ class AutoTrainer:
         self.autotrain_lr = self.config.get("autotrain_lr", DEFAULT_AUTOTRAIN_LR)
         self.rate_limit_minutes = self.config.get("rate_limit_minutes", DEFAULT_RATE_LIMIT_MINUTES)
         self.max_steps_per_day = self.config.get("max_steps_per_day", DEFAULT_MAX_STEPS_PER_DAY)
+
+        # Use provided catalog or fall back to global
+        if catalog is None:
+            from model_mgmt import MODEL_CATALOG
+            self.catalog = MODEL_CATALOG
+        else:
+            self.catalog = catalog
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -284,9 +292,33 @@ class AutoTrainer:
 
     def _on_new_feedback(self, entry: FeedbackEntry) -> None:
         """Callback when new feedback is collected."""
+        # Update avg_rating metric in catalog
+        self._update_avg_rating(entry.model_name)
+        
         if self.collector.is_high_rated(entry.rating):
             if not self.deduplicator.is_duplicate(entry):
                 self._pending[entry.model_name].append(entry)
+
+    def _update_avg_rating(self, model_name: str) -> None:
+        """Calculate and update average rating for a model in the catalog."""
+        spec = self.catalog.get(model_name)
+        if not spec:
+            return
+        
+        # Get all feedback for this model
+        entries = self.collector.get_recent(model_name, limit=10000)
+        if not entries:
+            return
+        
+        # Calculate average rating
+        total_rating = sum(e.rating for e in entries)
+        avg_rating = total_rating / len(entries)
+        
+        # Update catalog metrics
+        self.catalog.update_metrics(model_name, {
+            "avg_rating": round(avg_rating, 2),
+            "total_ratings": len(entries),
+        })
 
     def _check_rate_limit(self, model_name: str) -> bool:
         """Check if model can be trained (rate limiting)."""
@@ -494,25 +526,96 @@ class AutoTrainer:
 
     def get_metrics(self, model_name: str) -> Dict[str, Any]:
         """Get training metrics for a specific model."""
-        from model_mgmt import MODEL_CATALOG
-        spec = MODEL_CATALOG.get(model_name)
+        spec = self.catalog.get(model_name)
         if not spec:
             return {}
         
         metrics = spec.metrics or {}
+        
+        # Get recent feedback for rating distribution
+        entries = self.collector.get_recent(model_name, limit=10000)
+        rating_dist = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+        for e in entries:
+            if 1 <= e.rating <= 5:
+                rating_dist[e.rating] += 1
+        
+        # Calculate high/low rated counts
+        high_rated = sum(1 for e in entries if self.collector.is_high_rated(e.rating))
+        low_rated = sum(1 for e in entries if self.collector.is_low_rated(e.rating))
+        
         return {
             "avg_rating": metrics.get("avg_rating", 0),
+            "total_ratings": metrics.get("total_ratings", 0),
+            "rating_distribution": rating_dist,
+            "high_rated_count": high_rated,
+            "low_rated_count": low_rated,
             "train_count": metrics.get("train_count", 0),
             "last_trained": metrics.get("last_trained", 0),
             "last_loss": metrics.get("last_loss"),
             "improvement_delta": metrics.get("improvement_delta", 0),
             "pending_feedback": len(self._pending.get(model_name, [])),
+            "high_threshold": self.collector.high_threshold,
+            "low_threshold": self.collector.low_threshold,
+        }
+
+    def get_all_metrics(self) -> Dict[str, Any]:
+        """Get metrics for all models in the catalog."""
+        all_metrics = {}
+        for spec in self.catalog.list():
+            all_metrics[spec.name] = self.get_metrics(spec.name)
+        return all_metrics
+
+    def get_system_status(self) -> Dict[str, Any]:
+        """Get overall auto-training system status."""
+        all_metrics = self.get_all_metrics()
+        
+        total_ratings = sum(m.get("total_ratings", 0) for m in all_metrics.values())
+        total_trains = sum(m.get("train_count", 0) for m in all_metrics.values())
+        total_pending = sum(m.get("pending_feedback", 0) for m in all_metrics.values())
+        
+        # Calculate global avg rating
+        all_entries = self.collector.get_recent(limit=10000)
+        global_avg_rating = 0
+        if all_entries:
+            global_avg_rating = round(sum(e.rating for e in all_entries) / len(all_entries), 2)
+        
+        # Models needing attention (low rated)
+        needs_attention = [
+            name for name, m in all_metrics.items() 
+            if m.get("low_rated_count", 0) > 0
+        ]
+        
+        return {
+            "autotrainer_running": self._running,
+            "global_avg_rating": global_avg_rating,
+            "total_ratings": total_ratings,
+            "total_train_sessions": total_trains,
+            "total_pending_feedback": total_pending,
+            "models_needing_attention": needs_attention,
+            "models_count": len(all_metrics),
+            "per_model": all_metrics,
+            "config": {
+                "high_threshold": self.collector.high_threshold,
+                "low_threshold": self.collector.low_threshold,
+                "min_batch": self.min_batch,
+                "max_wait": self.max_wait,
+                "autotrain_steps": self.autotrain_steps,
+                "autotrain_lr": self.autotrain_lr,
+                "rate_limit_minutes": self.rate_limit_minutes,
+                "max_steps_per_day": self.max_steps_per_day,
+            }
         }
 
 
 def create_autotrain_system(model_loader_factory: Callable[[], Any],
-                            config: Optional[Dict[str, Any]] = None) -> tuple:
+                            config: Optional[Dict[str, Any]] = None,
+                            catalog=None) -> tuple:
     """Create a complete auto-training system.
+
+    Args:
+        model_loader_factory: Factory function to create ModelLoader
+        config: Optional configuration dict
+        catalog: Optional ModelCatalog (uses global if not provided)
 
     Returns:
         (collector, auto_trainer)
@@ -522,7 +625,7 @@ def create_autotrain_system(model_loader_factory: Callable[[], Any],
         high_threshold=cfg.get("high_threshold", DEFAULT_HIGH_THRESHOLD),
         low_threshold=cfg.get("low_threshold", DEFAULT_LOW_THRESHOLD),
     )
-    auto_trainer = AutoTrainer(collector, model_loader_factory, cfg)
+    auto_trainer = AutoTrainer(collector, model_loader_factory, cfg, catalog)
     return collector, auto_trainer
 
 

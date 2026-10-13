@@ -9,6 +9,7 @@ Usage:
 import argparse
 import sys
 import os
+import time
 
 
 def run_gui():
@@ -69,6 +70,18 @@ def run_cli(argv=None):
     autotrain_subparsers.add_parser("status", help="Show autotrain status")
     autotrain_subparsers.add_parser("enable", help="Enable auto-training")
     autotrain_subparsers.add_parser("disable", help="Disable auto-training")
+
+    # Low-rating handler commands
+    low_parser = autotrain_subparsers.add_parser("low-rated", help="List low-rated entries")
+    low_parser.add_argument("--model", help="Filter by model name")
+    low_parser.add_argument("--flag", action="store_true", help="Flag for review")
+
+    review_parser = autotrain_subparsers.add_parser("review", help="Show flagged entries for review")
+    review_parser.add_argument("--model", help="Filter by model name")
+
+    avoid_parser = autotrain_subparsers.add_parser("avoidance", help="Run avoidance training on low-rated entries")
+    avoid_parser.add_argument("--model", required=True, help="Model name to train")
+    avoid_parser.add_argument("--threshold", type=int, default=2, help="Low threshold (default: 2)")
 
     config_parser = autotrain_subparsers.add_parser("config", help="Configure auto-training")
     config_parser.add_argument("--threshold", type=int, help="High rating threshold (1-5)")
@@ -250,6 +263,43 @@ def cmd_autotrain(args):
         if args.batch is not None:
             auto_trainer.min_batch = args.batch
         print(f"Updated: high_threshold={collector.high_threshold}, min_batch={auto_trainer.min_batch}")
+
+    elif args.autotrain_command == "low-rated":
+        entries = auto_trainer.handle_low_rated(args.model, auto_flag=args.flag)
+        if not entries:
+            print("No low-rated entries found")
+            return
+        print(f"Found {len(entries)} low-rated entries (rating ≤ {collector.low_threshold}):")
+        for e in entries:
+            flag = " [FLAGGED]" if e.metadata.get('flagged_for_review') else ""
+            print(f"  [{e.model_name}] {e.rating}/5: {e.prompt[:60]}... -> {e.response[:60]}...{flag}")
+
+    elif args.autotrain_command == "review":
+        flagged = auto_trainer.flag_for_review(args.model)
+        if not flagged:
+            print("No entries flagged for review")
+            return
+        print(f"Flagged entries for review ({len(flagged)}):")
+        for i, e in enumerate(flagged, 1):
+            print(f"\n{i}. [{e['model_name']}] Rating: {e['rating']}/5")
+            print(f"   Prompt: {e['prompt'][:80]}...")
+            print(f"   Response: {e['response'][:80]}...")
+            print(f"   Time: {time.ctime(e['timestamp'])}")
+
+    elif args.autotrain_command == "avoidance":
+        if not args.model:
+            print("Error: --model is required for avoidance training")
+            return
+        entries = auto_trainer.handle_low_rated(args.model)
+        if not entries:
+            print("No low-rated entries found for this model")
+            return
+        print(f"Running avoidance training on {len(entries)} low-rated entries...")
+        result = auto_trainer.train_avoidance(args.model, entries)
+        if result.get("success"):
+            print(f"Avoidance training complete: {result}")
+        else:
+            print(f"Avoidance training failed: {result.get('error')}")
 
 
 def cmd_generate(args):

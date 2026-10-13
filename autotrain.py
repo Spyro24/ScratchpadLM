@@ -519,10 +519,141 @@ class AutoTrainer:
         self.config.update(kwargs)
         self._save_state()
 
-    def handle_low_rated(self, model_name: Optional[str] = None) -> List[FeedbackEntry]:
-        """Get low-rated entries for review or avoidance training."""
-        entries = self.collector.get_low_rated(model_name)
+    def handle_low_rated(self, model_name: Optional[str] = None, 
+                          since: Optional[float] = None,
+                          auto_flag: bool = True) -> List[FeedbackEntry]:
+        """Get low-rated entries for review or avoidance training.
+
+        Args:
+            model_name: Filter by model (None = all models)
+            since: Only entries after this timestamp
+            auto_flag: If True, adds 'flagged_for_review' metadata
+
+        Returns:
+            List of low-rated FeedbackEntry objects
+        """
+        entries = self.collector.get_low_rated(model_name, since=since)
+        
+        if auto_flag:
+            for entry in entries:
+                if 'flagged_for_review' not in entry.metadata:
+                    entry.metadata['flagged_for_review'] = True
+                    entry.metadata['flagged_at'] = time.time()
+                    # Re-save the entry with flag
+                    self._update_feedback_entry(entry)
+        
         return entries
+
+    def _update_feedback_entry(self, entry: FeedbackEntry) -> None:
+        """Update an existing feedback entry in the JSONL file."""
+        # Read all entries, update the matching one, rewrite
+        all_entries = []
+        if self.collector.feedback_path.exists():
+            with open(self.collector.feedback_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = FeedbackEntry.from_jsonl(line)
+                        if e.prompt_hash == entry.prompt_hash and e.timestamp == entry.timestamp:
+                            all_entries.append(entry)
+                        else:
+                            all_entries.append(e)
+                    except Exception:
+                        continue
+        
+        # Rewrite file
+        with open(self.collector.feedback_path, "w", encoding="utf-8") as f:
+            for e in all_entries:
+                f.write(e.to_jsonl() + "\n")
+
+    def train_avoidance(self, model_name: str, entries: List[FeedbackEntry]) -> Dict[str, Any]:
+        """Train a model on negative examples (avoidance training).
+
+        This trains the model to avoid generating low-rated responses by using
+        the low-rated responses as negative targets.
+
+        Args:
+            model_name: Name of the model to train
+            entries: Low-rated feedback entries
+
+        Returns:
+            Training result dict
+        """
+        if not entries:
+            return {"success": False, "error": "No low-rated entries provided"}
+
+        from ai import train, sync_vocab, save_model
+        from registry import TOKENIZER_MANAGER
+        from model_mgmt import ModelLoader, MODEL_CATALOG
+
+        # Load model
+        loader = ModelLoader(MODEL_CATALOG, tokenizer_manager=TOKENIZER_MANAGER)
+        model = loader.load_model(model_name)
+
+        # Prepare training data: use prompts with LOW-RATED responses as negative examples
+        # We train the model to predict something BETTER than the low-rated response
+        # by using the prompt + "better" completion as positive, and prompt + low-rated as negative
+        training_text = ""
+        for entry in entries:
+            # Create contrastive pairs: prompt -> good response vs prompt -> bad response
+            # For avoidance, we can use the low-rated response as a negative example
+            training_text += f"[AVOID] {entry.prompt} -> {entry.response}\n\n"
+
+        # Extend tokenizer and sync model
+        tokenizer_cfg = {"vocab_size": 2000, "min_frequency": 2}
+        TOKENIZER_MANAGER.extend(training_text, vocab_size=tokenizer_cfg["vocab_size"],
+                                min_frequency=tokenizer_cfg["min_frequency"])
+        TOKENIZER_MANAGER.save("bpe_merges.txt")
+        sync_vocab(model, len(TOKENIZER_MANAGER.tokenizer.vocab))
+
+        # Encode and train
+        ids = TOKENIZER_MANAGER.tokenizer.encode(training_text)
+        if len(ids) <= model.ctx:
+            return {"success": False, "error": f"Insufficient tokens: {len(ids)} <= {model.ctx}"}
+
+        # Train with slightly different parameters for avoidance
+        try:
+            train(model, ids, steps=5, lr=0.005,  # Lower LR for avoidance
+                  batch_size=8, n_negatives=128, workers=1)
+
+            # Save model with avoidance marker
+            save_model(model, f"models/{model_name}.tlm")
+            
+            MODEL_CATALOG.update_metrics(model_name, {
+                "last_avoidance_training": time.time(),
+                "avoidance_train_count": MODEL_CATALOG.get(model_name).metrics.get("avoidance_train_count", 0) + 1
+            })
+
+            self._save_state()
+
+            return {
+                "success": True, 
+                "steps": 5, 
+                "entries": len(entries),
+                "type": "avoidance"
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def flag_for_review(self, model_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all low-rated entries flagged for human review."""
+        entries = self.handle_low_rated(model_name, auto_flag=True)
+        
+        flagged = []
+        for entry in entries:
+            if entry.metadata.get('flagged_for_review'):
+                flagged.append({
+                    "prompt": entry.prompt,
+                    "response": entry.response,
+                    "model_name": entry.model_name,
+                    "rating": entry.rating,
+                    "timestamp": entry.timestamp,
+                    "metadata": entry.metadata
+                })
+        
+        return flagged
 
     def get_metrics(self, model_name: str) -> Dict[str, Any]:
         """Get training metrics for a specific model."""

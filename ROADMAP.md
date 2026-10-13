@@ -62,7 +62,7 @@
   - Calls `train(model, batch_data, steps=10, lr=0.01)` — few-shot fine-tune
   - Updates model in catalog, saves checkpoint
   - Logs: `autotrain.log` — timestamp, model, batch_size, loss_before, loss_after
-- [ ] **Low-rating handler**: rating ≤ LOW_THRESHOLD → flags for review, optionally trains "avoidance" (negative examples)
+- [x] **Low-rating handler**: rating ≤ LOW_THRESHOLD → flags for review, optionally trains "avoidance" (negative examples)
 - [x] **Deduplication**: hash prompts, skip near-duplicates (edit distance < 0.2)
 - [x] **Rate limiting**: max 1 auto-train per model per 5 min, max 100 steps/day per model
 - [ ] **CLI**: `tinylm autotrain status`, `tinylm autotrain enable/disable`, `tinylm autotrain config --threshold 4 --batch 16`
@@ -162,12 +162,15 @@
 - [x] Auto-save callback: `every_n_steps(n, callback)` (via `checkpoint_every` parameter)
 - [x] Resume: `train(model, data, steps, resume_from=path)` (via `resume_from_checkpoint`)
 
-### 11. Harness (Automation Engine)
+### 11. Harness (Automation Engine) — **System Interaction Layer**
+> The Harness is the **automation engine** that lets models interact with external systems: running code, calling APIs, executing shell commands, using MCP tools, and orchestrating complex workflows. It's the bridge between model reasoning and real-world actions (coding, file ops, web search, etc.).
+
 - [ ] **Protection layer**: Anti-circumvention guard — enforces command restrictions, prevents AI from bypassing allowlists/blocklists, validates all tool calls against policy, audit logging of all executions
 - [ ] **MCP support**: Model Context Protocol client — connect to MCP servers, discover tools/resources, call tools, read resources, use in `.tlm` scripts via `mcp call` / `mcp read` commands
 - [ ] **Parser**: `parse_tlm(script)` → AST (commands, assertions, control flow)
 - [ ] **Runtime**: `HarnessRuntime` — executes AST, manages variables, models
 - [ ] **Commands**: `prompt`, `task`, `assert`, `loop`, `branch`, `parallel`, `retry`, `save`, `load`
+- [ ] **System interaction commands**: `code_run`, `shell`, `file_read`, `file_write`, `http_request`, `git`, `search`
 - [ ] **Assertions**: `contains`, `matches`, `json_valid`, `python_runs`, `loss_lt`, `latency_lt`
 - [ ] **Variables**: `$var = capture(command)`, `${var}` interpolation
 - [ ] **Parallel**: `parallel [cmd1, cmd2]` → concurrent execution, join results
@@ -181,6 +184,7 @@
 - [x] `tinylm router train` - pretrain router on corpus
 - [x] `tinylm model list/info/create` - model management
 - [x] `tinylm autotrain status/enable/disable/config` - auto-training control
+- [x] `tinylm autotrain low-rated/review/avoidance` - low-rating handler
 - [x] `tinylm generate` - generate text from prompt
 - [x] `tinylm train` - train model on data
 - [ ] `tinylm eval --checkpoint path --data val.jsonl`

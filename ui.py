@@ -54,6 +54,7 @@ class App:
 
         self.queue = queue.Queue()
         self.busy = False
+        self._cancel_training = False  # Flag to signal training cancellation
         self.cfg = cfg  # Store config reference
 
         # Apply theme from config
@@ -121,7 +122,7 @@ class App:
         if self.model_var.get() not in models:
             self.model_var.set(models[0] if models else "TinyLM")
         self._model_name = self.model_var.get()
-        self._append_history("system", f"[Refreshed model list: {', '.join(models)}]")
+        self._log_unified("system", f"Refreshed model list: {', '.join(models)}")
 
     def on_model_change(self, event=None):
         """Handle model selection change."""
@@ -247,9 +248,13 @@ class App:
         # Refresh models button
         tk.Button(model_row, text="Refresh Models", command=self.refresh_models, width=15).grid(row=0, column=2, padx=5)
 
+        # Use selected model instead of router
+        self.use_selected_model = tk.BooleanVar(value=False)
+        tk.Checkbutton(model_row, text="Use selected model (bypass router)", variable=self.use_selected_model).grid(row=0, column=3, padx=10, sticky="w")
+
         # Vocab size display
         self.vocab_label = tk.Label(model_row, text=f"Vocab: {len(self.tok.vocab)}")
-        self.vocab_label.grid(row=0, column=3, padx=10)
+        self.vocab_label.grid(row=0, column=4, padx=10)
 
         # Conversation history
         history_frame = tk.LabelFrame(tab, text="Conversation", padx=10, pady=10)
@@ -368,6 +373,9 @@ class App:
 
         self.train_router_btn = tk.Button(train_controls, text="Train Router", width=15, command=self.on_train_router)
         self.train_router_btn.pack(side="left", padx=5)
+
+        self.cancel_train_btn = tk.Button(train_controls, text="Cancel Training", width=15, command=self.on_cancel_training, state="disabled")
+        self.cancel_train_btn.pack(side="left", padx=5)
 
         # Progress bar row
         progress_row = tk.Frame(tab)
@@ -805,10 +813,8 @@ class App:
                 rating=rating,
                 metadata={"timestamp": time.time()}
             )
-            self._append_history("system", f"[Rated {rating}/5 for '{model_name}']")
             self._log_unified("system", f"Feedback collected: {rating}/5 for {model_name}")
         except Exception as e:
-            self._append_history("error", f"[Failed to record rating: {e}]")
             self._log_unified("error", f"Failed to record rating: {e}")
 
     def _log_train(self, message, is_error=False):
@@ -985,6 +991,10 @@ class App:
         except ValueError:
             messagebox.showwarning("Invalid input", "Training steps must be a positive whole number.")
             return
+        self._cancel_training = False
+        self.cancel_train_btn.configure(state="normal")
+        self.train_btn.configure(state="disabled")
+        self.train_router_btn.configure(state="disabled")
         self._log_train(f"Training started: {len(prompt)} chars, {steps} steps, model={self.model_var.get()}")
         self.train_progress.configure(maximum=steps, value=0)
         self.progress_label.configure(text=f"Step 0/{steps}")
@@ -1009,10 +1019,27 @@ class App:
         def on_progress(done, total, loss):
             self.queue.put(("progress", "Training", (done, total, loss)))
 
-        train_parallel(self.model, ids, steps=steps, lr=training_cfg["lr"], 
+        # Cancel callback checks the flag
+        def cancel_check():
+            return self._cancel_training
+
+        def save_on_cancel(model, loss, step):
+            # Save the model if loss improved (train() already kept best weights)
+            save_model(model, MODEL_PATH)
+            self.queue.put(("log", "system", f"Training cancelled at step {step}. Loss improved ({loss:.3f}), model saved."))
+
+        result = train_parallel(self.model, ids, steps=steps, lr=training_cfg["lr"],
                        batch_size=training_cfg["batch_size"], n_negatives=training_cfg["n_negatives"],
-                       workers=training_cfg["workers"], progress_cb=on_progress)
-        return prompt, steps
+                       workers=training_cfg["workers"], progress_cb=on_progress,
+                       cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel)
+        return prompt, steps, result
+
+    def on_cancel_training(self):
+        """Cancel the current training job."""
+        if self.busy:
+            self._cancel_training = True
+            self._log_train("Training cancellation requested...")
+            self.cancel_train_btn.configure(state="disabled")
 
     def on_train_router(self):
         """Train the Router model on collected routing data."""
@@ -1028,6 +1055,10 @@ class App:
         except ValueError:
             messagebox.showwarning("Invalid input", "Training steps must be a positive whole number.")
             return
+        self._cancel_training = False
+        self.cancel_train_btn.configure(state="normal")
+        self.train_btn.configure(state="disabled")
+        self.train_router_btn.configure(state="disabled")
         self._log_train(f"Router training started: {steps} steps")
         self.train_progress.configure(maximum=steps, value=0)
         self.progress_label.configure(text=f"Step 0/{steps}")
@@ -1059,17 +1090,24 @@ class App:
         def on_progress(done, total, loss, val_loss=None, lr=None):
             self.queue.put(("progress", "Router Training", (done, total, loss)))
         
+        # Cancel callback checks the flag
+        def cancel_check():
+            return self._cancel_training
+        
         training_cfg = self.cfg["training"]
         
-        train_router(self.router, self.tok, examples, 
-                    steps=steps, lr=training_cfg["lr"], 
-                    batch_size=training_cfg["batch_size"], 
+        result = train_router(self.router, self.tok, examples,
+                    steps=steps, lr=training_cfg["lr"],
+                    batch_size=training_cfg["batch_size"],
                     n_negatives=training_cfg["n_negatives"],
-                    progress_cb=on_progress)
-        
-        # Save the trained router
-        save_model(self.router, "router.tlm")
-        return steps
+                    progress_cb=on_progress,
+                    cancel_callback=cancel_check)
+
+        # Save the trained router unless the run was cancelled without improvement
+        # (train() restores initial weights in that case).
+        if not (isinstance(result, dict) and result.get("cancelled")):
+            save_model(self.router, "router.tlm")
+        return steps, result
 
     def on_send_prompt(self):
         if self.busy:
@@ -1096,11 +1134,15 @@ class App:
             stop_token_ids = []
             stop_strings = []
         self._stream_active = False  # streamed tokens open a fresh "AI:" block
-        self._run_in_background("Generating", self._generate_job, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings)
+        # Snapshot model-selection state on the main thread (Tk vars must not
+        # be read from background threads).
+        use_selected = bool(self.use_selected_model.get())
+        selected_name = self._model_name
+        self._run_in_background("Generating", self._generate_job, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings, use_selected, selected_name)
 
-    def _generate_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings):
-        # Route the prompt using Router
-        model, model_name = self._route_prompt(prompt)
+    def _generate_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings, use_selected=False, selected_name=None):
+        # Route the prompt using Router (or use the manually selected model)
+        model, model_name = self._route_prompt(prompt, use_selected=use_selected, selected_name=selected_name)
         
         # Use streaming generation with callback for live updates
         def stream_callback(token_str, token_idx, total_tokens, tps):
@@ -1139,11 +1181,19 @@ class App:
         except Exception:
             pass
 
-    def _route_prompt(self, prompt):
-        """Route prompt using the Router model (runs on a worker thread)."""
-        # Snapshot the selected model on the main thread — Tk vars must not
-        # be read from background threads.
-        current_name = getattr(self, "_model_name", "TinyLM")
+    def _route_prompt(self, prompt, use_selected=False, selected_name=None):
+        """Route prompt using the Router model (runs on a worker thread).
+
+        When `use_selected` is True the manually selected model is used
+        directly and the router is bypassed. `selected_name` must be
+        snapshotted on the main thread by the caller.
+        """
+        current_name = selected_name or getattr(self, "_model_name", "TinyLM")
+
+        # If user wants to use selected model, bypass router
+        if use_selected:
+            return self.model, current_name
+        
         try:
             routes = self.router.route_multi(prompt, self.tok, MODEL_CATALOG, max_subtasks=3)
             if not routes:
@@ -1213,16 +1263,19 @@ class App:
         self._append_history("user", prompt)
         self._stream_active = False
 
+        # Snapshot model-selection state on the main thread.
+        use_selected = bool(self.use_selected_model.get())
+        selected_name = self._model_name
         # Run in background with preview
-        self._run_in_background("Generating (Preview)", self._generate_preview_job, 
-                               prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings)
+        self._run_in_background("Generating (Preview)", self._generate_preview_job,
+                               prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings, use_selected, selected_name)
 
-    def _generate_preview_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings):
-        """Background job for generate_with_preview."""
+    def _generate_preview_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings, use_selected=False, selected_name=None):
+        """Background job for generate_with_preview (always uses the selected model)."""
         from ai import generate_with_preview
-        result = generate_with_preview(self.model, self.tok, prompt, 
+        result = generate_with_preview(self.model, self.tok, prompt,
                                       max_tokens=max_tokens, min_tokens=min_tokens, temperature=temperature,
-                                      top_k=top_k, top_p=top_p, 
+                                      top_k=top_k, top_p=top_p,
                                       repetition_penalty=repetition_penalty,
                                       stop_token_ids=stop_token_ids, stop_strings=stop_strings)
         return prompt, result
@@ -1256,7 +1309,7 @@ class App:
             "emb": self.cfg["model"]["emb"],
             "hidden": self.cfg["model"]["hidden"],
         }
-        self._append_history("system", f"[Creating model '{name}' (domains: {', '.join(domains)})...]")
+        self._log_unified("system", f"Creating model '{name}' (domains: {', '.join(domains)})...")
         self._run_in_background("Creating model", self._create_model_job, name, domains, base_config)
 
     def _create_model_job(self, name, domains, base_config):
@@ -1339,95 +1392,6 @@ class App:
             self.unified_log.tag_configure("timestamp", foreground="#95A5A6")
             self.status.configure(bg=p["bg"], fg=p["text"])
 
-    def _handle_result(self, kind, label, payload):
-        if kind == "error":
-            self._stream_active = False
-            self._set_busy(False, "Error")
-            self._append_history("error", f"Error: {payload}")
-            if label == "Training":
-                self._log_train(f"{label} failed: {payload}", is_error=True)
-                self.progress_label.configure(text="Failed")
-            elif label == "Extending vocab":
-                self._log_train(f"Vocab extension failed: {payload}", is_error=True)
-            messagebox.showerror("Error", f"{label} failed:\n{payload}")
-            return
-
-        if label == "Training":
-            prompt, steps = payload
-            save_model(self.model, MODEL_PATH)
-            self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
-            self._append_history("system", f"[Trained on {len(prompt)} chars, {steps} steps, model saved. Vocab: {len(self.tok.vocab)}]")
-            self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}")
-            self.train_progress.configure(maximum=max(steps, 1), value=steps)
-            self.progress_label.configure(text=f"Done ({steps} steps)")
-            self._set_busy(False, "Training done")
-            self.update_model_inspector()
-        elif label == "Training Router":
-            steps = payload
-            self._log_train(f"Router training done: {steps} steps")
-            self.train_progress.configure(maximum=max(steps, 1), value=steps)
-            self.progress_label.configure(text=f"Done ({steps} steps)")
-            self._set_busy(False, "Router training done")
-        elif label.startswith("Loading "):
-            self.model = payload
-            model_name = label.replace("Loading ", "")
-            self._append_history("system", f"[Loaded model: {model_name} ({len(self.model.C)} vocab, {self.model.ctx} ctx)]")
-            self._set_busy(False, "Ready")
-            self.update_model_inspector()
-        elif label == "Generating":
-            # Plain generation finished (tokens may have been streamed live)
-            prompt, text, routed_model = payload
-            if self._stream_active:
-                # Close the streamed block and attach rating buttons
-                self.history.configure(state="normal")
-                self.history.insert("end", "\n\n")
-                self._add_rating_buttons(text)
-                self.history.see("end")
-                self.history.configure(state="disabled")
-                self._last_assistant_response = (prompt, text, routed_model)
-                self._stream_active = False
-            else:
-                # Nothing streamed (e.g. empty output); show the full response
-                self._append_history("assistant", text)
-                self._last_assistant_response = (prompt, text, routed_model)
-            self._set_busy(False, "Ready")
-            self.status.configure(text="Ready")
-        elif label == "Generating (Preview)":
-            prompt, result = payload
-            # Result already printed to console by generate_with_preview
-            # Just add to history if not already there
-            self._append_history("assistant", result["text"])
-            self._set_busy(False, "Ready")
-            self.status.configure(text=f"Ready ({result['tokens_per_sec']:.1f} tok/s)")
-        elif label == "Creating model":
-            spec = payload
-            self._append_history("system", f"[Created model '{spec.name}' ({spec.param_count:,} params, domains: {', '.join(spec.domain_keywords)})]")
-            self.refresh_catalog_list()
-            self.refresh_models()
-            self._set_busy(False, "Model created")
-        elif label == "Deleting model":
-            name, removed = payload
-            if removed:
-                self._append_history("system", f"[Deleted model '{name}' from catalog]")
-            else:
-                self._append_history("system", f"[Model '{name}' was not in catalog]")
-            self.refresh_catalog_list()
-            self.refresh_models()
-            self._set_busy(False, "Model deleted")
-        elif label == "Analyzing data":
-            self._handle_analyze_result(payload)
-            self._set_busy(False, "Analysis done")
-        elif label == "Extending vocab":
-            target_vocab, min_freq = payload
-            self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
-            self.tok_vocab_label.configure(text=str(len(self.tok.vocab)))
-            self.tok_merges_label.configure(text=str(len(self.tok.merges)))
-            self._append_history("system", f"[Extended vocab to {len(self.tok.vocab)} tokens (target={target_vocab}, min_freq={min_freq}), model saved]")
-            self._log_train(f"Vocab extended to {len(self.tok.vocab)} tokens, model saved")
-            self._set_busy(False, "Vocab extended")
-            self.refresh_tokenizer_patterns()
-            self.update_model_inspector()
-
     # ---- config editor actions --------------------------------------------------
 
     def on_load_config_editor(self):
@@ -1474,7 +1438,7 @@ class App:
                     else:
                         entry.delete(0, "end")
                         entry.insert(0, str(val))
-            self._append_history("system", f"[Config saved from editor to {CONFIG_PATH}]")
+            self._log_unified("system", f"Config saved from editor to {CONFIG_PATH}")
         except ConfigError as e:
             messagebox.showerror("Validation Error", str(e))
         except Exception as e:
@@ -1619,7 +1583,7 @@ class App:
         self.stop_strings_var.delete(0, "end")
         self.stop_strings_var.insert(0, ",".join(new_data["generation"].get("stop_strings", [])))
 
-        self._append_history("system", f"[Config saved to {CONFIG_PATH}]")
+        self._log_unified("system", f"Config saved to {CONFIG_PATH}")
 
     # ---- tokenizer manager actions -------------------------------------------
 
@@ -1688,31 +1652,78 @@ class App:
         if kind == "error":
             self._stream_active = False
             self._set_busy(False, "Error")
-            self._append_history("error", f"Error: {payload}")
-            if label == "Training":
+            try:
+                self.cancel_train_btn.configure(state="disabled")
+                self.train_btn.configure(state="normal")
+                self.train_router_btn.configure(state="normal")
+            except Exception:
+                pass
+            # Chat shows only conversation (user/assistant) plus model-selection
+            # notices and generation errors. Training/admin/vocab/config errors
+            # go to the Training monitor / unified Logs only.
+            if label in ("Generating", "Generating (Preview)") or label.startswith("Loading "):
+                self._append_history("error", f"Error: {payload}")
+            if label in ("Training", "Training Router"):
                 self._log_train(f"{label} failed: {payload}", is_error=True)
+                self._log_unified("error", f"{label} failed: {payload}")
                 self.progress_label.configure(text="Failed")
             elif label == "Extending vocab":
                 self._log_train(f"Vocab extension failed: {payload}", is_error=True)
+                self._log_unified("error", f"Vocab extension failed: {payload}")
+            else:
+                self._log_unified("error", f"{label} failed: {payload}")
             messagebox.showerror("Error", f"{label} failed:\n{payload}")
             return
 
+        # Reset training buttons for any training completion
+        if label in ("Training", "Training Router", "Generating", "Generating (Preview)"):
+            self.cancel_train_btn.configure(state="disabled")
+            self.train_btn.configure(state="normal")
+            self.train_router_btn.configure(state="normal")
+
         if label == "Training":
-            prompt, steps = payload
-            save_model(self.model, MODEL_PATH)
-            self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
-            self._append_history("system", f"[Trained on {len(prompt)} chars, {steps} steps, model saved. Vocab: {len(self.tok.vocab)}]")
-            self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}")
-            self.train_progress.configure(maximum=max(steps, 1), value=steps)
-            self.progress_label.configure(text=f"Done ({steps} steps)")
-            self._set_busy(False, "Training done")
+            if isinstance(payload, tuple) and len(payload) == 3:
+                prompt, steps, result = payload
+            else:
+                prompt, steps = payload
+                result = None
+            cancelled = isinstance(result, dict) and result.get("cancelled")
+            if cancelled:
+                info = result or {}
+                self._log_train(f"Training cancelled after {info.get('steps_done', steps)} steps "
+                                f"(initial_loss={info.get('initial_loss')}, best_loss={info.get('best_loss')})")
+                self._log_unified("system", "Training cancelled by user.")
+                self.train_progress.configure(maximum=max(steps, 1), value=info.get("steps_done", 0))
+                self.progress_label.configure(text=f"Cancelled ({info.get('steps_done', 0)} steps)")
+                self._set_busy(False, "Training cancelled")
+            else:
+                save_model(self.model, MODEL_PATH)
+                self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
+                # Training logs only go to training tab / unified logs, not chat
+                self._log_train(f"Training done: {steps} steps on {len(prompt)} chars, model saved, vocab={len(self.tok.vocab)}")
+                self._log_unified("system", f"Training done: {steps} steps, model saved.")
+                self.train_progress.configure(maximum=max(steps, 1), value=steps)
+                self.progress_label.configure(text=f"Done ({steps} steps)")
+                self._set_busy(False, "Training done")
             self.update_model_inspector()
         elif label == "Training Router":
-            steps = payload
-            self._log_train(f"Router training done: {steps} steps")
-            self.train_progress.configure(maximum=max(steps, 1), value=steps)
-            self.progress_label.configure(text=f"Done ({steps} steps)")
-            self._set_busy(False, "Router training done")
+            if isinstance(payload, tuple) and len(payload) == 2:
+                steps, result = payload
+            else:
+                steps, result = payload, None
+            cancelled = isinstance(result, dict) and result.get("cancelled")
+            if cancelled:
+                info = result or {}
+                self._log_train(f"Router training cancelled after {info.get('steps_done', steps)} steps")
+                self._log_unified("system", "Router training cancelled by user.")
+                self.progress_label.configure(text=f"Cancelled ({info.get('steps_done', 0)} steps)")
+                self._set_busy(False, "Router training cancelled")
+            else:
+                self._log_train(f"Router training done: {steps} steps")
+                self._log_unified("system", f"Router training done: {steps} steps")
+                self.train_progress.configure(maximum=max(steps, 1), value=steps)
+                self.progress_label.configure(text=f"Done ({steps} steps)")
+                self._set_busy(False, "Router training done")
         elif label.startswith("Loading "):
             self.model = payload
             model_name = label.replace("Loading ", "")
@@ -1746,16 +1757,16 @@ class App:
             self.status.configure(text=f"Ready ({result['tokens_per_sec']:.1f} tok/s)")
         elif label == "Creating model":
             spec = payload
-            self._append_history("system", f"[Created model '{spec.name}' ({spec.param_count:,} params, domains: {', '.join(spec.domain_keywords)})]")
+            self._log_unified("system", f"Created model '{spec.name}' ({spec.param_count:,} params, domains: {', '.join(spec.domain_keywords)})")
             self.refresh_catalog_list()
             self.refresh_models()
             self._set_busy(False, "Model created")
         elif label == "Deleting model":
             name, removed = payload
             if removed:
-                self._append_history("system", f"[Deleted model '{name}' from catalog]")
+                self._log_unified("system", f"Deleted model '{name}' from catalog")
             else:
-                self._append_history("system", f"[Model '{name}' was not in catalog]")
+                self._log_unified("system", f"Model '{name}' was not in catalog")
             self.refresh_catalog_list()
             self.refresh_models()
             self._set_busy(False, "Model deleted")
@@ -1767,7 +1778,7 @@ class App:
             self.vocab_label.configure(text=f"Vocab: {len(self.tok.vocab)}")
             self.tok_vocab_label.configure(text=str(len(self.tok.vocab)))
             self.tok_merges_label.configure(text=str(len(self.tok.merges)))
-            self._append_history("system", f"[Extended vocab to {len(self.tok.vocab)} tokens (target={target_vocab}, min_freq={min_freq}), model saved]")
+            self._log_unified("system", f"Extended vocab to {len(self.tok.vocab)} tokens (target={target_vocab}, min_freq={min_freq}), model saved")
             self._log_train(f"Vocab extended to {len(self.tok.vocab)} tokens, model saved")
             self._set_busy(False, "Vocab extended")
             self.refresh_tokenizer_patterns()

@@ -210,6 +210,7 @@ class MainWindow(QMainWindow):
         self.rating_collector = RatingCollector()
         self.worker = BackgroundWorker()
         self.busy = False
+        self._cancel_training = False  # Flag to signal training cancellation
         self._model_name = "TinyLM"
         self._initialized = False  # suppress signals while populating widgets
 
@@ -345,6 +346,10 @@ class MainWindow(QMainWindow):
         self.refresh_models_btn = QPushButton("Refresh Models")
         self.refresh_models_btn.clicked.connect(self.refresh_models)
         mrow.addWidget(self.refresh_models_btn)
+        # Use selected model instead of router
+        self.use_selected_model_cb = QCheckBox("Use selected model (bypass router)")
+        self.use_selected_model_cb.setToolTip("When checked, use the manually selected model instead of letting the router choose")
+        mrow.addWidget(self.use_selected_model_cb)
         self.vocab_label = QLabel(f"Vocab: {len(self.tok.vocab)}")
         self.vocab_label.setStyleSheet(f"color: {p['muted']};")
         mrow.addWidget(self.vocab_label)
@@ -479,6 +484,10 @@ class MainWindow(QMainWindow):
         self.train_router_btn = QPushButton("Train Router")
         self.train_router_btn.clicked.connect(self.on_train_router)
         controls.addWidget(self.train_router_btn)
+        self.cancel_train_btn = QPushButton("Cancel Training")
+        self.cancel_train_btn.setEnabled(False)
+        self.cancel_train_btn.clicked.connect(self.on_cancel_training)
+        controls.addWidget(self.cancel_train_btn)
         controls.addStretch(1)
         v.addLayout(controls)
 
@@ -987,39 +996,82 @@ class MainWindow(QMainWindow):
         if kind == "error":
             self._stream_bubble = None
             self.set_busy(False, "Error")
-            self.append_history("error", f"Error: {payload}")
-            if label == "Training":
+            try:
+                self.cancel_train_btn.setEnabled(False)
+                self.train_btn.setEnabled(True)
+                self.train_router_btn.setEnabled(True)
+            except Exception:
+                pass
+            # Chat shows only conversation plus model-selection notices and
+            # generation errors. Training/admin/vocab/config errors go to
+            # the Training monitor / unified Logs only.
+            if label in ("Generating", "Generating (Preview)") or label.startswith("Loading "):
+                self.append_history("error", f"Error: {payload}")
+            if label in ("Training", "Training Router"):
+                self._log_train(f"{label} failed: {payload}", is_error=True)
+                self.log_unified("error", f"{label} failed: {payload}")
                 self.progress_label.setText("Failed")
             elif label == "Extending vocab":
                 self._log_train(f"Vocab extension failed: {payload}", is_error=True)
+                self.log_unified("error", f"Vocab extension failed: {payload}")
+            else:
+                self.log_unified("error", f"{label} failed: {payload}")
             self.show_error(f"{label} failed", str(payload))
             return
 
+        # Reset training buttons for any training completion
+        if label in ("Training", "Training Router", "Generating", "Generating (Preview)"):
+            self.cancel_train_btn.setEnabled(False)
+            self.train_btn.setEnabled(True)
+            self.train_router_btn.setEnabled(True)
+
         if label == "Training":
-            prompt, steps = payload
-            save_model(self.model, MODEL_PATH)
-            self.vocab_label.setText(f"Vocab: {len(self.tok.vocab)}")
-            self.append_history(
-                "system",
-                f"[Trained on {len(prompt)} chars, {steps} steps, model saved. "
-                f"Vocab: {len(self.tok.vocab)}]",
-            )
-            self._log_train(
-                f"Training done: {steps} steps on {len(prompt)} chars, "
-                f"model saved, vocab={len(self.tok.vocab)}"
-            )
-            self.train_progress.setMaximum(max(steps, 1))
-            self.train_progress.setValue(steps)
-            self.progress_label.setText(f"Done ({steps} steps)")
-            self.set_busy(False, "Training done")
+            if isinstance(payload, tuple) and len(payload) == 3:
+                prompt, steps, result = payload
+            else:
+                prompt, steps = payload
+                result = None
+            cancelled = isinstance(result, dict) and result.get("cancelled")
+            if cancelled:
+                info = result or {}
+                self._log_train(f"Training cancelled after {info.get('steps_done', steps)} steps "
+                                f"(initial_loss={info.get('initial_loss')}, best_loss={info.get('best_loss')})")
+                self.log_unified("system", "Training cancelled by user.")
+                self.train_progress.setMaximum(max(steps, 1))
+                self.train_progress.setValue(info.get("steps_done", 0))
+                self.progress_label.setText(f"Cancelled ({info.get('steps_done', 0)} steps)")
+                self.set_busy(False, "Training cancelled")
+            else:
+                save_model(self.model, MODEL_PATH)
+                self.vocab_label.setText(f"Vocab: {len(self.tok.vocab)}")
+                # Training logs only go to training tab / unified logs, not chat
+                self._log_train(
+                    f"Training done: {steps} steps on {len(prompt)} chars, "
+                    f"model saved, vocab={len(self.tok.vocab)}"
+                )
+                self.train_progress.setMaximum(max(steps, 1))
+                self.train_progress.setValue(steps)
+                self.progress_label.setText(f"Done ({steps} steps)")
+                self.set_busy(False, "Training done")
             self.update_model_inspector()
         elif label == "Training Router":
-            steps = payload
-            self._log_train(f"Router training done: {steps} steps")
-            self.train_progress.setMaximum(max(steps, 1))
-            self.train_progress.setValue(steps)
-            self.progress_label.setText(f"Done ({steps} steps)")
-            self.set_busy(False, "Router training done")
+            if isinstance(payload, tuple) and len(payload) == 2:
+                steps, result = payload
+            else:
+                steps, result = payload, None
+            cancelled = isinstance(result, dict) and result.get("cancelled")
+            if cancelled:
+                info = result or {}
+                self._log_train(f"Router training cancelled after {info.get('steps_done', steps)} steps")
+                self.log_unified("system", "Router training cancelled by user.")
+                self.progress_label.setText(f"Cancelled ({info.get('steps_done', 0)} steps)")
+                self.set_busy(False, "Router training cancelled")
+            else:
+                self._log_train(f"Router training done: {steps} steps")
+                self.train_progress.setMaximum(max(steps, 1))
+                self.train_progress.setValue(steps)
+                self.progress_label.setText(f"Done ({steps} steps)")
+                self.set_busy(False, "Router training done")
         elif label.startswith("Loading "):
             self.model = payload
             model_name = label.replace("Loading ", "")
@@ -1056,20 +1108,16 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Ready ({result['tokens_per_sec']:.1f} tok/s)")
         elif label == "Creating model":
             spec = payload
-            self.append_history(
-                "system",
-                f"[Created model '{spec.name}' ({spec.param_count:,} params, "
-                f"domains: {', '.join(spec.domain_keywords)})]",
-            )
+            self.log_unified("system", f"Created model '{spec.name}' ({spec.param_count:,} params, domains: {', '.join(spec.domain_keywords)})")
             self.refresh_catalog_list()
             self.refresh_models()
             self.set_busy(False, "Model created")
         elif label == "Deleting model":
             name, removed = payload
             if removed:
-                self.append_history("system", f"[Deleted model '{name}' from catalog]")
+                self.log_unified("system", f"Deleted model '{name}' from catalog")
             else:
-                self.append_history("system", f"[Model '{name}' was not in catalog]")
+                self.log_unified("system", f"Model '{name}' was not in catalog")
             self.refresh_catalog_list()
             self.refresh_models()
             self.set_busy(False, "Model deleted")
@@ -1078,11 +1126,7 @@ class MainWindow(QMainWindow):
             self.vocab_label.setText(f"Vocab: {len(self.tok.vocab)}")
             self.tok_vocab_label.setText(str(len(self.tok.vocab)))
             self.tok_merges_label.setText(str(len(self.tok.merges)))
-            self.append_history(
-                "system",
-                f"[Extended vocab to {len(self.tok.vocab)} tokens "
-                f"(target={target_vocab}, min_freq={min_freq}), model saved]",
-            )
+            self.log_unified("system", f"Extended vocab to {len(self.tok.vocab)} tokens (target={target_vocab}, min_freq={min_freq}), model saved")
             self._log_train(
                 f"Vocab extended to {len(self.tok.vocab)} tokens, model saved"
             )
@@ -1175,7 +1219,7 @@ class MainWindow(QMainWindow):
         self.model_combo.setCurrentText(self._model_name)
         self.model_combo.blockSignals(False)
         self.target_label.setText(self._model_name)
-        self.append_history("system", f"[Refreshed model list: {', '.join(models)}]")
+        self.log_unified("system", f"Refreshed model list: {', '.join(models)}")
 
     def _on_model_change(self, name: str):
         if not self._initialized or not name or self.busy:
@@ -1281,6 +1325,10 @@ class MainWindow(QMainWindow):
         except ValueError:
             stop_token_ids = []
             stop_strings = []
+        # Snapshot model-selection state on the main thread (Qt widgets must
+        # only be touched on the main thread).
+        use_selected = bool(self.use_selected_model_cb.isChecked())
+        selected_name = self._model_name
         self.worker.submit(
             "Generating",
             self._generate_job,
@@ -1293,11 +1341,13 @@ class MainWindow(QMainWindow):
             self.rep_penalty_spin.value(),
             stop_token_ids,
             stop_strings,
+            use_selected,
+            selected_name,
         )
         self.set_busy(True, "Generating...")
 
-    def _generate_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings):
-        model, model_name = self._route_prompt(prompt)
+    def _generate_job(self, prompt, max_tokens, min_tokens, temperature, top_k, top_p, repetition_penalty, stop_token_ids, stop_strings, use_selected=False, selected_name=None):
+        model, model_name = self._route_prompt(prompt, use_selected=use_selected, selected_name=selected_name)
 
         def stream_callback(token_str, token_idx, total_tokens, tps):
             self.worker.post("stream_token", token_str, (token_idx, total_tokens, tps))
@@ -1358,9 +1408,19 @@ class MainWindow(QMainWindow):
         )
         return prompt, result
 
-    def _route_prompt(self, prompt):
-        """Route the prompt with the Router model (worker thread)."""
-        current_name = self._model_name
+    def _route_prompt(self, prompt, use_selected=False, selected_name=None):
+        """Route the prompt with the Router model (worker thread).
+
+        When `use_selected` is True the manually selected model is used
+        directly and the router is bypassed. `selected_name` must be
+        snapshotted on the main thread by the caller.
+        """
+        current_name = selected_name or self._model_name
+
+        # If user wants to use selected model, bypass router
+        if use_selected:
+            return self.model, current_name
+        
         try:
             routes = self.router.route_multi(prompt, self.tok, MODEL_CATALOG, max_subtasks=3)
             if not routes:
@@ -1387,6 +1447,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def on_cancel_training(self):
+        """Cancel the current training job."""
+        if self.busy:
+            self._cancel_training = True
+            self._log_train("Training cancellation requested...")
+            self.cancel_train_btn.setEnabled(False)
+
     def on_train(self):
         if self.busy:
             return
@@ -1395,6 +1462,10 @@ class MainWindow(QMainWindow):
             self.show_warning("No input", "Enter some training text in the Training Data area.")
             return
         steps = self.steps_spin.value()
+        self._cancel_training = False
+        self.cancel_train_btn.setEnabled(True)
+        self.train_btn.setEnabled(False)
+        self.train_router_btn.setEnabled(False)
         self._log_train(f"Training started: {len(prompt)} chars, {steps} steps, model={self._model_name}")
         self.train_progress.setMaximum(steps)
         self.train_progress.setValue(0)
@@ -1423,12 +1494,22 @@ class MainWindow(QMainWindow):
         def on_progress(done, total, loss):
             self.worker.post("progress", "Training", (done, total, loss))
 
-        train_parallel(
+        # Cancel callback checks the flag
+        def cancel_check():
+            return self._cancel_training
+
+        def save_on_cancel(model, loss, step):
+            # Save the model if loss improved (train() already kept best weights)
+            save_model(model, MODEL_PATH)
+            self.worker.post("log", "system", f"Training cancelled at step {step}. Loss improved ({loss:.3f}), model saved.")
+
+        result = train_parallel(
             self.model, ids, steps=steps, lr=training_cfg["lr"],
             batch_size=training_cfg["batch_size"], n_negatives=training_cfg["n_negatives"],
             workers=training_cfg["workers"], progress_cb=on_progress,
+            cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel,
         )
-        return prompt, steps
+        return prompt, steps, result
 
     def on_train_router(self):
         if self.busy:
@@ -1440,6 +1521,10 @@ class MainWindow(QMainWindow):
             )
             return
         steps = self.steps_spin.value()
+        self._cancel_training = False
+        self.cancel_train_btn.setEnabled(True)
+        self.train_btn.setEnabled(False)
+        self.train_router_btn.setEnabled(False)
         self._log_train(f"Router training started: {steps} steps")
         self.train_progress.setMaximum(steps)
         self.train_progress.setValue(0)
@@ -1462,16 +1547,24 @@ class MainWindow(QMainWindow):
         def on_progress(done, total, loss, val_loss=None, lr=None):
             self.worker.post("progress", "Router Training", (done, total, loss))
 
+        # Cancel callback checks the flag
+        def cancel_check():
+            return self._cancel_training
+
         training_cfg = self.cfg["training"]
-        train_router(
+        result = train_router(
             self.router, self.tok, examples,
             steps=steps, lr=training_cfg["lr"],
             batch_size=training_cfg["batch_size"],
             n_negatives=training_cfg["n_negatives"],
             progress_cb=on_progress,
+            cancel_callback=cancel_check,
         )
-        save_model(self.router, "router.tlm")
-        return steps
+        # Save the trained router unless the run was cancelled without improvement
+        # (train() restores initial weights in that case).
+        if not (isinstance(result, dict) and result.get("cancelled")):
+            save_model(self.router, "router.tlm")
+        return steps, result
 
     # ---- admin actions -------------------------------------------------------
 
@@ -1492,7 +1585,7 @@ class MainWindow(QMainWindow):
             "emb": self.cfg["model"]["emb"],
             "hidden": self.cfg["model"]["hidden"],
         }
-        self.append_history("system", f"[Creating model '{name}' (domains: {', '.join(domains)})...]")
+        self.log_unified("system", f"Creating model '{name}' (domains: {', '.join(domains)})...")
         self.worker.submit("Creating model", self._create_model_job, name, domains, base_config)
         self.set_busy(True, "Creating model...")
 
@@ -1581,7 +1674,7 @@ class MainWindow(QMainWindow):
                         edit.setCurrentText(str(val))
                     else:
                         edit.setText(str(val))
-            self.append_history("system", f"[Config saved from editor to {CONFIG_PATH}]")
+            self.log_unified("system", f"Config saved from editor to {CONFIG_PATH}")
         except ConfigError as e:
             self.show_error("Validation Error", str(e))
         except Exception as e:
@@ -1711,7 +1804,7 @@ class MainWindow(QMainWindow):
         # Sync quick-access widgets with the new defaults
         self.steps_spin.setValue(new_data["training"]["steps"])
         self._load_gen_settings()
-        self.append_history("system", f"[Config saved to {CONFIG_PATH}]")
+        self.log_unified("system", f"Config saved to {CONFIG_PATH}")
 
     # ---- tokenizer manager actions ----------------------------------------------
 

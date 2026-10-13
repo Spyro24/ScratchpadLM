@@ -169,6 +169,7 @@
 - [x] **Automatic adjustment**: plateau LR reduction (`AutoAdjust`) + auto grad-clip relaxation — wired into `train()`, `_train_c()`, C kernel path
 - [ ] Router fine-tune: `train_router(router, decomposition_data, steps)`
 - [x] **Training priority queue**: Scores models by (domain_gap * data_volume * performance_delta) → trains highest priority first
+- [x] **Training cancel with save-if-improved**: `cancel_callback` checked per step in `train()`, `_train_c()`, `train_parallel()`; keeps best weights when `best_loss < initial_loss` (calls `save_on_cancel_callback`), otherwise restores initial weights; Cancel button in Tk + PySide6 training tabs
 - [ ] **User-driven training**: UI accepts training data → auto-detects domain → creates/updates model with generated name → queues for training
 
 ### 8. Tokenizer Enhancements
@@ -189,6 +190,8 @@
 - [x] `generate_with_preview()`: detailed timing stats and console output
 - [x] **Stream callback early stop**: callback can return `False` to stop generation early
 - [x] **ModelRuntime integration**: all new parameters wired through ModelRuntime.generate() and generate_with_preview()
+- [x] **Chat stays conversation-only**: system/admin/training/vocab/config/rating logs go to Logs/Training monitor only; model-switch notices remain in chat
+- [x] **Use-selected-model chat option**: "Use selected model (bypass router)" checkbox in Chat tab (Tk + PySide6), snapshotted on main thread
 
 ### 10. Checkpointing
 - [x] `Checkpoint` class: `model_state`, `optimizer_state`, `step`, `config`

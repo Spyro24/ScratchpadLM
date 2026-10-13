@@ -2135,12 +2135,18 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
              early_stopping: bool = False, patience: int = 5, min_delta: float = 1e-4,
              checkpoint_every: int = 0, checkpoint_dir: str = "checkpoints",
              auto_adjust: bool = True, auto_factor: float = 0.5,
-             auto_patience: int = 10, auto_clip_relax: bool = True):
+             auto_patience: int = 10, auto_clip_relax: bool = True,
+             cancel_callback=None, save_on_cancel_callback=None,
+             gradient_accumulation: int = 1, neg_sample_seed: int = 0):
     """train() via the fused C kernel with gradient clipping support.
-    
+
     C kernel supports: LR per step, gradient clipping.
     Python handles: LR scheduling, validation, early stopping, checkpointing,
     automatic adjustment (plateau LR reduction, clip relaxation).
+    `cancel_callback()` is checked before each step; on cancel the improved
+    weights are kept when loss improved, otherwise initial weights are restored.
+    Returns a dict with `cancelled`, `initial_loss`, `best_loss`,
+    `final_loss`, `steps_done`.
     """
     ctx = model.ctx
     vocab = len(model.C)
@@ -2150,6 +2156,9 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
     starts = range(len(ids) - ctx)
     flat = _flat_data(model)
     params = model.params
+
+    # Snapshot initial weights so a cancelled run without improvement can be reverted.
+    initial_params_snapshot = [p.data for p in params]
 
     # Setup LR scheduler
     from ai import LR_Scheduler
@@ -2181,7 +2190,20 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
     else:
         train_ids = ids
 
+    initial_loss = None
+    best_loss = float('inf')
+    best_flat_snapshot = None
+    last_loss = None
+    val_loss = None
+    cancelled = False
+    steps_done = 0
+
     for step in range(steps):
+        # Check for cancellation before starting the next step.
+        if cancel_callback is not None and cancel_callback():
+            cancelled = True
+            steps_done = step
+            break
         rate = scheduler.get_lr(step) * adjuster.multiplier
         windows = []
         for _ in range(batch_size):
@@ -2196,6 +2218,14 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
         # In-place update of the existing Value objects
         for p, x in zip(params, flat):
             p.data = x
+
+        if initial_loss is None:
+            initial_loss = loss
+        if loss < best_loss:
+            best_loss = loss
+            best_flat_snapshot = list(flat)
+        last_loss = loss
+        steps_done = step + 1
 
         # Automatic adjustment: reduce LR when loss plateaus
         if adjuster.check(step + 1, loss):
@@ -2234,19 +2264,45 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
             val_str = f"  val_loss={val_loss:.4f}" if val_loss is not None else ""
             print(f"step {step:5d}  loss {loss:.3f}  lr {rate:.6f}{val_str}")
 
-    # Save final checkpoint
-    if checkpoint_every > 0:
+    # Handle cancellation: keep improved weights, else revert to initial.
+    if cancelled:
+        improved = (
+            initial_loss is not None
+            and best_loss < initial_loss
+            and best_flat_snapshot is not None
+        )
+        if improved:
+            flat = best_flat_snapshot
+            for prm, x in zip(params, flat):
+                prm.data = x
+            if save_on_cancel_callback is not None:
+                save_on_cancel_callback(model, best_loss, steps_done)
+        else:
+            for prm, x in zip(params, initial_params_snapshot):
+                prm.data = x
+            flat = _flat_data(model)
+
+    # Save final checkpoint (skip when cancelled — caller decides whether to save)
+    if checkpoint_every > 0 and not cancelled and last_loss is not None:
         from ai import Checkpoint, save_checkpoint, _flat_params
         ckpt = Checkpoint(
-            step=steps,
+            step=steps_done,
             model_state=_flat_params(model),
             config=model.get_config(),
-            loss=loss,
+            loss=last_loss,
             val_loss=val_loss,
-            lr=scheduler.get_lr(steps - 1),
+            lr=scheduler.get_lr(max(0, steps_done - 1)),
         )
         ckpt_file = checkpoint_path / "checkpoint_final.json"
         save_checkpoint(ckpt, str(ckpt_file))
+
+    return {
+        "cancelled": cancelled,
+        "initial_loss": initial_loss,
+        "best_loss": best_loss if best_loss != float('inf') else None,
+        "final_loss": last_loss,
+        "steps_done": steps_done,
+    }
 
 
 def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
@@ -2257,7 +2313,8 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
           checkpoint_every: int = 100, checkpoint_dir: str = "checkpoints",
           auto_adjust: bool = True, auto_factor: float = 0.5,
           auto_patience: int = 10, auto_clip_relax: bool = True,
-          gradient_accumulation: int = 1, neg_sample_seed: int = 0):
+          gradient_accumulation: int = 1, neg_sample_seed: int = 0,
+          cancel_callback=None, save_on_cancel_callback=None):
     """Mini-batch SGD with sampled softmax and advanced training features.
 
     Each step averages the loss over `batch_size` windows. For each target, the
@@ -2274,50 +2331,65 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     - Automatic adjustment: LR reduction on plateau + auto grad-clip relaxation
     - Gradient accumulation for larger effective batch sizes
     - Pre-computed negative samples for faster training
+    - Cancel training with optional save if loss improved
 
     `progress_cb(done, total, loss, val_loss=None, lr=None)` is called after every step if given.
     `use_c` forces the optional C kernel on/off; default: on when available.
     Note: C kernel supports LR scheduling and gradient clipping; Python handles validation, early stopping, checkpointing.
+    `cancel_callback()` - if provided and returns True, training stops early.
+      On cancel: if best loss < initial loss the improved weights are kept
+      (and `save_on_cancel_callback(model, best_loss, steps_done)` is called
+      when provided); otherwise the model is restored to its initial weights.
+    Returns a dict with `cancelled`, `initial_loss`, `best_loss`,
+    `final_loss`, `steps_done`.
     """
-    # Disable C kernel when advanced features are requested that C doesn't support
-    # C kernel now supports: gradient clipping, LR per step (for scheduling)
-    # C kernel does NOT support: validation, early stopping, checkpointing
+    # Disable C kernel when advanced features are requested that C doesn't support.
+    # C kernel now supports: gradient clipping, LR per step (for scheduling).
+    # C kernel does NOT natively support: validation, early stopping, checkpointing.
+    # Cancel is handled in the C path per-step check as well, but force the
+    # Python path when cancellation is requested so save/restore semantics match.
     advanced_features = (
         val_ids is not None or
         val_split > 0 or
         eval_every > 0 or
         early_stopping or
-        checkpoint_every > 0
+        checkpoint_every > 0 or
+        cancel_callback is not None
     )
-    
+
     if use_c is None:
         use_c = _accel_available() and not advanced_features
     if use_c:
         # C kernel path with gradient clipping support
-        _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
+        return _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
                  lr_scheduler=lr_scheduler, warmup_steps=warmup_steps, min_lr=min_lr,
                  grad_clip=grad_clip, val_ids=val_ids, val_split=val_split, eval_every=eval_every,
                  early_stopping=early_stopping, patience=patience, min_delta=min_delta,
                  checkpoint_every=checkpoint_every, checkpoint_dir=checkpoint_dir,
                  auto_adjust=auto_adjust, auto_factor=auto_factor,
-                 auto_patience=auto_patience, auto_clip_relax=auto_clip_relax)
-        return
+                 auto_patience=auto_patience, auto_clip_relax=auto_clip_relax,
+                 cancel_callback=cancel_callback, save_on_cancel_callback=save_on_cancel_callback,
+                 gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed)
 
     ctx = model.ctx
     starts = range(len(ids) - ctx)
     vocab = len(model.C)
     params = model.params
 
+    # Snapshot initial weights so a cancelled run without improvement can be reverted.
+    initial_params_snapshot = [p.data for p in params]
+
     # Pre-compute negative samples for faster training
     if neg_sample_seed:
         neg_rng = random.Random(neg_sample_seed)
     else:
         neg_rng = random
-    
+
     # Pre-sample negative token candidates for the entire training
     neg_samples = []
-    for _ in range(steps * batch_size * n_negatives):
-        neg_samples.append(neg_rng.randrange(vocab))
+    if n_negatives > 0:
+        for _ in range(steps * batch_size * n_negatives):
+            neg_samples.append(neg_rng.randrange(vocab))
     neg_idx = 0
 
     # Split validation data if provided as ratio
@@ -2347,30 +2419,53 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     checkpoint_path = Path(checkpoint_dir)
     checkpoint_path.mkdir(parents=True, exist_ok=True)
 
+    # Track initial/best loss for cancel-and-save-if-improved feature
+    initial_loss = None
+    best_loss = float('inf')
+    best_params_snapshot = None
+    last_loss = None
+    val_loss = None
+    cancelled = False
+    steps_done = 0
+
     # Gradient accumulation buffer
     accumulated_grads = [0.0] * len(params)
     accumulation_counter = 0
 
     for step in range(steps):
+        # Check for cancellation before starting the next step.
+        if cancel_callback is not None and cancel_callback():
+            cancelled = True
+            steps_done = step
+            break
+
         rate = scheduler.get_lr(step) * adjuster.multiplier
         losses = []
         for _ in range(batch_size):
             i = random.choice(starts)
             context, target = train_ids[i:i + ctx], train_ids[i + ctx]
-            
+
             # Use pre-sampled negatives if available
-            if neg_idx < len(neg_samples):
+            if neg_idx + n_negatives <= len(neg_samples):
                 negs = neg_samples[neg_idx:neg_idx + n_negatives]
                 neg_idx += n_negatives
                 losses.append(model.sampled_loss(context, target, n_negatives, vocab, negatives=negs))
             else:
                 losses.append(model.sampled_loss(context, target, n_negatives, vocab))
-        
+
         # Average losses by summing and scaling once
         loss = losses[0]
         for L in losses[1:]:
             loss = loss + L
         loss = loss * (1.0 / batch_size)
+
+        # Track initial and best loss (pre-update loss)
+        if initial_loss is None:
+            initial_loss = loss.data
+        if loss.data < best_loss:
+            best_loss = loss.data
+            best_params_snapshot = [p.data for p in params]
+        last_loss = loss.data
 
         for p in params:
             p.grad = 0.0
@@ -2386,7 +2481,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
         accumulation_counter += 1
         for i, p in enumerate(params):
             accumulated_grads[i] += p.grad
-        
+
         if accumulation_counter >= gradient_accumulation:
             # Apply accumulated gradients
             scale = 1.0 / (gradient_accumulation * batch_size)
@@ -2394,106 +2489,6 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
                 p.data -= rate * accumulated_grads[i] * scale
                 accumulated_grads[i] = 0.0
             accumulation_counter = 0
-    """Mini-batch SGD with sampled softmax and advanced training features.
-
-    Each step averages the loss over `batch_size` windows. For each target, the
-    softmax runs over the true token plus `n_negatives` random tokens instead of
-    the whole vocabulary. This cuts the output-layer cost by roughly
-    vocab_size / (n_negatives + 1).
-
-    New features:
-    - LR scheduling: cosine_warmup, linear, constant
-    - Gradient clipping by global norm
-    - Validation evaluation with perplexity
-    - Early stopping with best model restoration
-    - Checkpointing for resume capability
-    - Automatic adjustment: LR reduction on plateau + auto grad-clip relaxation
-
-    `progress_cb(done, total, loss, val_loss=None, lr=None)` is called after every step if given.
-    `use_c` forces the optional C kernel on/off; default: on when available.
-    Note: C kernel supports LR scheduling and gradient clipping; Python handles validation, early stopping, checkpointing.
-    """
-    # Disable C kernel when advanced features are requested that C doesn't support
-    # C kernel now supports: gradient clipping, LR per step (for scheduling)
-    # C kernel does NOT support: validation, early stopping, checkpointing
-    advanced_features = (
-        val_ids is not None or
-        val_split > 0 or
-        eval_every > 0 or
-        early_stopping or
-        checkpoint_every > 0
-    )
-    
-    if use_c is None:
-        use_c = _accel_available() and not advanced_features
-    if use_c:
-        # C kernel path with gradient clipping support
-        _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
-                 lr_scheduler=lr_scheduler, warmup_steps=warmup_steps, min_lr=min_lr,
-                 grad_clip=grad_clip, val_ids=val_ids, val_split=val_split, eval_every=eval_every,
-                 early_stopping=early_stopping, patience=patience, min_delta=min_delta,
-                 checkpoint_every=checkpoint_every, checkpoint_dir=checkpoint_dir,
-                 auto_adjust=auto_adjust, auto_factor=auto_factor,
-                 auto_patience=auto_patience, auto_clip_relax=auto_clip_relax)
-        return
-
-    ctx = model.ctx
-    starts = range(len(ids) - ctx)
-    vocab = len(model.C)
-    params = model.params
-
-    # Split validation data if provided as ratio
-    if val_ids is None and val_split > 0:
-        split_idx = int(len(ids) * (1 - val_split))
-        train_ids = ids[:split_idx]
-        val_ids = ids[split_idx:]
-        starts = range(len(train_ids) - ctx)
-    else:
-        train_ids = ids
-
-    # Setup LR scheduler
-    scheduler = LR_Scheduler(lr, steps, lr_scheduler, warmup_steps, min_lr)
-
-    # Setup early stopping
-    early_stopper = EarlyStopping(patience=patience, min_delta=min_delta) if early_stopping else None
-
-    # Setup automatic adjustment (LR on plateau + clip relaxation)
-    adjuster = AutoAdjust(
-        enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
-        min_delta=min_delta, warmup_ignore=warmup_steps,
-        max_grad_clip=grad_clip if (auto_adjust and auto_clip_relax) else 0.0,
-    )
-
-    # Setup checkpoint directory
-    from pathlib import Path
-    checkpoint_path = Path(checkpoint_dir)
-    checkpoint_path.mkdir(parents=True, exist_ok=True)
-
-    for step in range(steps):
-        rate = scheduler.get_lr(step) * adjuster.multiplier
-        losses = []
-        for _ in range(batch_size):
-            i = random.choice(starts)
-            context, target = train_ids[i:i + ctx], train_ids[i + ctx]
-            losses.append(model.sampled_loss(context, target, n_negatives, vocab))
-        # Average losses by summing and scaling once
-        loss = losses[0]
-        for L in losses[1:]:
-            loss = loss + L
-        loss = loss * (1.0 / batch_size)
-
-        for p in params:
-            p.grad = 0.0
-        loss.backward()
-
-        # Gradient clipping (with automatic relaxation if chronically clipping)
-        clip_now = adjuster.grad_clip_now()
-        if clip_now > 0:
-            norm = clip_grads(params, clip_now)
-            adjuster.note_grad_clip(norm)
-
-        for p in params:
-            p.data -= rate * p.grad
 
         # Automatic adjustment: reduce LR when loss plateaus
         if adjuster.check(step + 1, loss.data):
@@ -2510,6 +2505,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
                     print(f"Early stopping at step {step + 1}: val_loss={val_loss:.4f} (best={early_stopper.best_score:.4f})")
                     if progress_cb is not None:
                         progress_cb(step + 1, steps, loss.data, val_loss, rate)
+                    steps_done = step + 1
                     break
 
         # Checkpointing
@@ -2532,18 +2528,44 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
             val_str = f"  val_loss={val_loss:.4f}" if val_loss is not None else ""
             print(f"step {step:5d}  loss {loss.data:.3f}  lr {rate:.6f}{val_str}")
 
-    # Save final checkpoint
-    if checkpoint_every > 0:
+        steps_done = step + 1
+
+    # Handle cancellation: keep improved weights, else revert to initial.
+    if cancelled:
+        improved = (
+            initial_loss is not None
+            and best_loss < initial_loss
+            and best_params_snapshot is not None
+        )
+        if improved:
+            for p, val in zip(params, best_params_snapshot):
+                p.data = val
+            if save_on_cancel_callback is not None:
+                save_on_cancel_callback(model, best_loss, steps_done)
+        else:
+            for p, val in zip(params, initial_params_snapshot):
+                p.data = val
+
+    # Save final checkpoint (skip when cancelled — caller decides whether to save)
+    if checkpoint_every > 0 and not cancelled:
         ckpt = Checkpoint(
-            step=steps,
+            step=steps_done,
             model_state=_flat_params(model),
             config=model.get_config(),
-            loss=loss.data,
+            loss=last_loss,
             val_loss=val_loss,
-            lr=scheduler.get_lr(steps - 1),
+            lr=scheduler.get_lr(max(0, steps_done - 1)),
         )
         ckpt_file = checkpoint_path / "checkpoint_final.json"
         save_checkpoint(ckpt, str(ckpt_file))
+
+    return {
+        "cancelled": cancelled,
+        "initial_loss": initial_loss,
+        "best_loss": best_loss if best_loss != float('inf') else None,
+        "final_loss": last_loss,
+        "steps_done": steps_done,
+    }
 
 def fast_logits(model, context):
     """Forward pass on plain floats, no graph. Used for generation.
@@ -3170,13 +3192,20 @@ def _worker_grads_v2(args):
 
 
 def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256, workers=None,
-                   progress_cb=None, grad_clip: float = 0.0):
+                   progress_cb=None, grad_clip: float = 0.0, cancel_callback=None,
+                   save_on_cancel_callback=None):
     """Data-parallel version of train. Uses persistent worker pool to avoid
     rebuilding the model each step. The batch is split across processes and
     the gradients are summed before one SGD update.
 
     `progress_cb(done, total, loss)` is called after every step if given
     (runs in the main process; safe for queue-based UI updates).
+    `cancel_callback()` - if provided and returns True, training stops early.
+      On cancel: if best loss < initial loss the improved weights are kept
+      (and `save_on_cancel_callback(model, best_loss, steps_done)` is called
+      when provided); otherwise the model is restored to its initial weights.
+    Returns a dict with `cancelled`, `initial_loss`, `best_loss`,
+    `final_loss`, `steps_done`.
     """
     workers = workers or cpu_count()
     ctx = model.ctx
@@ -3184,6 +3213,17 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
     starts = range(len(ids) - ctx)
     cfg = {"vocab": vocab, "ctx": ctx, "emb": len(model.C[0]), "hidden": len(model.b1)}
     params = model.params
+
+    # Snapshot initial weights so a cancelled run without improvement can be reverted.
+    initial_params_snapshot = [p.data for p in params]
+
+    # Track initial/best loss for cancel-and-save-if-improved feature
+    initial_loss = None
+    best_loss = float('inf')
+    best_params_snapshot = None
+    last_loss = None
+    cancelled = False
+    steps_done = 0
 
     # Pre-create initial flat params for worker initialization
     init_flat = _flat_params(model)
@@ -3194,6 +3234,12 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
         initargs=(init_flat, cfg, vocab, n_negatives, grad_clip),
     ) as pool:
         for step in range(steps):
+            # Check for cancellation before starting the next step.
+            if cancel_callback is not None and cancel_callback():
+                cancelled = True
+                steps_done = step
+                break
+
             rate = lr * (1.0 - step / steps)
             batch = [(ids[i:i + ctx], ids[i + ctx])
                      for i in (random.choice(starts) for _ in range(batch_size))]
@@ -3210,6 +3256,16 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
                 for k, x in enumerate(g):
                     grad[k] += x
 
+            # Track initial and best loss (pre-update loss)
+            step_loss = total_loss / batch_size
+            if initial_loss is None:
+                initial_loss = step_loss
+            if step_loss < best_loss:
+                best_loss = step_loss
+                best_params_snapshot = [p.data for p in params]
+            last_loss = step_loss
+            steps_done = step + 1
+
             # Apply gradient clipping on main process (after summing)
             if grad_clip > 0:
                 import math
@@ -3223,10 +3279,34 @@ def train_parallel(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=2
                 p.data -= rate * g / batch_size
 
             if progress_cb is not None:
-                progress_cb(step + 1, steps, total_loss / batch_size)
+                progress_cb(step + 1, steps, step_loss)
 
             if step % 25 == 0:
-                print(f"step {step:5d}  loss {total_loss / batch_size:.3f}")
+                print(f"step {step:5d}  loss {step_loss:.3f}")
+
+    # Handle cancellation: keep improved weights, else revert to initial.
+    if cancelled:
+        improved = (
+            initial_loss is not None
+            and best_loss < initial_loss
+            and best_params_snapshot is not None
+        )
+        if improved:
+            for prm, val in zip(params, best_params_snapshot):
+                prm.data = val
+            if save_on_cancel_callback is not None:
+                save_on_cancel_callback(model, best_loss, steps_done)
+        else:
+            for prm, val in zip(params, initial_params_snapshot):
+                prm.data = val
+
+    return {
+        "cancelled": cancelled,
+        "initial_loss": initial_loss,
+        "best_loss": best_loss if best_loss != float('inf') else None,
+        "final_loss": last_loss,
+        "steps_done": steps_done,
+    }
 
 
 if __name__ == "__main__":

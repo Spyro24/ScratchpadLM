@@ -545,6 +545,27 @@ def t_train_parallel():
     check(len(losses) == 4 and all(math.isfinite(l) for l in losses))
 
 
+@test("train: immediate cancel leaves weights unchanged")
+def t_train_cancel_immediate():
+    from ai import train, train_parallel
+    import io, contextlib
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    before = [p.data for p in model.params]
+    with contextlib.redirect_stdout(io.StringIO()):
+        r = train(model, ids, steps=10, lr=0.05, batch_size=4, n_negatives=8,
+                  checkpoint_every=0, eval_every=0, early_stopping=False,
+                  cancel_callback=lambda: True)
+    check(r["cancelled"] is True and r["steps_done"] == 0)
+    check([p.data for p in model.params] == before, "cancelled run mutated weights")
+    before = [p.data for p in model.params]
+    with contextlib.redirect_stdout(io.StringIO()):
+        r2 = train_parallel(model, ids, steps=10, lr=0.05, batch_size=4,
+                            n_negatives=8, workers=2, cancel_callback=lambda: True)
+    check(r2["cancelled"] is True and r2["steps_done"] == 0)
+    check([p.data for p in model.params] == before, "cancelled parallel run mutated weights")
+
+
 # ---------------------------------------------------------------------------
 # C kernel parity (skipped when unavailable)
 # ---------------------------------------------------------------------------
@@ -777,6 +798,12 @@ def t_ui_smoke():
         check(app.rep_penalty_var.get() == str(app.cfg["generation"]["repetition_penalty"]))
         check(("training", "grad_clip") in app._settings_entries)
         check(("training", "patience") in app._settings_entries)
+        # Training cancel button + use-selected-model checkbox exist
+        check(hasattr(app, "cancel_train_btn"))
+        check(hasattr(app, "use_selected_model"))
+        # Chat holds conversation only: operational message goes to logs, not chat
+        app._log_unified("system", "smoke operational entry")
+        check("smoke operational entry" not in app.history.get("1.0", "end"))
         # Streaming pipeline: token travels in the label slot of the message
         app.queue.put(("stream_token", "tok123", (1, 10, 5.0)))
         app._poll_queue()  # must not raise on unpacking
@@ -860,11 +887,15 @@ def t_ui_qt_smoke():
         check(win.top_k_spin.value() == win.cfg["generation"]["top_k"])
         check(("training", "grad_clip") in win._settings_entries)
         check(("training", "patience") in win._settings_entries)
+        # Training cancel + use-selected-model controls exist
+        check(hasattr(win, "cancel_train_btn"))
+        check(hasattr(win, "use_selected_model_cb"))
         # Chat session + bubble + thumbs feedback
+        # Chat holds conversation only (user/assistant); operational logs go to Logs tab
         win.append_history("user", "hello")
         win._append_message("assistant", "hi there", prompt="hello", model="TinyLM")
         msgs = win._sessions[win._current_session]["messages"]
-        check(len(msgs) == 3, f"expected 3 messages, got {len(msgs)}")
+        check(len(msgs) == 2, f"expected 2 messages, got {len(msgs)}")
         rating_msg = [m for m in msgs if m["role"] == "assistant"][0]
         bubble = win._last_bubble
         # Redirect feedback to a temp file so the test doesn't pollute the repo

@@ -855,7 +855,10 @@ class MainWindow(QMainWindow):
             elif kind == "log":
                 self.log_unified(label, payload)
             elif kind == "stream_token":
-                token_str, (token_idx, total_tokens, tps) = payload
+                # Posted as ("stream_token", token_str, (idx, total, tps)):
+                # the token travels in the label slot, stats in the payload
+                token_str = label
+                token_idx, total_tokens, tps = payload
                 self._handle_stream_token(token_str, token_idx, total_tokens, tps)
             else:
                 self._handle_result(kind, label, payload)

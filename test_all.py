@@ -749,6 +749,10 @@ def t_ui_smoke():
         check(app.rep_penalty_var.get() == str(app.cfg["generation"]["repetition_penalty"]))
         check(("training", "grad_clip") in app._settings_entries)
         check(("training", "patience") in app._settings_entries)
+        # Streaming pipeline: token travels in the label slot of the message
+        app.queue.put(("stream_token", "tok123", (1, 10, 5.0)))
+        app._poll_queue()  # must not raise on unpacking
+        check("tok123" in app.history.get("1.0", "end"))
     finally:
         root.destroy()
 
@@ -851,6 +855,11 @@ def t_ui_qt_smoke():
         before = len(win._all_log_entries)
         win.log_unified("training", "smoke entry")
         check(len(win._all_log_entries) == before + 1)
+        # Streaming pipeline: token travels in the label slot of the message
+        win.worker.post("stream_token", "tok123", (1, 10, 5.0))
+        win._poll_worker()  # must not raise on unpacking
+        streamed = win._sessions[win._current_session]["messages"][-1]
+        check(streamed["role"] == "assistant" and streamed["text"] == "tok123", streamed)
     finally:
         win.close()
         win.deleteLater()

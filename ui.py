@@ -847,8 +847,11 @@ class App:
                     # Direct log to unified log (runs on main thread)
                     self._log_unified(label, payload)
                 elif kind == "stream_token":
-                    # Streaming token update (runs on main thread)
-                    token_str, (token_idx, total_tokens, tps) = payload
+                    # Streaming token update (runs on main thread).
+                    # Posted as ("stream_token", token_str, (idx, total, tps)):
+                    # the token travels in the label slot, stats in the payload
+                    token_str = label
+                    token_idx, total_tokens, tps = payload
                     self._handle_stream_token(token_str, token_idx, total_tokens, tps)
                 else:
                     self._handle_result(kind, label, payload)

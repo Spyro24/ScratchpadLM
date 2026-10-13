@@ -101,6 +101,40 @@ def has_pyside6() -> bool:
         return False
 
 
+def qt_platform_check() -> Tuple[bool, str]:
+    """Preflight Qt GUI availability WITHOUT constructing a QApplication.
+
+    When Qt cannot initialize a platform plugin (e.g. Qt >= 6.5 requires
+    libxcb-cursor / the xcb-cursor0 package on X11) it calls ``abort()`` —
+    the process dies with a core dump and no Python exception is raised.
+    Checking the platform first lets :func:`run_gui` fall back to Tkinter
+    instead of crashing.
+
+    Returns ``(ok, reason)``.
+    """
+    if not has_pyside6():
+        return False, "PySide6 is not installed"
+    if os.environ.get("QT_QPA_PLATFORM", "").strip():
+        # Explicit platform requested (offscreen, minimal, wayland, ...).
+        # Trust it — these plugins have no libxcb-cursor dependency.
+        return True, ""
+    display = os.environ.get("DISPLAY", "").strip()
+    wayland = os.environ.get("WAYLAND_DISPLAY", "").strip()
+    if not display and not wayland:
+        return False, "no DISPLAY/WAYLAND_DISPLAY (headless session)"
+    if display and not wayland:
+        # Qt will select the xcb plugin; Qt >= 6.5 hard-requires
+        # libxcb-cursor there. Check it before it can abort the process.
+        import ctypes.util
+
+        if ctypes.util.find_library("xcb-cursor") is None:
+            return False, (
+                "Qt xcb platform needs libxcb-cursor "
+                "(install the xcb-cursor0 / libxcb-cursor0 package)"
+            )
+    return True, ""
+
+
 def detect_toolkit() -> str:
     """Return ``"pyside6"`` or ``"tkinter"`` (PySide6 preferred).
 
@@ -117,15 +151,35 @@ def detect_toolkit() -> str:
 def run_gui() -> Any:
     """Launch the GUI: PySide6 primary, Tkinter stdlib fallback.
 
+    Qt platform plugins are preflight-checked (see :func:`qt_platform_check`)
+    because a failing plugin would abort the process instead of raising.
+    Set ``SCRATCHPADLM_UI=pyside6`` to skip the fallback and get a clean
+    error instead.
+
     Returns the toolkit that was actually used.
     """
+    forced_pyside6 = os.environ.get("SCRATCHPADLM_UI", "").strip().lower() in (
+        "pyside6", "qt", "qt6",
+    )
     if detect_toolkit() == "pyside6":
-        try:
-            from ui_qt import run_qt_app
-            run_qt_app()
-            return "pyside6"
-        except Exception as exc:  # missing plugin, broken install, ...
-            sys.stderr.write(f"[ui] PySide6 failed ({exc}); falling back to Tkinter\n")
+        ok, reason = qt_platform_check()
+        if not ok:
+            if forced_pyside6:
+                raise RuntimeError(f"PySide6 requested but unavailable: {reason}")
+            sys.stderr.write(
+                f"[ui] PySide6 unavailable ({reason}); falling back to Tkinter\n"
+            )
+        else:
+            try:
+                from ui_qt import run_qt_app
+                run_qt_app()
+                return "pyside6"
+            except (Exception, SystemExit) as exc:  # plugin init, broken install, ...
+                if forced_pyside6:
+                    raise
+                sys.stderr.write(
+                    f"[ui] PySide6 failed ({exc}); falling back to Tkinter\n"
+                )
 
     import tkinter as tk
 

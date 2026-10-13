@@ -779,6 +779,31 @@ def t_ui_toolkit_detect():
         os.unlink(path)
 
 
+@test("ui: qt platform preflight (missing plugin deps -> tkinter fallback)")
+def t_ui_qt_preflight():
+    from ui_base import has_pyside6, qt_platform_check
+
+    ok, reason = qt_platform_check()
+    check(isinstance(ok, bool) and isinstance(reason, str))
+    if ok:
+        check(has_pyside6())
+    else:
+        check(reason, "failure must come with a reason")
+
+    # Simulate a headless/broken environment: preflight must fail cleanly
+    # (this is what triggers the Tkinter fallback instead of a Qt abort)
+    saved = {k: os.environ.pop(k, None) for k in ("DISPLAY", "WAYLAND_DISPLAY", "QT_QPA_PLATFORM")}
+    try:
+        ok, reason = qt_platform_check()
+        check(ok is False)
+        if has_pyside6():
+            check("DISPLAY" in reason, reason)
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
 @test("ui: pyside6 app constructs offscreen (smoke)")
 def t_ui_qt_smoke():
     from ui_base import has_pyside6

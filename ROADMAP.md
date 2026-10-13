@@ -29,7 +29,7 @@
   - [x] Abstract UI layer with common interface for both toolkits (`ui_base.py`: toolkit detection, `BackgroundWorker`, shared `PALETTE` theme, config helpers)
   - [x] Implement PySide6 version of all tabs (Chat, Training, Model Info, Admin, Settings, Logs) — `ui_qt.py`
   - [x] Keep Tkinter implementation as fallback for environments without Qt (`ui.py` unchanged API; `main.py`/`ui.py` launch via `ui_base.run_gui()`)
-  - [x] Auto-detect available toolkit at startup (PySide6 preferred, Tkinter fallback; override with `SCRATCHPADLM_UI=pyside6|tkinter`)
+  - [x] Auto-detect available toolkit at startup (PySide6 preferred, Tkinter fallback; override with `SCRATCHPADLM_UI=pyside6|tkinter`; Qt platform plugins are preflight-checked — e.g. missing `libxcb-cursor`/`xcb-cursor0` on X11 falls back to Tkinter instead of aborting)
   - [x] Consistent styling/theme across both toolkits (shared `ui_base.PALETTE` drives Tk tags + Qt stylesheet)
 - [ ] **Chat Layout (PySide6)**: Modern chat interface layout
   - [x] **Tabs at top**: Main navigation tabs (Chat, Training, Model Info, Admin, Settings, Logs — Harness tab still pending)

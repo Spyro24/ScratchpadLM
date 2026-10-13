@@ -154,6 +154,7 @@ model = load_model("tinyLM")  # Rebuilds TinyLM, dequantizes into Value.data
 
 ### `ui_base.py` (shared UI layer)
 - `detect_toolkit()` / `run_gui()`: PySide6 preferred, Tkinter fallback; honors `SCRATCHPADLM_UI`
+- `qt_platform_check()`: preflight BEFORE `QApplication` — Qt aborts the process (no exception) when a platform plugin can't init (e.g. Qt ≥ 6.5 needs `libxcb-cursor` / `xcb-cursor0` on X11), so this check triggers the Tkinter fallback instead of a crash
 - `PALETTE`: shared colors (Tk tag colors + `qss_theme()` Qt stylesheet)
 - `BackgroundWorker`: thread-safe `submit()` / `post()` / `drain()` queue
 - Shared helpers: `write_config_yaml()`, `parse_bool()`, `get_available_models()`, `load_config()`

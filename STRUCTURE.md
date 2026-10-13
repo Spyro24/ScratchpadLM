@@ -20,7 +20,7 @@
 | `model_mgmt.py` | Dynamic model management | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`, `MODEL_CATALOG` |
 | `ui.py` | Tkinter GUI (stdlib fallback) with tabbed layout (Chat, Training, Model Info, Admin, Settings, Logs) | `App`, background thread via `queue.Queue`, `_append_history()` with role-based styling |
 | `ui_qt.py` | PySide6 (Qt6) GUI — primary UI toolkit | `MainWindow`, `AssistantBubble` (thumbs up/down → RatingCollector), `run_qt_app()` |
-| `ui_base.py` | Shared UI layer (no toolkit imports) | `detect_toolkit()`, `run_gui()`, `PALETTE`, `qss_theme()`, `BackgroundWorker`, `write_config_yaml()`, `parse_bool()`, `get_available_models()` |
+| `ui_base.py` | Shared UI layer (no toolkit imports) | `detect_toolkit()`, `qt_platform_check()` (QApplication preflight — Qt aborts instead of raising on broken platform plugins), `run_gui()`, `PALETTE`, `qss_theme()`, `BackgroundWorker`, `write_config_yaml()`, `parse_bool()`, `get_available_models()` |
 | `main.py` | Legacy demo script (n-gram model) | `tokenize()`, `train()`, `generate()` |
 | `AGENTS.md` | Agent guidance (this project's rules) | — |
 | `ROADMAP.md` | Task list with checkboxes | — |

@@ -1,0 +1,33 @@
+{
+  "tokenizer": {
+    "train_time": 0.03069472312927246,
+    "encode_time": 0.021581649780273438,
+    "decode_time": 0.0003943443298339844,
+    "vocab_size": 359.0,
+    "num_tokens": 2744.0
+  },
+  "tinylm_train": {
+    "elapsed": 2.9025356769561768,
+    "steps": 5.0,
+    "tokens_per_sec": 881.9874361319182,
+    "steps_per_sec": 1.7226317111951528
+  },
+  "generation": {
+    "total_tokens": 66.0,
+    "total_time": 0.2916116714477539,
+    "avg_tokens_per_sec": 226.32838964343296
+  },
+  "save_load": {
+    "save_time": 0.062166690826416016,
+    "load_time": 0.27965331077575684,
+    "size_kb": 52.20703125
+  },
+  "count_params": {
+    "params": 100423.0,
+    "time_ms": 0.133514404296875
+  },
+  "router_inference": {
+    "total_time": 0.00011205673217773438,
+    "avg_ms": 0.028014183044433594
+  }
+}

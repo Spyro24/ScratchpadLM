@@ -187,7 +187,7 @@
 - [x] Unit tests: autograd, tokenizer, model forward/backward, quantize/dequantize (`test_all.py`)
 - [x] Integration tests: train → save → load → generate (`test_all.py`)
 - [ ] Harness tests: run `.tlm` scripts, verify assertions
-- [ ] Benchmark script: `bench_train()`, `bench_generate()`, `bench_router()`
+- [x] Benchmark script: `bench_train()`, `bench_generate()`, `bench_router()` (in `benchmark.py`)
 - [ ] CI: GitHub Actions (lint, test, bench)
 
 ### 14. Documentation (HIGH PRIORITY)

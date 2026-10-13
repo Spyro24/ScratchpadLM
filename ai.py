@@ -994,6 +994,253 @@ class Router:
         return results[:max_subtasks]
 
 
+# =============================================================================
+# Multi-Model Runtime: Loads router + specialized models, routes prompts
+# =============================================================================
+
+class ModelRuntime:
+    """Multi-model runtime that loads a router and specialized models,
+    routes prompts to appropriate models, and supports collaborative generation."""
+
+    def __init__(self, router_path: str = "router.tlm",
+                 models_dir: str = "models",
+                 tokenizer=None):
+        """Initialize the multi-model runtime.
+
+        Args:
+            router_path: Path to router model file
+            models_dir: Directory containing specialized model .tlm files
+            tokenizer: BPETokenizer instance (uses global if not provided)
+        """
+        self.router_path = router_path
+        self.models_dir = models_dir
+        self.tokenizer = tokenizer
+        
+        # Lazy-loaded models
+        self._router = None
+        self._models = {}  # model_name -> model instance
+        self._model_configs = {}  # model_name -> config dict
+        self._catalog = None
+
+    @property
+    def router(self):
+        """Lazy-load router model."""
+        if self._router is None:
+            self._router = load_model(self.router_path)
+        return self._router
+
+    @property
+    def catalog(self):
+        """Lazy-load model catalog."""
+        if self._catalog is None:
+            from model_mgmt import MODEL_CATALOG
+            self._catalog = MODEL_CATALOG
+        return self._catalog
+
+    def _get_tokenizer(self):
+        """Get tokenizer (use provided or global)."""
+        if self.tokenizer is not None:
+            return self.tokenizer
+        from registry import TOKENIZER_MANAGER
+        return TOKENIZER_MANAGER.tokenizer
+
+    def load_model(self, name: str):
+        """Load a specialized model by name."""
+        if name in self._models:
+            return self._models[name]
+        
+        spec = self.catalog.get(name)
+        if not spec:
+            raise KeyError(f"Model '{name}' not found in catalog")
+        
+        model = load_model(spec.path)
+        self._models[name] = model
+        self._model_configs[name] = spec.config
+        return model
+
+    def unload_model(self, name: str) -> bool:
+        """Unload a model from memory."""
+        if name in self._models:
+            del self._models[name]
+            return True
+        return False
+
+    def unload_all(self):
+        """Unload all specialized models (keeps router)."""
+        self._models.clear()
+        self._model_configs.clear()
+
+    def list_loaded(self) -> List[str]:
+        """List names of loaded specialized models."""
+        return list(self._models.keys())
+
+    def list_available(self) -> List[str]:
+        """List all available models in catalog."""
+        return [spec.name for spec in self.catalog.list() if spec.name != "router"]
+
+    def route(self, prompt: str, max_subtasks: int = 4) -> List[dict]:
+        """Route prompt to appropriate model(s) using router + catalog."""
+        tokenizer = self._get_tokenizer()
+        return self.router.route_multi(prompt, tokenizer, self.catalog, max_subtasks)
+
+    def generate(self, prompt: str, n_tokens: int = 60, temperature: float = 0.8,
+                 top_k: int = 0, top_p: float = 0.0, repetition_penalty: float = 1.0,
+                 max_models: int = 1, stream_callback=None) -> str:
+        """Generate text using routed model(s).
+
+        Args:
+            prompt: Input prompt
+            n_tokens: Number of tokens to generate
+            temperature: Sampling temperature
+            top_k: Top-k sampling parameter
+            top_p: Top-p (nucleus) sampling parameter
+            repetition_penalty: Repetition penalty
+            max_models: Maximum number of models to use (1 = single, >1 = collaborative)
+            stream_callback: Optional callback(token, model_name) for streaming
+
+        Returns:
+            Generated text
+        """
+        if max_models == 1:
+            # Single model generation
+            routes = self.route(prompt, max_subtasks=1)
+            if not routes:
+                raise RuntimeError("No models available for generation")
+            
+            model_name = routes[0]["model"]
+            model = self.load_model(model_name)
+            tokenizer = self._get_tokenizer()
+            
+            # Generate with streaming support
+            return self._generate_streaming(model, tokenizer, prompt, n_tokens, temperature,
+                                           top_k, top_p, repetition_penalty, stream_callback, model_name)
+        else:
+            # Collaborative generation (multiple models)
+            return self._generate_collaborative(prompt, n_tokens, temperature, top_k, top_p,
+                                               repetition_penalty, max_models, stream_callback)
+
+    def _generate_streaming(self, model, tokenizer, prompt, n_tokens, temperature,
+                           top_k, top_p, repetition_penalty, stream_callback, model_name):
+        """Generate with optional streaming callback."""
+        ids = tokenizer.encode(prompt) or [0]
+        model_fast_logits = getattr(model, 'fast_logits', None)
+        
+        generated_text = ""
+        for i in range(n_tokens):
+            window = ids[-model.ctx:]
+            window = [0] * (model.ctx - len(window)) + window
+            if model_fast_logits is not None:
+                logits = model_fast_logits(window)
+            else:
+                logits = fast_logits(model, window)
+            next_id = _sample_next_token(logits, temperature, top_k, top_p, repetition_penalty, ids)
+            ids.append(next_id)
+            
+            # Decode the new token
+            new_token = tokenizer.decode([next_id])
+            generated_text += new_token
+            
+            if stream_callback:
+                stream_callback(new_token, model_name)
+        
+        return generated_text
+
+    def _generate_collaborative(self, prompt, n_tokens, temperature, top_k, top_p,
+                               repetition_penalty, max_models, stream_callback):
+        """Collaborative generation with multiple models."""
+        routes = self.route(prompt, max_subtasks=max_models)
+        if not routes:
+            raise RuntimeError("No models available for generation")
+        
+        # For simplicity, use the primary model for now
+        # Full collaborative generation would alternate between models
+        primary_route = routes[0]
+        model_name = primary_route["model"]
+        model = self.load_model(model_name)
+        tokenizer = self._get_tokenizer()
+        
+        if stream_callback:
+            stream_callback(f"[Using {model_name}] ", "system")
+        
+        return self._generate_streaming(model, tokenizer, prompt, n_tokens, temperature,
+                                       top_k, top_p, repetition_penalty, stream_callback, model_name)
+
+    def generate_with_preview(self, prompt: str, n_tokens: int = 60, 
+                              temperature: float = 0.8, top_k: int = 0, top_p: float = 0.0,
+                              repetition_penalty: float = 1.0, max_models: int = 1,
+                              preview_callback=None) -> dict:
+        """Generate text with live token preview and timing stats.
+
+        Args:
+            prompt: Input prompt
+            n_tokens: Number of tokens to generate
+            temperature: Sampling temperature
+            top_k: Top-k sampling parameter
+            top_p: Top-p (nucleus) sampling parameter
+            repetition_penalty: Repetition penalty
+            max_models: Maximum number of models to use
+            preview_callback: Callback(token, model_name, token_idx, total_tokens, tokens_per_sec)
+
+        Returns:
+            Dict with 'text', 'tokens_generated', 'elapsed_sec', 'tokens_per_sec', 'model_used'
+        """
+        import time
+        
+        routes = self.route(prompt, max_subtasks=max_models)
+        if not routes:
+            raise RuntimeError("No models available for generation")
+        
+        model_name = routes[0]["model"]
+        model = self.load_model(model_name)
+        tokenizer = self._get_tokenizer()
+        
+        ids = tokenizer.encode(prompt) or [0]
+        model_fast_logits = getattr(model, 'fast_logits', None)
+        
+        generated_tokens = []
+        generated_text = ""
+        start_time = time.time()
+        last_report_time = start_time
+        
+        for i in range(n_tokens):
+            window = ids[-model.ctx:]
+            window = [0] * (model.ctx - len(window)) + window
+            if model_fast_logits is not None:
+                logits = model_fast_logits(window)
+            else:
+                logits = fast_logits(model, window)
+            next_id = _sample_next_token(logits, temperature, top_k, top_p, repetition_penalty, ids)
+            ids.append(next_id)
+            generated_tokens.append(next_id)
+            
+            # Decode the new token
+            new_token = tokenizer.decode([next_id])
+            generated_text += new_token
+            
+            # Call preview callback with timing info
+            if preview_callback:
+                elapsed = time.time() - start_time
+                tps = (i + 1) / elapsed if elapsed > 0 else 0
+                preview_callback(new_token, model_name, i + 1, n_tokens, tps)
+            
+            # Print progress every 10 tokens or at end
+            if (i + 1) % 10 == 0 or (i + 1) == n_tokens:
+                elapsed = time.time() - start_time
+                tps = (i + 1) / elapsed if elapsed > 0 else 0
+                print(f"  [{model_name}] Generated {i+1}/{n_tokens} tokens ({tps:.1f} tok/s)")
+        
+        total_elapsed = time.time() - start_time
+        
+        return {
+            "text": generated_text,
+            "tokens_generated": len(generated_tokens),
+            "elapsed_sec": total_elapsed,
+            "tokens_per_sec": len(generated_tokens) / total_elapsed if total_elapsed > 0 else 0,
+            "model_used": model_name,
+            "tokens": generated_tokens
+        }
+
+
 # ---- Specialized Model Base (≤100K params) ------------------------------------
 
 @dataclass

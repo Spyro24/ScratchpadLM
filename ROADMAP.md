@@ -268,7 +268,7 @@
 
 ### 16. Code Structure (module splits)
 - [x] **Split `ai.py` into `tinylm/` package**: `autograd`, `serialization`, `models_tiny`, `transformer`, `router`, `runtime`, `specialized`, `router_data`, `data_clean`, `sched`, `checkpoint`, `training`, `parallel`, `generation` (+ `__init__` re-exports); `ai.py` kept as backward-compatible shim so all `from ai import ...` imports keep working
-- [ ] **Split `ui.py` / `ui_qt.py`**: extract chat/training/admin/settings/logs tabs into per-tab modules with a shared controller
+- [x] **Split `ui.py` / `ui_qt.py`**: `uitk/` package (Tk: `core`, `shell`, per-tab `tab_*`, `history`, `worker`, per-feature `act_*`, `result`, `info`, `const`) and `uiqt/` package (Qt: same layout + `widgets` for chat bubbles, `logging`); `ui.py` / `ui_qt.py` kept as thin shims (`App`, `MainWindow`, `run_qt_app`, entry points) so all imports keep working
 - [ ] **Split `test_all.py`**: one test module per package area (e.g. `tests/test_training.py`, `tests/test_generation.py`)
 
 ---

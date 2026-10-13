@@ -32,10 +32,12 @@
 | `config.py` | Config system (YAML/JSON, validation, defaults) | `Config`, `load_yaml()`, `model_config()`, `training_config()`, `merge_configs()` |
 | `registry.py` | Model/Task registries, Tokenizer singleton | `ModelRegistry`, `TaskRegistry`, `TokenizerManager`, `TaskTemplate` |
 | `model_mgmt.py` | Dynamic model management | `ModelSpec`, `ModelCatalog`, `ModelLoader`, `ModelCreator`, `ModelUpdater`, `MODEL_CATALOG` |
-| `ui.py` | Tkinter GUI (stdlib fallback) with tabbed layout (Chat, Training, Model Info, Admin, Settings, Logs) | `App`, background thread via `queue.Queue`, `_append_history()` with role-based styling |
-| `ui_qt.py` | PySide6 (Qt6) GUI — primary UI toolkit | `MainWindow`, `AssistantBubble` (thumbs up/down → RatingCollector), `run_qt_app()` |
+| `ui.py` | Tkinter GUI shim (stdlib fallback): `App` composed from `uitk/` mixins + entry point | `App`, background thread via `queue.Queue`, `_append_history()` with role-based styling |
+| `uitk/` | Tkinter implementation (one mixin module per tab/feature) | `core` (init/backend), `shell` + `tab_*` (6 tabs), `history`, `worker`, `act_*` (chat/training/admin/settings), `result`, `info`, `const` |
+| `ui_qt.py` | PySide6 (Qt6) GUI shim — primary UI toolkit: `MainWindow`, `run_qt_app()` + entry point | `MainWindow`, `AssistantBubble` (thumbs up/down → RatingCollector), `run_qt_app()` |
+| `uiqt/` | PySide6 implementation (one mixin module per tab/feature) | `widgets` (bubbles), `core`, `shell` + `tab_*` (6 tabs), `chat`, `worker`, `logging`, `result`, `act_*` |
 | `ui_base.py` | Shared UI layer (no toolkit imports) | `detect_toolkit()`, `qt_platform_check()` (QApplication preflight — Qt aborts instead of raising on broken platform plugins), `run_gui()`, `PALETTE`, `qss_theme()`, `BackgroundWorker`, `write_config_yaml()`, `parse_bool()`, `get_available_models()` |
-| `main.py` | Legacy demo script (n-gram model) | `tokenize()`, `train()`, `generate()` |
+| `main.py` | CLI + GUI entry point (`tinylm` subcommands, `run_gui`) | `run_gui()`, `run_cli()` |
 | `AGENTS.md` | Agent guidance (this project's rules) | — |
 | `ROADMAP.md` | Task list with checkboxes | — |
 | `STRUCTURE.md` | This file | — |
@@ -45,7 +47,16 @@
 ## Module Dependencies
 
 ```
-ui.py (Tkinter fallback) / ui_qt.py (PySide6 primary)
+uitk/ (Tkinter mixins behind ui.App) / uiqt/ (Qt mixins behind ui_qt.MainWindow)
+  ├─ uitk/core.py + uiqt/core.py (init, backend model loading/switching)
+  ├─ uitk/shell.py + uiqt/shell.py (tab shell) + uitk/tab_* + uiqt/tab_* (per-tab builders)
+  ├─ uitk/history.py + uiqt/chat.py + uiqt/logging.py (conversation, rating, logs)
+  ├─ uitk/worker.py + uiqt/worker.py (background threads, queue draining)
+  ├─ uitk/act_* + uiqt/act_* (chat/training/admin/settings actions)
+  ├─ uitk/result.py + uiqt/result.py (worker result dispatch)
+  └─ uitk/const.py (shared Tk constants) / uiqt/widgets.py (chat bubbles)
+
+ui.py (Tkinter shim: App) / ui_qt.py (Qt shim: MainWindow, run_qt_app)
   ├─ ui_base.py (shared layer: detect_toolkit, run_gui, PALETTE, BackgroundWorker, helpers)
   ├─ tokenizer.py (BPETokenizer)
   ├─ ai.py (TinyLM, Router, SpecializedLM, train, generate, load_model, save_model, sync_vocab, train_parallel)
@@ -321,11 +332,11 @@ load_model(path) → TinyLM
 ## Entry Points
 
 ```bash
-# GUI
+# GUI (auto-detects PySide6 vs Tkinter fallback)
 python3 ui.py
 
-# Legacy demo (n-gram)
-python3 main.py [corpus.txt]
+# CLI (router train, model mgmt, autotrain, generate, train, serve)
+python3 main.py --cli
 
 # Train from scratch (in ai.py __main__)
 python3 ai.py

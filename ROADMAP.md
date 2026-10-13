@@ -236,7 +236,10 @@
 ---
 
 ## AI Scratchpad (internal)
-- `scratchpad = []` — list of `{step, thought, result, model}`
-- `model.think(prompt, steps=3)` → final answer + trace
-- Used by `code`, `analyze`, `reason` tasks
-- Shared across models during collaborative generation
+- [x] `scratchpad = []` — list of `{step, thought, result, model}`
+- [x] `model.think(prompt, steps=3)` → final answer + trace (ThinkEngine)
+- [x] Used by `code`, `analyze`, `reason` tasks (TaskPad with TaskType)
+- [x] Shared across models during collaborative generation (global SCRATCHPAD)
+- [x] **Scratchpad CLI**: `tinylm scratchpad show/clear/add`
+- [x] **TaskPad**: task management with dependencies, status tracking
+- [x] **TaskPad CLI**: `tinylm taskpad list/create/execute/run-all`

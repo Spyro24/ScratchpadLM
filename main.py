@@ -11,6 +11,12 @@ import sys
 import os
 import time
 
+# For taskpad CLI
+try:
+    from scratchpad import TaskType
+except ImportError:
+    TaskType = None
+
 
 def run_gui():
     """Boot the Tkinter UI (must run on the main thread)."""
@@ -103,6 +109,32 @@ def run_cli(argv=None):
     train_parser.add_argument("--steps", type=int, default=1000, help="Training steps")
     train_parser.add_argument("--lr", type=float, default=0.05, help="Learning rate")
 
+    # Scratchpad command
+    scratchpad_parser = subparsers.add_parser("scratchpad", help="Scratchpad commands")
+    scratchpad_subparsers = scratchpad_parser.add_subparsers(dest="scratchpad_command", help="Scratchpad subcommands")
+    scratchpad_subparsers.add_parser("show", help="Show scratchpad contents")
+    scratchpad_subparsers.add_parser("clear", help="Clear scratchpad")
+    add_parser = scratchpad_subparsers.add_parser("add", help="Add entry to scratchpad")
+    add_parser.add_argument("--thought", required=True, help="Thought text")
+    add_parser.add_argument("--result", required=True, help="Result text")
+    add_parser.add_argument("--model", required=True, help="Model name")
+
+    # Taskpad command
+    taskpad_parser = subparsers.add_parser("taskpad", help="Taskpad commands")
+    taskpad_subparsers = taskpad_parser.add_subparsers(dest="taskpad_command", help="Taskpad subcommands")
+    taskpad_subparsers.add_parser("list", help="List all tasks")
+    
+    task_create = taskpad_subparsers.add_parser("create", help="Create new task")
+    task_create.add_argument("--type", required=True, choices=[t.value for t in TaskType], help="Task type")
+    task_create.add_argument("--prompt", required=True, help="Task prompt")
+    task_create.add_argument("--model", help="Model name")
+    task_create.add_argument("--deps", nargs="*", default=[], help="Dependency task IDs")
+    
+    task_execute = taskpad_subparsers.add_parser("execute", help="Execute a task")
+    task_execute.add_argument("task_id", help="Task ID to execute")
+    
+    taskpad_subparsers.add_parser("run-all", help="Execute all pending tasks")
+
     if len(argv) == 0:
         parser.print_help()
         sys.exit(1)
@@ -119,6 +151,10 @@ def run_cli(argv=None):
         cmd_generate(args)
     elif args.command == "train":
         cmd_train(args)
+    elif args.command == "scratchpad":
+        cmd_scratchpad(args)
+    elif args.command == "taskpad":
+        cmd_taskpad(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -359,6 +395,69 @@ def cmd_train(args):
     train(model, ids, steps=args.steps, lr=args.lr, progress_cb=progress_cb)
     save_model(model, "tinyLM" if not args.model else f"models/{args.model}.tlm")
     print("Training complete")
+
+
+def cmd_scratchpad(args):
+    """Scratchpad commands."""
+    from scratchpad import Scratchpad, TaskType
+    
+    scratchpad = Scratchpad()
+    
+    if args.scratchpad_command == "show":
+        context = scratchpad.get_context(max_entries=50)
+        if context:
+            print(context)
+        else:
+            print("Scratchpad is empty")
+    
+    elif args.scratchpad_command == "clear":
+        scratchpad.clear()
+        print("Scratchpad cleared")
+    
+    elif args.scratchpad_command == "add":
+        scratchpad.add(args.thought, args.result, args.model)
+        print(f"Added entry for model '{args.model}'")
+
+
+def cmd_taskpad(args):
+    """Taskpad commands."""
+    from scratchpad import TaskPad, TaskType
+    
+    taskpad = TaskPad()
+    
+    if args.taskpad_command == "list":
+        tasks = taskpad.list_tasks()
+        if not tasks:
+            print("No tasks")
+            return
+        print(f"{'ID':<30} {'Type':<12} {'Status':<12} {'Model':<15} {'Prompt'}")
+        print("-" * 100)
+        for t in tasks:
+            prompt_preview = t.prompt[:50] + "..." if len(t.prompt) > 50 else t.prompt
+            model = t.model_name or "-"
+            print(f"{t.id:<30} {t.type.value:<12} {t.status.value:<12} {model:<15} {prompt_preview}")
+    
+    elif args.taskpad_command == "create":
+        task = taskpad.create_task(
+            TaskType(args.type),
+            args.prompt,
+            args.model,
+            dependencies=args.deps
+        )
+        print(f"Created task: {task.id}")
+    
+    elif args.taskpad_command == "execute":
+        if not args.task_id:
+            print("Error: task_id required")
+            return
+        print(f"Executing task {args.task_id}...")
+        # In a real implementation, this would use registered executors
+        print("Note: Task executors need to be registered. Use Python API for full execution.")
+    
+    elif args.taskpad_command == "run-all":
+        print("Running all pending tasks...")
+        executed = taskpad.execute_all_pending()
+        print(f"Executed {len(executed)} tasks")
 
 
 def run_mcp():

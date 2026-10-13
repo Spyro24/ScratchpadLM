@@ -104,11 +104,11 @@
 - [ ] **Dynamic model creation**: Auto-create new specialized models when domain gap detected — analyzes user-provided training data, generates config, registers in catalog
 
 ### 4. Multi-Model Runtime
-- [ ] `ModelRuntime` class: loads router + all specialized models at startup
-- [ ] Shared tokenizer injected into all models
-- [ ] `runtime.route(prompt)` → router splits → dispatches to specialized models
-- [ ] `runtime.generate(prompt)` → collaborative generation coordinator
-- [ ] Memory budget: lazy-load models, unload unused after timeout
+- [x] `ModelRuntime` class: loads router + all specialized models at startup (lazy-load)
+- [x] Shared tokenizer injected into all models
+- [x] `runtime.route(prompt)` → router splits → dispatches to specialized models
+- [x] `runtime.generate(prompt)` → collaborative generation coordinator
+- [x] Memory budget: lazy-load models, unload unused after timeout (TTL + max models)
 - [ ] **MCP tool execution**: Runtime executes MCP tool calls from router — tool registry, invocation sandbox, result streaming back to model context, timeout/circuit breaker
 
 ### 5. Task System

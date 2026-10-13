@@ -1,6 +1,7 @@
 import math
 import random
 import time
+import threading
 import struct
 import json
 import re
@@ -1005,23 +1006,74 @@ class ModelRuntime:
 
     def __init__(self, router_path: str = "router.tlm",
                  models_dir: str = "models",
-                 tokenizer=None):
+                 tokenizer=None,
+                 max_loaded_models: int = 5,
+                 model_ttl: float = 300.0):
         """Initialize the multi-model runtime.
 
         Args:
             router_path: Path to router model file
             models_dir: Directory containing specialized model .tlm files
             tokenizer: BPETokenizer instance (uses global if not provided)
+            max_loaded_models: Maximum number of specialized models to keep in memory
+            model_ttl: Time-to-live for loaded models in seconds (auto-unload after idle)
         """
         self.router_path = router_path
         self.models_dir = models_dir
         self.tokenizer = tokenizer
+        self.max_loaded_models = max_loaded_models
+        self.model_ttl = model_ttl
         
         # Lazy-loaded models
         self._router = None
         self._models = {}  # model_name -> model instance
         self._model_configs = {}  # model_name -> config dict
+        self._model_last_access = {}  # model_name -> last access timestamp
         self._catalog = None
+        self._cleanup_thread = None
+        self._running = False
+
+    def start(self):
+        """Start the runtime (background cleanup thread)."""
+        if self._running:
+            return
+        self._running = True
+        self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+        self._cleanup_thread.start()
+
+    def stop(self):
+        """Stop the runtime."""
+        self._running = False
+        if self._cleanup_thread:
+            self._cleanup_thread.join(timeout=2)
+
+    def _cleanup_loop(self):
+        """Background loop to unload idle models."""
+        while self._running:
+            self._unload_idle_models()
+            time.sleep(10)  # Check every 10 seconds
+
+    def _unload_idle_models(self):
+        """Unload models that have been idle longer than TTL."""
+        now = time.time()
+        to_unload = []
+        for name, last_access in self._model_last_access.items():
+            if now - last_access > self.model_ttl:
+                to_unload.append(name)
+        
+        # Also enforce max loaded models limit
+        if len(self._models) > self.max_loaded_models:
+            # Sort by last access, unload oldest
+            sorted_models = sorted(self._model_last_access.items(), key=lambda x: x[1])
+            excess = len(self._models) - self.max_loaded_models
+            to_unload.extend([name for name, _ in sorted_models[:excess]])
+        
+        for name in set(to_unload):
+            self.unload_model(name)
+
+    def _mark_accessed(self, name: str):
+        """Mark a model as recently accessed."""
+        self._model_last_access[name] = time.time()
 
     @property
     def router(self):
@@ -1048,6 +1100,7 @@ class ModelRuntime:
     def load_model(self, name: str):
         """Load a specialized model by name."""
         if name in self._models:
+            self._mark_accessed(name)
             return self._models[name]
         
         spec = self.catalog.get(name)
@@ -1057,12 +1110,14 @@ class ModelRuntime:
         model = load_model(spec.path)
         self._models[name] = model
         self._model_configs[name] = spec.config
+        self._mark_accessed(name)
         return model
 
     def unload_model(self, name: str) -> bool:
         """Unload a model from memory."""
         if name in self._models:
             del self._models[name]
+            self._model_last_access.pop(name, None)
             return True
         return False
 
@@ -1148,23 +1203,94 @@ class ModelRuntime:
 
     def _generate_collaborative(self, prompt, n_tokens, temperature, top_k, top_p,
                                repetition_penalty, max_models, stream_callback):
-        """Collaborative generation with multiple models."""
+        """Collaborative generation with multiple models, alternating between them."""
         routes = self.route(prompt, max_subtasks=max_models)
         if not routes:
             raise RuntimeError("No models available for generation")
         
-        # For simplicity, use the primary model for now
-        # Full collaborative generation would alternate between models
-        primary_route = routes[0]
-        model_name = primary_route["model"]
-        model = self.load_model(model_name)
+        # Limit to available models
+        available_routes = [r for r in routes if self.catalog.get(r["model"])]
+        if not available_routes:
+            raise RuntimeError("No routed models found in catalog")
+        
+        # Limit to max_models
+        routes = available_routes[:max_models]
+        
         tokenizer = self._get_tokenizer()
+        model_names = [r["model"] for r in routes]
+        
+        # Pre-load all models
+        models = {}
+        for route in routes:
+            models[route["model"]] = self.load_model(route["model"])
+        
+        # Determine tokens per model (round-robin distribution)
+        tokens_per_model = max(1, n_tokens // len(routes))
+        remaining = n_tokens
+        
+        generated_text = ""
+        current_model_idx = 0
         
         if stream_callback:
-            stream_callback(f"[Using {model_name}] ", "system")
+            stream_callback(f"[Collaborative: {', '.join(model_names)}] ", "system")
         
-        return self._generate_streaming(model, tokenizer, prompt, n_tokens, temperature,
-                                       top_k, top_p, repetition_penalty, stream_callback, model_name)
+        while remaining > 0:
+            model_name = model_names[current_model_idx]
+            model = models[model_name]
+            
+            # Generate tokens for this model
+            chunk_size = min(tokens_per_model, remaining)
+            
+            if stream_callback:
+                stream_callback(f"\n[{model_name}] ", "system")
+            
+            chunk_text = self._generate_streaming(
+                model, tokenizer, prompt + generated_text, chunk_size, temperature,
+                top_k, top_p, repetition_penalty, 
+                lambda token: stream_callback(token, model_name) if stream_callback else None,
+                model_name
+            )
+            
+            generated_text += chunk_text
+            remaining -= chunk_size
+            current_model_idx = (current_model_idx + 1) % len(routes)
+            
+            # Update prompt context for next model
+            # (In a full implementation, we'd pass the full context)
+        
+        return generated_text
+
+    def generate(self, prompt: str, n_tokens: int = 60, temperature: float = 0.8,
+                 top_k: int = 0, top_p: float = 0.0, repetition_penalty: float = 1.0,
+                 max_models: int = 1, stream_callback=None, collaborative: bool = False) -> str:
+        """Unified generation entry point.
+
+        Args:
+            prompt: Input prompt
+            n_tokens: Number of tokens to generate
+            temperature: Sampling temperature
+            top_k: Top-k sampling parameter
+            top_p: Top-p (nucleus) sampling parameter
+            repetition_penalty: Repetition penalty
+            max_models: Maximum number of models to use (1 = single, >1 = collaborative)
+            stream_callback: Optional callback(token, model_name) for streaming
+            collaborative: Force collaborative mode even with max_models=1
+
+        Returns:
+            Generated text
+        """
+        if max_models > 1 or collaborative:
+            return self._generate_collaborative(prompt, n_tokens, temperature, top_k, top_p,
+                                               repetition_penalty, max_models, stream_callback)
+        else:
+            routes = self.route(prompt, max_subtasks=1)
+            if not routes:
+                raise RuntimeError("No models available for generation")
+            model_name = routes[0]["model"]
+            model = self.load_model(model_name)
+            tokenizer = self._get_tokenizer()
+            return self._generate_streaming(model, tokenizer, prompt, n_tokens, temperature,
+                                           top_k, top_p, repetition_penalty, stream_callback, model_name)
 
     def generate_with_preview(self, prompt: str, n_tokens: int = 60, 
                               temperature: float = 0.8, top_k: int = 0, top_p: float = 0.0,

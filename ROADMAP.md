@@ -21,6 +21,8 @@ Done to date: fused `matvec_dot`, persistent `train_parallel` workers, O(1)-dept
 ### 0b. Dynamic Model Management
 - [x] `ModelSpec`, `ModelCatalog` (JSON), `ModelLoader`, `ModelCreator`, `ModelUpdater`, catalog CLI, auto-discovery, router↔catalog routing
 - [ ] **Harness integration**: `model load/create` in `.tlm` scripts
+- [ ] **Model export**: `export_model()` bundles a single model (4-bit `.tlm` weights + tokenizer merges + spec/config JSON) into one portable archive
+- [ ] **Model import**: `import_model()` cleanly imports an exported archive — validates format/checksums, registers into the catalog, merges tokens via `extend()` only (never renumbers IDs), `sync_vocab` on affected loaded models
 
 ### 0c. Auto-Training
 - [x] `RatingCollector` (thresholds 4/5 high, 2/5 low), `ModelSelector`, `AutoTrainer` (batch ≥8, 60s wait, few-shot fine-tune, `autotrain.log`), low-rating handler, dedup, rate limits, per-model metrics

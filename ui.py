@@ -169,7 +169,7 @@ class App:
         main.rowconfigure(0, weight=1)
         main.columnconfigure(0, weight=1)
 
-        # Tabbed layout (roadmap 0a: Chat, Training, Model Info, Admin, Settings)
+        # Tabbed layout (roadmap 0a: Chat, Training, Model Info, Admin, Settings, Logs)
         self.notebook = ttk.Notebook(main)
         self.notebook.grid(row=0, column=0, sticky="nsew")
 
@@ -178,18 +178,21 @@ class App:
         info_tab = tk.Frame(self.notebook, padx=10, pady=10)
         admin_tab = tk.Frame(self.notebook, padx=10, pady=10)
         settings_tab = tk.Frame(self.notebook, padx=10, pady=10)
+        logs_tab = tk.Frame(self.notebook, padx=10, pady=10)
 
         self.notebook.add(chat_tab, text="Chat")
         self.notebook.add(training_tab, text="Training")
         self.notebook.add(info_tab, text="Model Info")
         self.notebook.add(admin_tab, text="Admin")
         self.notebook.add(settings_tab, text="Settings")
+        self.notebook.add(logs_tab, text="Logs")
 
         self._build_chat_tab(chat_tab)
         self._build_training_tab(training_tab)
         self._build_model_info_tab(info_tab)
         self._build_admin_tab(admin_tab)
         self._build_settings_tab(settings_tab)
+        self._build_logs_tab(logs_tab)
 
         # Status bar at bottom
         self.status = tk.Label(self.root, text="Ready", anchor="w", bd=1, relief="sunken", padx=5)
@@ -558,6 +561,70 @@ class App:
         # Initial pattern refresh
         self.refresh_tokenizer_patterns()
 
+    def _build_logs_tab(self, tab):
+        """Logs tab: unified log viewer for training, generation, system, and error logs with filtering."""
+        tab.rowconfigure(1, weight=1)
+        tab.columnconfigure(0, weight=1)
+
+        # Filter controls
+        filter_frame = tk.LabelFrame(tab, text="Filters", padx=10, pady=8)
+        filter_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        filter_frame.columnconfigure(1, weight=1)
+
+        # Log type checkboxes
+        self.log_filter_vars = {}
+        log_types = [
+            ("training", "Training", "#2E86C1"),
+            ("generation", "Generation", "#27AE60"),
+            ("system", "System", "#7F8C8D"),
+            ("error", "Error", "#E74C3C"),
+        ]
+        for i, (key, label, color) in enumerate(log_types):
+            var = tk.BooleanVar(value=True)
+            self.log_filter_vars[key] = var
+            cb = tk.Checkbutton(filter_frame, text=label, variable=var, 
+                                command=self._apply_log_filters, fg=color, font=("Consolas", 9))
+            cb.grid(row=0, column=i, padx=8, sticky="w")
+
+        # Search/filter entry
+        tk.Label(filter_frame, text="Search:").grid(row=0, column=len(log_types), padx=(20, 5))
+        self.log_search_var = tk.Entry(filter_frame, width=20)
+        self.log_search_var.grid(row=0, column=len(log_types)+1, padx=(0, 10))
+        self.log_search_var.bind("<KeyRelease>", lambda e: self._apply_log_filters())
+
+        # Auto-scroll checkbox
+        self.log_autoscroll_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(filter_frame, text="Auto-scroll", variable=self.log_autoscroll_var,
+                       font=("Consolas", 9)).grid(row=0, column=len(log_types)+2, padx=8)
+
+        # Clear and Export buttons
+        tk.Button(filter_frame, text="Clear Logs", command=self._clear_unified_logs, width=12).grid(
+            row=0, column=len(log_types)+3, padx=5)
+        tk.Button(filter_frame, text="Export Logs", command=self._export_logs, width=12).grid(
+            row=0, column=len(log_types)+4, padx=5)
+
+        # Unified log display
+        log_frame = tk.LabelFrame(tab, text="Unified Logs", padx=10, pady=10)
+        log_frame.grid(row=1, column=0, sticky="nsew")
+        log_frame.rowconfigure(0, weight=1)
+        log_frame.columnconfigure(0, weight=1)
+
+        self.unified_log = scrolledtext.ScrolledText(
+            log_frame, wrap="word", state="disabled", font=("Consolas", 9)
+        )
+        self.unified_log.grid(row=0, column=0, sticky="nsew")
+
+        # Configure tags for different log types
+        self.unified_log.tag_configure("training", foreground="#2E86C1")
+        self.unified_log.tag_configure("generation", foreground="#27AE60")
+        self.unified_log.tag_configure("system", foreground="#7F8C8D", font=("Consolas", 9, "italic"))
+        self.unified_log.tag_configure("error", foreground="#E74C3C", font=("Consolas", 9, "bold"))
+        self.unified_log.tag_configure("timestamp", foreground="#95A5A6")
+        self.unified_log.tag_configure("hidden", elide=True)  # For filtering
+
+        # Store all log entries for filtering
+        self._all_log_entries = []  # List of (timestamp, log_type, message)
+
     def _append_history(self, role, text):
         """Append a message to conversation history with role styling."""
         self.history.configure(state="normal")
@@ -575,6 +642,9 @@ class App:
         
         self.history.see("end")
         self.history.configure(state="disabled")
+        
+        # Also log to unified log viewer
+        self._log_unified("system" if role != "error" else "error", text)
 
     def _log_train(self, message, is_error=False):
         """Append a timestamped line to the training monitor."""
@@ -584,6 +654,80 @@ class App:
         self.train_log.insert("end", message + "\n", "err" if is_error else "")
         self.train_log.see("end")
         self.train_log.configure(state="disabled")
+        
+        # Also log to unified log viewer
+        self._log_unified("error" if is_error else "training", message)
+
+    def _log_unified(self, log_type, message):
+        """Add entry to unified log viewer."""
+        ts = time.strftime("%H:%M:%S")
+        entry = (ts, log_type, message)
+        self._all_log_entries.append(entry)
+        
+        # Keep only last 10000 entries to prevent memory issues
+        if len(self._all_log_entries) > 10000:
+            self._all_log_entries = self._all_log_entries[-10000:]
+        
+        # Apply current filters and display
+        self._apply_log_filters()
+
+    def _apply_log_filters(self, event=None):
+        """Apply filters to unified log display."""
+        if not hasattr(self, 'unified_log'):
+            return
+            
+        search_text = self.log_search_var.get().lower() if hasattr(self, 'log_search_var') else ""
+        
+        # Determine which log types to show
+        show_types = set()
+        if hasattr(self, 'log_filter_vars'):
+            for key, var in self.log_filter_vars.items():
+                if var.get():
+                    show_types.add(key)
+        else:
+            show_types = {"training", "generation", "system", "error"}
+        
+        self.unified_log.configure(state="normal")
+        self.unified_log.delete("1.0", "end")
+        
+        for ts, log_type, message in self._all_log_entries:
+            if log_type not in show_types:
+                continue
+            if search_text and search_text not in message.lower() and search_text not in ts.lower():
+                continue
+            
+            self.unified_log.insert("end", f"[{ts}] ", "timestamp")
+            self.unified_log.insert("end", f"[{log_type.upper()}] ", log_type)
+            self.unified_log.insert("end", message + "\n", log_type)
+        
+        if self.log_autoscroll_var.get():
+            self.unified_log.see("end")
+        self.unified_log.configure(state="disabled")
+
+    def _clear_unified_logs(self):
+        """Clear all unified log entries."""
+        self._all_log_entries.clear()
+        self.unified_log.configure(state="normal")
+        self.unified_log.delete("1.0", "end")
+        self.unified_log.configure(state="disabled")
+
+    def _export_logs(self):
+        """Export unified logs to a text file."""
+        from tkinter import filedialog
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Export Logs"
+        )
+        if not filepath:
+            return
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                for ts, log_type, message in self._all_log_entries:
+                    f.write(f"[{ts}] [{log_type.upper()}] {message}\n")
+            self._log_unified("system", f"Logs exported to {filepath}")
+        except Exception as e:
+            self._log_unified("error", f"Failed to export logs: {e}")
 
     def _set_busy(self, busy, message=""):
         self.busy = busy
@@ -616,6 +760,9 @@ class App:
                 kind, label, payload = self.queue.get_nowait()
                 if kind == "progress":
                     self._handle_progress(label, payload)
+                elif kind == "log":
+                    # Direct log to unified log (runs on main thread)
+                    self._log_unified(label, payload)
                 else:
                     self._handle_result(kind, label, payload)
         except queue.Empty:
@@ -745,6 +892,9 @@ class App:
     def _generate_job(self, prompt, n_tokens, temperature, top_k, top_p, repetition_penalty):
         text = generate(self.model, self.tok, prompt, n_tokens=n_tokens, temperature=temperature, 
                         top_k=top_k, top_p=top_p, repetition_penalty=repetition_penalty)
+        # Log to unified log (will be picked up by _handle_result via queue)
+        self.queue.put(("log", "generation", f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}"))
+        self.queue.put(("log", "generation", f"Response: {text[:200]}{'...' if len(text) > 200 else ''}"))
         return prompt, text
 
     def on_clear_history(self):

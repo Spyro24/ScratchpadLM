@@ -36,7 +36,7 @@
 - [x] **Generation controls**: temperature, top-k, top-p, repetition penalty sliders
 - [x] **Tokenizer manager**: view vocab size, learned patterns, extend vocab button
 - [ ] **Config editor**: YAML editor with validation, save/load presets
-- [ ] **Log viewer**: scrollable training/generation logs with filtering
+- [x] **Log viewer**: scrollable training/generation logs with filtering
 - [x] **Model inspector**: parameter count, memory usage, architecture summary
 - [ ] **UI polish & layout fixes**: Fix spacing issues, elements going off-screen, consistent padding/margins, responsive resizing, scrollable tabs for overflow content, improve visual hierarchy and alignment
 

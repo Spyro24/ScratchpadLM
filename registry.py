@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 
+from tokenizer import BPETokenizer
+from ai import TinyLM, Router, RouterConfig, SpecializedLM, SpecializedConfig
+
 
 # =============================================================================
 # Model Registry
@@ -144,7 +147,6 @@ class TokenizerManager:
 
     def __init__(self):
         if self._tokenizer is None:
-            from tokenizer import BPETokenizer
             self._tokenizer = BPETokenizer()
 
     @property
@@ -193,11 +195,13 @@ class TokenizerManager:
 
     def reset(self) -> None:
         """Reset to fresh tokenizer (for testing)."""
-        from tokenizer import BPETokenizer
         self._tokenizer = BPETokenizer()
         self._vocab_size = 1000
         self._min_frequency = 2
 
+
+# Register built-in model factories (run on import)
+from ai import TinyLM, Router, RouterConfig, SpecializedLM, SpecializedConfig
 
 # Global tokenizer manager instance
 TOKENIZER_MANAGER = TokenizerManager()
@@ -248,8 +252,6 @@ def get_tokenizer() -> Any:
 
 
 # Register built-in model factories (run on import)
-from ai import TinyLM, Router, RouterConfig, SpecializedLM, SpecializedConfig
-
 register_model("TinyLM", lambda **kw: TinyLM(**kw),
                description="TinyLM base architecture", domain="general")
 register_model("Router", lambda **kw: Router(RouterConfig(**kw)),

@@ -1,3 +1,0 @@
-{"prompt": "test prompt", "response": "test response", "model_name": "tiny-prose", "rating": 5, "metadata": {}, "timestamp": 1791879799.9035945, "prompt_hash": "0bba78c7dfa2c05c"}
-{"prompt": "another prompt", "response": "another response", "model_name": "tiny-code", "rating": 3, "metadata": {}, "timestamp": 1791879799.90383, "prompt_hash": "533a71a9d26dabbf"}
-{"prompt": "bad prompt", "response": "bad response", "model_name": "tiny-prose", "rating": 1, "metadata": {}, "timestamp": 1791879799.9039347, "prompt_hash": "25c30215cbdfc21d"}

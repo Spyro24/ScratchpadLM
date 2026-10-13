@@ -1,12 +1,16 @@
 import math
 import random
+import struct
+import json
+import re
+import itertools
+import operator
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
+from pathlib import Path
+from multiprocessing import Pool, cpu_count
 
 from tokenizer import BPETokenizer
-
-import struct
-from multiprocessing import Pool, cpu_count
 
 try:
     import accel
@@ -14,8 +18,6 @@ except Exception:  # pragma: no cover - accel never raises, belt and braces
     accel = None
 
 MAGIC = b"TLM4"   # file signature: TinyLM, 4-bit
-
-from pathlib import Path
 
 
 def sync_vocab(model, vocab_size, seed=None):

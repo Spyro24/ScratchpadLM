@@ -5,6 +5,11 @@ from pathlib import Path
 import json
 import time
 import shutil
+import sys
+import tempfile
+
+from ai import load_model, count_params, save_model, TinyLM
+from registry import get_model_factory
 
 
 # =============================================================================
@@ -128,8 +133,6 @@ class ModelCatalog:
         if not models_path.exists():
             return []
 
-        from ai import load_model, count_params
-
         discovered = []
         for model_file in models_path.glob("*.tlm"):
             name = model_file.stem
@@ -203,12 +206,10 @@ class ModelLoader:
             raise KeyError(f"Model '{name}' not found in catalog")
 
         # Load model from file
-        from ai import load_model
         model = load_model(spec.path)
 
         # Validate param limit
         if self.max_params is not None:
-            from ai import count_params
             n_params = count_params(model)
             if n_params > self.max_params:
                 raise ValueError(f"Model '{name}' has {n_params:,} params, exceeds limit {self.max_params:,}")
@@ -285,7 +286,6 @@ class ModelCreator:
 
         # Create model
         if model_factory is None:
-            from ai import TinyLM
             # Filter config to TinyLM params
             model = TinyLM(
                 vocab_size=config.get("vocab_size", 1000),
@@ -297,12 +297,10 @@ class ModelCreator:
             model = model_factory(config)
 
         # Count params
-        from ai import count_params
         param_count = count_params(model)
 
         # Save model
         model_path = self.models_dir / f"{name}.tlm"
-        from ai import save_model
         save_model(model, str(model_path))
 
         # Create spec
@@ -360,7 +358,6 @@ class ModelUpdater:
         if model_factory := self._get_factory(spec.config.get("arch")):
             new_model = model_factory(**{k: v for k, v in new_config_full.items() if k != "arch"})
         else:
-            from ai import TinyLM
             new_model = TinyLM(**{k: v for k, v in new_config_full.items() if k != "arch"})
 
         # Copy weights where shapes match
@@ -371,7 +368,6 @@ class ModelUpdater:
                 self._copy_matching_weights(old_rows, new_rows)
 
         # Save updated model
-        from ai import save_model
         save_model(new_model, spec.path)
 
         # Update spec
@@ -387,7 +383,6 @@ class ModelUpdater:
 
     def _get_factory(self, arch: str):
         try:
-            from registry import get_model_factory
             return get_model_factory(arch)
         except (ImportError, KeyError):
             return None

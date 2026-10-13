@@ -35,8 +35,6 @@ def get_available_models():
     models = list(MODEL_REGISTRY.list())
     # Add models from catalog that have valid files
     try:
-        from model_mgmt import MODEL_CATALOG
-        from pathlib import Path
         for spec in MODEL_CATALOG.list():
             if spec.name not in models and Path(spec.path).exists():
                 models.append(spec.name)
@@ -150,7 +148,6 @@ class App:
         except KeyError:
             # Try loading from catalog
             try:
-                from model_mgmt import ModelLoader, MODEL_CATALOG
                 loader = ModelLoader(MODEL_CATALOG, tokenizer_manager=TOKENIZER_MANAGER)
                 return loader.load_model(model_name)
             except Exception as e:
@@ -800,7 +797,6 @@ class App:
 
     def _export_logs(self):
         """Export unified logs to a text file."""
-        from tkinter import filedialog
         filepath = filedialog.asksaveasfilename(
             defaultextension=".txt",
             filetypes=[("Text files", "*.txt"), ("All files", "*.*")],

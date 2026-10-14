@@ -21,6 +21,7 @@ from uiqt.tab_chat import ChatTabMixin
 from uiqt.tab_info import InfoTabMixin
 from uiqt.tab_logs import LogsTabMixin
 from uiqt.tab_settings import SettingsTabMixin
+from uiqt.tab_tasks import TasksTabMixin
 from uiqt.tab_training import TrainingTabMixin
 from uiqt.worker import WorkerMixin
 
@@ -33,6 +34,7 @@ class MainWindow(
     InfoTabMixin,
     AdminTabMixin,
     SettingsTabMixin,
+    TasksTabMixin,
     LogsTabMixin,
     ChatMixin,
     WorkerMixin,

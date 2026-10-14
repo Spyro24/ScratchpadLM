@@ -112,27 +112,39 @@ class Config:
         },
         "training": {
             "steps": 100,
-            "lr": 0.05,
-            "batch_size": 16,
+            "lr": 0.1,              # Higher LR for faster initial convergence
+            "batch_size": 32,       # Larger batch for better gradient estimates
             "n_negatives": 256,
             "workers": None,
             "lr_scheduler": "cosine_warmup",
-            "warmup_steps": 100,
-            "min_lr": 0.0,
+            "warmup_steps": 50,     # Shorter warmup
+            "min_lr": 1e-5,         # Non-zero min LR
             "grad_clip": 1.0,
             "val_split": 0.1,
             "eval_every": 50,
             "early_stopping": True,
-            "patience": 5,
+            "patience": 10,         # More patience
             "min_delta": 1e-4,
             "checkpoint_every": 100,
             "checkpoint_dir": "checkpoints",
             "auto_adjust": True,
-            "auto_factor": 0.5,
-            "auto_patience": 10,
+            "auto_factor": 0.7,     # Less aggressive LR reduction
+            "auto_patience": 5,     # Faster response to plateaus
             "auto_clip_relax": True,
-            "momentum": 0.9,
+            "momentum": 0.95,       # Higher momentum
             "rollback_window": 2,
+            "optimizer": "sgd",       # sgd/apollo/apollo_mini/adam/lion/muon (UI uses train_parallel: sgd/adam/lion/muon)
+            "batch_steps": 1,        # Batches computed per update (gradient accumulation; >1 loads GPU more)
+            "use_gpu": True,         # Route worker grads through CUDA when available (auto-fallback to C/Python)
+            # New features - enabled by default for faster convergence
+            "use_frequency_neg_sampling": True,   # Better negative sampling
+            "n_negatives_start": 512,             # Start with more negatives
+            "n_negatives_end": 64,
+            "n_negatives_decay": "cosine",        # Smoother decay
+            "use_cosine_restarts": True,          # SGDR-style restarts
+            "restart_period": 0,                  # Auto (steps // 10)
+            "cyclic_lr": False,
+            "cycle_length": 0,
         },
         "generation": {
             "max_tokens": 0,  # 0 = unlimited, structural markers end generation
@@ -183,6 +195,19 @@ class Config:
             "auto_clip_relax": (bool, lambda x: True, "auto_clip_relax must be boolean"),
             "momentum": (float, lambda x: 0.0 <= x < 1.0, "momentum must be in [0.0, 1.0)"),
             "rollback_window": (int, lambda x: x >= 0, "rollback_window must be >= 0"),
+            "optimizer": (str, lambda x: x in ("sgd", "apollo", "apollo_mini", "adam", "lion", "muon"),
+                          "optimizer must be sgd, apollo, apollo_mini, adam, lion, or muon"),
+            "batch_steps": (int, lambda x: x >= 1, "batch_steps must be >= 1"),
+            "use_gpu": (bool, lambda x: True, "use_gpu must be boolean"),
+            # New features
+            "use_frequency_neg_sampling": (bool, lambda x: True, "use_frequency_neg_sampling must be boolean"),
+            "n_negatives_start": (type(None), lambda x: x is None or (isinstance(x, int) and x > 0), "n_negatives_start must be None or positive int"),
+            "n_negatives_end": (int, lambda x: x >= 0, "n_negatives_end must be >= 0"),
+            "n_negatives_decay": (str, lambda x: x in ("exponential", "linear", "cosine"), "n_negatives_decay must be exponential, linear, or cosine"),
+            "use_cosine_restarts": (bool, lambda x: True, "use_cosine_restarts must be boolean"),
+            "restart_period": (int, lambda x: x >= 0, "restart_period must be >= 0"),
+            "cyclic_lr": (bool, lambda x: True, "cyclic_lr must be boolean"),
+            "cycle_length": (int, lambda x: x >= 0, "cycle_length must be >= 0"),
         },
         "generation": {
             "max_tokens": (int, lambda x: x >= 0, "max_tokens must be >= 0 (0 = unlimited)"),
@@ -296,7 +321,16 @@ def training_config(steps: int = 100, lr: float = 0.05, batch_size: int = 16,
                     checkpoint_dir: str = "checkpoints",
                     auto_adjust: bool = True, auto_factor: float = 0.5,
                     auto_patience: int = 10, auto_clip_relax: bool = True,
-                    momentum: float = 0.9, rollback_window: int = 2) -> Dict[str, Any]:
+                    momentum: float = 0.9, rollback_window: int = 2,
+                    # New features
+                    use_frequency_neg_sampling: bool = False,
+                    n_negatives_start: Optional[int] = None,
+                    n_negatives_end: int = 64,
+                    n_negatives_decay: str = "exponential",
+                    use_cosine_restarts: bool = False,
+                    restart_period: int = 0,
+                    cyclic_lr: bool = False,
+                    cycle_length: int = 0) -> Dict[str, Any]:
     """Create a training config dict."""
     return {"training": {"steps": steps, "lr": lr, "batch_size": batch_size,
                          "n_negatives": n_negatives, "workers": workers,
@@ -308,7 +342,15 @@ def training_config(steps: int = 100, lr: float = 0.05, batch_size: int = 16,
                          "checkpoint_dir": checkpoint_dir,
                          "auto_adjust": auto_adjust, "auto_factor": auto_factor,
                          "auto_patience": auto_patience, "auto_clip_relax": auto_clip_relax,
-                         "momentum": momentum, "rollback_window": rollback_window}}
+                         "momentum": momentum, "rollback_window": rollback_window,
+                         "use_frequency_neg_sampling": use_frequency_neg_sampling,
+                         "n_negatives_start": n_negatives_start,
+                         "n_negatives_end": n_negatives_end,
+                         "n_negatives_decay": n_negatives_decay,
+                         "use_cosine_restarts": use_cosine_restarts,
+                         "restart_period": restart_period,
+                         "cyclic_lr": cyclic_lr,
+                         "cycle_length": cycle_length}}
 
 
 def generation_config(max_tokens: int = 0, min_tokens: int = 0, temperature: float = 0.8, 

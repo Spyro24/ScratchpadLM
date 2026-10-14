@@ -186,12 +186,21 @@ class ChatMixin:
         self._last_user_prompt = prompt
         self._append_message("user", prompt)
         self._stream_bubble = None
+        
+        # Get generation settings from config (moved from Chat to Settings tab)
+        gen = self.cfg["generation"]
+        max_tokens = gen["max_tokens"]
+        min_tokens = gen["min_tokens"]
+        temperature = gen["temperature"]
+        top_k = gen["top_k"]
+        top_p = gen["top_p"]
+        repetition_penalty = gen["repetition_penalty"]
         try:
-            stop_token_ids = [int(x.strip()) for x in self.stop_tokens_edit.text().split(",") if x.strip()]
-            stop_strings = [x.strip() for x in self.stop_strings_edit.text().split(",") if x.strip()]
-        except ValueError:
+            stop_token_ids = [int(x.strip()) for x in gen.get("stop_token_ids", [])]
+        except (ValueError, TypeError):
             stop_token_ids = []
-            stop_strings = []
+        stop_strings = gen.get("stop_strings", [])
+        
         # Snapshot model-selection state on the main thread (Qt widgets must
         # only be touched on the main thread).
         use_selected = bool(self.use_selected_model_cb.isChecked())
@@ -200,12 +209,12 @@ class ChatMixin:
             "Generating",
             self._generate_job,
             prompt,
-            normalize_cap(self.max_tokens_spin.value()),
-            self.min_tokens_spin.value(),
-            self.temperature_spin.value(),
-            self.top_k_spin.value(),
-            self.top_p_spin.value(),
-            self.rep_penalty_spin.value(),
+            normalize_cap(max_tokens),
+            min_tokens,
+            temperature,
+            top_k,
+            top_p,
+            repetition_penalty,
             stop_token_ids,
             stop_strings,
             use_selected,

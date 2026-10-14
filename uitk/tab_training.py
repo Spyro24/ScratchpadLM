@@ -76,6 +76,20 @@ class TrainingTabMixin:
         self.auto_adjust_cb = tk.Checkbutton(train_controls, text="Auto-adjust", variable=self.auto_adjust_var)
         self.auto_adjust_cb.pack(side="left", padx=5)
 
+        tk.Label(train_controls, text="Batch size:").pack(side="left", padx=(0, 5))
+        self.batch_size_var = tk.Entry(train_controls, width=6)
+        self.batch_size_var.insert(0, str(self.cfg["training"]["batch_size"]))
+        self.batch_size_var.pack(side="left", padx=(0, 10))
+
+        tk.Label(train_controls, text="Batch steps:").pack(side="left", padx=(0, 5))
+        self.batch_steps_var = tk.Entry(train_controls, width=4)
+        self.batch_steps_var.insert(0, str(self.cfg["training"].get("batch_steps", 1)))
+        self.batch_steps_var.pack(side="left", padx=(0, 10))
+
+        self.use_gpu_var = tk.BooleanVar(value=bool(self.cfg["training"].get("use_gpu", True)))
+        self.use_gpu_cb = tk.Checkbutton(train_controls, text="GPU", variable=self.use_gpu_var)
+        self.use_gpu_cb.pack(side="left", padx=5)
+
         # Progress bar row
         progress_row = tk.Frame(tab)
         progress_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))

@@ -86,8 +86,11 @@ def t_config_defaults():
     check(cfg["generation"]["repetition_penalty"] == 1.0)
     check(cfg["training"]["lr_scheduler"] == "cosine_warmup")
     check(cfg["training"]["grad_clip"] == 1.0)
-    check(cfg["training"]["momentum"] == 0.9)
+    check(cfg["training"]["momentum"] == 0.95)
     check(cfg["training"]["rollback_window"] == 2)
+    check(cfg["training"]["batch_steps"] == 1)
+    check(cfg["training"]["use_gpu"] is True)
+    check(cfg["training"]["optimizer"] == "sgd")
     check(cfg["training"]["early_stopping"] is True)
     check(cfg["generation"]["max_tokens"] == 0, "0 = unlimited by default")
     for bad in ({"generation": {"top_k": -1}},
@@ -205,7 +208,7 @@ def t_model_train_step():
     losses = []
     with contextlib.redirect_stdout(buf):
         train(model, ids, steps=6, lr=0.1, batch_size=8, n_negatives=32,
-              use_c=False, progress_cb=lambda d, t, l, *a: losses.append(l))
+              use_c=False, progress_cb=lambda d, t, l, *a, **k: losses.append(l))
     check(len(losses) == 6)
     check(all(math.isfinite(l) for l in losses))
 
@@ -603,7 +606,7 @@ def t_train_c_auto_adjust():
               grad_clip=1.0, auto_adjust=True, auto_patience=3,
               early_stopping=False, checkpoint_every=0,
               val_split=0.0, eval_every=0, use_c=True,
-              progress_cb=lambda d, t, l, *a: losses.append(l))
+              progress_cb=lambda d, t, l, *a, **k: losses.append(l))
     check(len(losses) == 20 and all(math.isfinite(l) for l in losses))
 
 
@@ -637,7 +640,7 @@ def t_train_rollback():
     model = tiny_model(vocab=len(tok.vocab))
     random.seed(0)
 
-    def poison_cb(done, total, loss, *a):
+    def poison_cb(done, total, loss, *a, **k):
         if done == 2:
             for p in model.params:
                 p.data = float("nan")
@@ -655,7 +658,7 @@ def t_train_rollback():
     model2 = tiny_model(vocab=len(tok.vocab))
     random.seed(0)
 
-    def poison_cb2(done, total, loss, *a):
+    def poison_cb2(done, total, loss, *a, **k):
         if done == 2:
             for p in model2.params:
                 p.data = float("nan")
@@ -681,7 +684,7 @@ def t_train_rollback_callback():
     seen = []
     losses = []
 
-    def poison_cb(done, total, loss, *a):
+    def poison_cb(done, total, loss, *a, **k):
         losses.append(loss)
         if done == 2:
             for p in model.params:
@@ -721,7 +724,7 @@ def t_train_grad_no_double_scaling():
             train(model, ids, steps=3, lr=0.05, batch_size=batch_size, n_negatives=32,
                   lr_scheduler="constant", warmup_steps=0, grad_clip=0.0, momentum=0.0,
                   auto_adjust=False, early_stopping=False, checkpoint_every=0,
-                  eval_every=0, use_c=False)
+                  eval_every=0, use_c=False, optimizer="sgd")
         after = [p.data for p in model.params]
         return sum(abs(b - a) for a, b in zip(before, after))
 
@@ -733,13 +736,12 @@ def t_train_grad_no_double_scaling():
           f"batch-averaged updates should be batch-size independent: {mv1:.4f} {mv16:.4f} {mv64:.4f}")
 
 
-@test("train: momentum converges faster than plain SGD")
 def t_train_momentum():
     from tinylm import train
     tok, ids = tiny_tok_and_ids()
     import io, contextlib
 
-    def final_loss(use_c, momentum):
+    def final_loss(use_c, momentum, optimizer="sgd"):
         model = tiny_model(vocab=len(tok.vocab))
         random.seed(0)
         losses = []
@@ -748,14 +750,61 @@ def t_train_momentum():
                   lr_scheduler="constant", warmup_steps=0, grad_clip=0.0,
                   momentum=momentum, auto_adjust=False,
                   early_stopping=False, checkpoint_every=0, eval_every=0,
-                  use_c=use_c, progress_cb=lambda d, t, l, *a: losses.append(l))
+                  use_c=use_c, optimizer=optimizer,
+                  progress_cb=lambda d, t, l, *a, **k: losses.append(l))
         return losses[0], losses[-1]
 
-    for use_c in (False, True):
+    for use_c in (False, "c"):
         first, plain = final_loss(use_c, 0.0)
         _, mom = final_loss(use_c, 0.9)
         check(mom < 0.7 * plain,
               f"momentum should converge faster (use_c={use_c}): {plain:.3f} -> {mom:.3f}")
+
+    # Test with explicit SGD optimizer (default is now APOLLO)
+    for use_c in (False, "c"):
+        first, plain = final_loss(use_c, 0.0, optimizer="sgd")
+        _, mom = final_loss(use_c, 0.9, optimizer="sgd")
+        check(mom < 0.7 * plain,
+              f"SGD momentum should converge faster (use_c={use_c}): {plain:.3f} -> {mom:.3f}")
+
+
+@test("train: adam/lion/muon/apollo optimizers reduce loss")
+def t_train_optimizers():
+    from tinylm import train
+    from tinylm.sched import MuonOptimizer
+    tok, ids = tiny_tok_and_ids()
+    import io, contextlib
+
+    def final_loss(optimizer, **kw):
+        model = tiny_model(vocab=len(tok.vocab))
+        random.seed(0)
+        losses = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            r = train(model, ids, steps=15, lr=0.1, batch_size=8, n_negatives=16,
+                      lr_scheduler="constant", warmup_steps=0, grad_clip=0.0,
+                      auto_adjust=False, early_stopping=False, checkpoint_every=0,
+                      eval_every=0, use_c=False, optimizer=optimizer,
+                      progress_cb=lambda d, t, l, *a, **k: losses.append(l), **kw)
+        return r, losses[0], losses[-1]
+
+    for opt in ("adam", "lion", "muon", "apollo", "apollo_mini"):
+        r, first, last = final_loss(opt)
+        check(last < first, f"{opt} should reduce loss: {first:.3f} -> {last:.3f}")
+        check(r["steps_done"] == 15, f"{opt} should run all steps, got {r}")
+
+    # Muon must pick up the 2D hidden matrices and leave embeddings to Adam.
+    model = tiny_model(vocab=len(tok.vocab))
+    mo = MuonOptimizer(model.params, tensors=model.get_tensors(), max_dim=64)
+    check(len(mo.groups) >= 1, "Muon should detect at least one matrix")
+    check(len(mo.muon_idx) > 0 and len(mo.muon_idx) < len(model.params),
+          "Muon should cover a strict subset (matrices only)")
+
+    # Unknown optimizer names fail loudly instead of silently running SGD.
+    try:
+        final_loss("adamm")
+        raise AssertionError("expected ValueError for unknown optimizer")
+    except ValueError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +816,7 @@ def t_parallel_autoadjust():
     import io, contextlib
     from tinylm import train_parallel
     tok, ids = tiny_tok_and_ids()
+    random.seed(0)
     kw = dict(lr=0.0, batch_size=4, n_negatives=8, workers=2, steps=6,
               auto_patience=2)
     buf = io.StringIO()
@@ -804,7 +854,7 @@ def t_train_multicore():
         r = train_multicore(model, ids, steps=4, lr=0.05, batch_size=8,
                             n_negatives=32, workers=2, grad_clip=1.0,
                             momentum=0.9, rollback_window=2,
-                            progress_cb=lambda d, t, l, *a: losses.append(l))
+                            progress_cb=lambda d, t, l, *a, **k: losses.append(l))
     for k in ("cancelled", "initial_loss", "best_loss", "final_loss",
               "steps_done", "rollbacks"):
         check(k in r, f"missing {k} in {r}")
@@ -826,7 +876,7 @@ def t_train_multicore():
     random.seed(0)
     seen = []
 
-    def poison_cb3(done, total, loss, *a):
+    def poison_cb3(done, total, loss, *a, **k):
         if done == 2:
             for p in model3.params:
                 p.data = float("nan")
@@ -843,6 +893,193 @@ def t_train_multicore():
           "multicore did not restore finite weights after total divergence")
 
 
+@test("train_population: replicas train, winner is broadcast")
+def t_train_population():
+    from tinylm import train_population
+    tok, ids = tiny_tok_and_ids()
+    model = tiny_model(vocab=len(tok.vocab))
+    import io, contextlib
+    losses = []
+    with contextlib.redirect_stdout(io.StringIO()):
+        r = train_population(model, ids, steps=4, replicas=2, select_every=2,
+                             workers=2, lr=0.05, batch_size=8, n_negatives=16,
+                             optimizer="sgd", auto_adjust=False, use_c=False,
+                             seed=1,
+                             progress_cb=lambda d, t, l, *a, **k: losses.append(l))
+    for k in ("cancelled", "initial_loss", "best_loss", "final_loss",
+              "steps_done", "rollbacks", "generations", "replicas",
+              "kernel_used"):
+        check(k in r, f"missing {k} in {r}")
+    check(r["cancelled"] is False and r["steps_done"] == 4)
+    check(r["generations"] == 2 and r["replicas"] == 2)
+    check(len(losses) == 2 and all(math.isfinite(l) for l in losses))
+    check(r["best_loss"] is not None and math.isfinite(r["best_loss"]))
+    check(all(math.isfinite(p.data) for p in model.params))
+    # Bad args fail loudly.
+    try:
+        train_population(model, ids, steps=4, replicas=0)
+        raise AssertionError("expected ValueError for replicas=0")
+    except ValueError:
+        pass
+    try:
+        train_population(model, ids, steps=4, select_every=0)
+        raise AssertionError("expected ValueError for select_every=0")
+    except ValueError:
+        pass
+
+
+@test("train_parallel: batch steps accumulate + GPU routing")
+def t_parallel_batch_gpu():
+    from tinylm import train_parallel
+    tok, ids = tiny_tok_and_ids()
+    import io, contextlib
+    # batch_steps=2 doubles the windows per update; loss must stay finite
+    # and the run must complete all steps.
+    model = tiny_model(vocab=len(tok.vocab))
+    random.seed(0)
+    losses = []
+    with contextlib.redirect_stdout(io.StringIO()):
+        r = train_parallel(model, ids, steps=4, lr=0.05, batch_size=8,
+                           n_negatives=16, workers=2, batch_steps=2,
+                           auto_adjust=False, use_gpu=False,
+                           progress_cb=lambda d, t, l, *a, **k: losses.append(l))
+    check(r["steps_done"] == 4 and len(losses) == 4)
+    check(all(math.isfinite(l) for l in losses))
+    check(r["best_loss"] is not None and math.isfinite(r["best_loss"]))
+    try:
+        train_parallel(model, ids, steps=2, batch_steps=0)
+        raise AssertionError("expected ValueError for batch_steps=0")
+    except ValueError:
+        pass
+    # GPU routing: completes with finite loss whether or not a device exists
+    # (per-task fallback to C/Python); kernel label reflects the request.
+    model2 = tiny_model(vocab=len(tok.vocab))
+    random.seed(0)
+    with contextlib.redirect_stdout(io.StringIO()):
+        rg = train_parallel(model2, ids, steps=2, lr=0.05, batch_size=4,
+                            n_negatives=8, workers=2, batch_steps=1,
+                            auto_adjust=False, use_gpu=True)
+    check(rg["steps_done"] == 2)
+    check(rg["best_loss"] is not None and math.isfinite(rg["best_loss"]))
+    check(rg["kernel_used"].startswith("parallel/"))
+    check(all(math.isfinite(p.data) for p in model2.params))
+
+
+@test("rwkv: sampled loss projects the hidden state")
+def t_rwkv_sampled_loss_hidden():
+    from tinylm import RWKVModel
+    m = RWKVModel(vocab_size=40, ctx=6, emb=8, hidden=8, n_layers=1, seed=0)
+    ctx_ids = [1, 2, 3, 4]
+    tgt, negs = 5, [7, 8, 9, 10]
+    L, _ = m.sampled_loss(ctx_ids, tgt, 4, 40, negatives=negs)
+    check(math.isfinite(L.data))
+    for p in m.params:
+        p.grad = 0.0
+    L.backward()
+    # only candidate out-proj rows receive grads (no truncation leakage)
+    used = set([tgt] + negs)
+    for c in range(40):
+        row = [m.out_proj[c][i].grad for i in range(8)]
+        if c in used:
+            check(any(v != 0.0 for v in row), f"candidate row {c} got no grad")
+        else:
+            check(all(v == 0.0 for v in row), f"row {c} leaked grads")
+
+
+@test("rwkv: CUDA kernels match CPU + train() runs on GPU")
+def t_rwkv_cuda_parity():
+    import accel_rwkv
+    if not accel_rwkv._rwkv_available():
+        print("    (libtinylm_rwkv.so not built - run ./build.sh - skipping)")
+        return
+    import io, contextlib
+    from tinylm import RWKVModel, train
+    from tinylm.training import _flat_data
+    V, Ctx, E, H, L = 24, 6, 8, 8, 1
+    random.seed(1)
+    m = RWKVModel(vocab_size=V, ctx=Ctx, emb=E, hidden=H, n_layers=L, seed=3)
+    random.seed(7)
+    windows, negs, ctxs, tgts, nps = [], [], [], [], []
+    for _ in range(3):
+        ids = [random.randrange(V) for _ in range(60)]
+        i = random.randrange(40)
+        c = ids[i:i + Ctx]
+        t = ids[i + Ctx]
+        windows.extend(c)
+        windows.append(t)
+        n = [random.randrange(V) for _ in range(4)]
+        negs.extend(n)
+        ctxs.append(c)
+        tgts.append(t)
+        nps.append(n)
+    flat = _flat_data(m)
+    # batch grads parity (summed)
+    loss_g, grads_g = accel_rwkv.rwkv_batch_grads(
+        flat, windows, V, E, H, L, Ctx, 4, seed=0, negatives=negs)
+    for p in m.params:
+        p.grad = 0.0
+    tot = 0.0
+    for c, t, n in zip(ctxs, tgts, nps):
+        Lc, _ = m.sampled_loss(c, t, 4, V, negatives=n)
+        tot += Lc.data
+        Lc.backward()
+    check(abs(loss_g - tot) < 1e-9, f"rwkv loss mismatch: {loss_g} vs {tot}")
+    cpu_g = [p.grad for p in m.params]
+    check(max(abs(a - b) for a, b in zip(grads_g, cpu_g)) < 1e-9,
+          "rwkv grad mismatch")
+    # train step parity (averaged + clipped + momentum)
+    accel_rwkv.rwkv_reset_state()
+    loss_s, flat_s = accel_rwkv.rwkv_train_step(
+        list(flat), windows, V, E, H, L, Ctx, 4, 0.05, 123,
+        momentum=0.9, max_norm=1.0, negatives=negs)
+    for p, v in zip(m.params, flat):
+        p.data = v
+        p.grad = 0.0
+    from tinylm.sched import clip_grads
+    Ls = [m.sampled_loss(c, t, 4, V, negatives=n)[0]
+          for c, t, n in zip(ctxs, tgts, nps)]
+    loss = Ls[0]
+    for x in Ls[1:]:
+        loss = loss + x
+    loss = loss * (1.0 / 3)
+    loss.backward()
+    clip_grads(m.params, 1.0)
+    for p in m.params:
+        p.data -= 0.05 * p.grad  # fresh velocity is just g (momentum=0.9*0+g)
+    check(abs(loss_s - loss.data) < 1e-9, "rwkv train-step loss mismatch")
+    check(max(abs(a - b) for a, b in zip(flat_s, [p.data for p in m.params])) < 1e-9,
+          "rwkv train-step params mismatch")
+    # generate parity
+    lg = accel_rwkv.rwkv_generate_step(flat, [1, 2, 3, 4, 5], V, E, H, L, Ctx)
+    for p, v in zip(m.params, flat):
+        p.data = v
+    lc = m.fast_logits([1, 2, 3, 4, 5])
+    check(max(abs(a - b) for a, b in zip(lg, lc)) < 1e-9, "rwkv generate mismatch")
+    # train() end-to-end on the GPU path + auto + non-SGD fallback
+    ids = [random.Random(0).randrange(V) for _ in range(400)]
+    mg = RWKVModel(vocab_size=V, ctx=Ctx, emb=E, hidden=2 * H, n_layers=L, seed=5)
+    with contextlib.redirect_stdout(io.StringIO()):
+        r = train(mg, ids, steps=2, lr=0.05, batch_size=4, n_negatives=8,
+                  optimizer="sgd", auto_adjust=False, neg_sample_seed=123,
+                  use_c="cuda")
+    check(r["kernel_used"] == "CUDA", f"expected CUDA, got {r.get('kernel_used')}")
+    check(r["steps_done"] == 2 and math.isfinite(r["best_loss"]))
+    check(all(math.isfinite(p.data) for p in mg.params))
+    ma = RWKVModel(vocab_size=V, ctx=Ctx, emb=E, hidden=2 * H, n_layers=L, seed=5)
+    with contextlib.redirect_stdout(io.StringIO()):
+        ra = train(ma, ids, steps=2, lr=0.05, batch_size=4, n_negatives=8,
+                   optimizer="sgd", auto_adjust=False, neg_sample_seed=123,
+                   val_split=0.0, early_stopping=False, eval_every=0,
+                   checkpoint_every=0)
+    check(ra["kernel_used"] == "CUDA", f"expected auto CUDA, got {ra.get('kernel_used')}")
+    mf = RWKVModel(vocab_size=V, ctx=Ctx, emb=E, hidden=2 * H, n_layers=L, seed=5)
+    with contextlib.redirect_stdout(io.StringIO()):
+        rf = train(mf, ids, steps=2, lr=0.05, batch_size=4, n_negatives=8,
+                   optimizer="adam", auto_adjust=False, neg_sample_seed=123,
+                   use_c="cuda")
+    check(rf["steps_done"] == 2, "RWKV adam fallback did not finish")
+
+
 @test("train_parallel: runs with grad clip + momentum")
 def t_train_parallel():
     from tinylm import train_parallel
@@ -853,7 +1090,7 @@ def t_train_parallel():
     with contextlib.redirect_stdout(io.StringIO()):
         train_parallel(model, ids, steps=4, lr=0.05, batch_size=8,
                        n_negatives=32, workers=2, grad_clip=1.0, momentum=0.9,
-                       progress_cb=lambda d, t, l, *a: losses.append(l))
+                       progress_cb=lambda d, t, l, *a, **k: losses.append(l))
     check(len(losses) == 4 and all(math.isfinite(l) for l in losses))
 
 
@@ -976,6 +1213,61 @@ def t_c_momentum_zero():
     check(d2 > 0.5 * d1, "momentum should keep the step size up (velocity)")
 
 
+@test("c kernel: Adam/Lion match the Python optimizers")
+def t_c_opt_parity():
+    import accel
+    if not accel.AVAILABLE:
+        print("    (accel not built - run ./build.sh - skipping)")
+        return
+    from tinylm.sched import AdamOptimizer, LionOptimizer
+    tok, ids = tiny_tok_and_ids()
+    from tinylm import _flat_data
+    random.seed(9)
+    m = tiny_model(vocab=len(tok.vocab))
+    dims = (len(m.C), m.ctx, len(m.C[0]), len(m.b1))
+    windows, negs = [], []
+    for _ in range(4):
+        i = random.randrange(len(ids) - m.ctx - 1)
+        windows.extend(ids[i:i + m.ctx])
+        windows.append(ids[i + m.ctx])
+        negs.extend(random.randrange(len(m.C)) for _ in range(8))
+    flat0 = _flat_data(m)
+    ctxs = [windows[i * (m.ctx + 1):i * (m.ctx + 1) + m.ctx] for i in range(4)]
+    tgts = [windows[i * (m.ctx + 1) + m.ctx] for i in range(4)]
+    nps = [negs[i * 8:(i + 1) * 8] for i in range(4)]
+    for opt, cls, kw in (("adam", AdamOptimizer, dict(lr_scale=0.5)),
+                         ("lion", LionOptimizer, dict(lr_scale=0.1))):
+        accel.reset_momentum()
+        lc, fc = accel.train_step_opt(
+            list(flat0), list(windows), dims, 8, 0.05, 1234,
+            momentum=0.0, max_norm=0.0, negatives=list(negs),
+            optimizer=opt,
+            beta1=0.9, beta2=0.999 if opt == "adam" else 0.99,
+            eps=1e-8, weight_decay=0.01, lr_scale=kw["lr_scale"])
+        for p, d in zip(m.params, flat0):
+            p.data = d
+            p.grad = 0.0
+        loss = None
+        for c, t, n in zip(ctxs, tgts, nps):
+            L = m.sampled_loss(c, t, 8, len(m.C), negatives=n)
+            loss = L if loss is None else loss + L
+        loss = loss * (1.0 / 4)
+        for p in m.params:
+            p.grad = 0.0
+        loss.backward()
+        o = cls(m.params, lr=0.05, weight_decay=0.01, **kw)
+        o.step()
+        check(abs(lc - loss.data) < 1e-9, f"C {opt} loss mismatch: {lc} vs {loss.data}")
+        check(max(abs(a - b) for a, b in zip(fc, [p.data for p in m.params])) < 1e-9,
+              f"C {opt} params mismatch")
+    try:
+        accel.train_step_opt(list(flat0), list(windows), dims, 8, 0.05, 1,
+                             optimizer="muon")
+        raise AssertionError("expected CAccelError for unsupported optimizer")
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # registries / model management / tasks / tokenizer manager
 # ---------------------------------------------------------------------------
@@ -1014,8 +1306,8 @@ def t_router_training_format():
     ex = RouterTrainingExample(
         prompt="write python function",
         subtasks=[
-            {"model": "tiny-code", "prompt": "def fib(n): return n"},
-            {"model": "tiny-prose", "prompt": "This calculates fib"}
+            {"model": "tinyPython", "prompt": "def fib(n): return n"},
+            {"model": "tinyGPM", "prompt": "This calculates fib"}
         ]
     )
     
@@ -1025,8 +1317,8 @@ def t_router_training_format():
     
     check(decoded.prompt.strip() == ex.prompt.strip())
     check(len(decoded.subtasks) == 2)
-    check(decoded.subtasks[0]["model"] == "tiny-code")
-    check(decoded.subtasks[1]["model"] == "tiny-prose")
+    check(decoded.subtasks[0]["model"] == "tinyPython")
+    check(decoded.subtasks[1]["model"] == "tinyGPM")
     
     # Test create_router_training_data
     ids = create_router_training_data(tok, target_vocab_size, ctx, [ex, ex])
@@ -1212,16 +1504,16 @@ def t_planner():
     from scratchpad import TaskPad, TaskType, model_to_task_type, plan
     from model_mgmt import ModelCatalog, ModelSpec
     # Dynamic mapping works for any model count/naming, not a fixed list
-    check(model_to_task_type("tiny-code") == TaskType.CODE)
+    check(model_to_task_type("tinyPython") == TaskType.CODE)
     check(model_to_task_type("my-embed") == TaskType.EMBED)
-    check(model_to_task_type("tiny-prose") == TaskType.GENERATE)
+    check(model_to_task_type("tinyGPM") == TaskType.GENERATE)
     check(model_to_task_type("tiny-finance") == TaskType.CUSTOM)
     check(model_to_task_type(None) == TaskType.CUSTOM)
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "taskpad.jsonl")
         pad = TaskPad(path=path)
         catalog = ModelCatalog(os.path.join(d, "catalog.json"))
-        catalog.add(ModelSpec(name="tiny-code", path="m.tlm",
+        catalog.add(ModelSpec(name="tinyPython", path="m.tlm",
                               domain_keywords=["code"], param_count=100,
                               config={}))
 
@@ -1229,7 +1521,7 @@ def t_planner():
             def split(self, prompt, tokenizer, max_subtasks=4, catalog=None):
                 ids = [1, 2, 3]
                 return [
-                    {"model": "tiny-code", "prompt": prompt, "context_tokens": ids},
+                    {"model": "tinyPython", "prompt": prompt, "context_tokens": ids},
                     {"model": "tiny-finance", "prompt": "other", "context_tokens": ids},
                     {"prompt": "no model key", "context_tokens": ids},
                 ]
@@ -1237,7 +1529,7 @@ def t_planner():
         tasks = plan("write code", FakeRouter(), tokenizer=None, taskpad=pad,
                      catalog=catalog)
         check(len(tasks) == 3)
-        check(tasks[0].type == TaskType.CODE and tasks[0].model_name == "tiny-code")
+        check(tasks[0].type == TaskType.CODE and tasks[0].model_name == "tinyPython")
         check(tasks[1].type == TaskType.CUSTOM)
         check(tasks[2].type == TaskType.CUSTOM and tasks[2].model_name is None)
         check(tasks[0].metadata["context_tokens"] == [1, 2, 3])
@@ -1262,7 +1554,7 @@ def t_router_decompose():
     router = Router(cfg, seed=0)
     ex = RouterTrainingExample(
         prompt="write python function",
-        subtasks=[{"model": "tiny-code", "prompt": "def fib(n): return n"}])
+        subtasks=[{"model": "tinyPython", "prompt": "def fib(n): return n"}])
     with contextlib.redirect_stdout(io.StringIO()):
         train_router(router, tok, [ex], steps=2, lr=0.05, batch_size=2,
                      n_negatives=8, use_c=False, early_stopping=False,
@@ -1276,18 +1568,18 @@ def t_router_decompose():
     from model_mgmt import ModelCatalog, ModelSpec
     with tempfile.TemporaryDirectory() as d:
         code_only = ModelCatalog(os.path.join(d, "c1.json"))
-        code_only.add(ModelSpec(name="tiny-code", path="x",
+        code_only.add(ModelSpec(name="tinyPython", path="x",
                                 domain_keywords=["code"], param_count=1,
                                 config={}))
         check(router.decompose("write python function", tok, max_subtasks=2,
                                max_tokens=20, catalog=code_only) == [])
         prose = ModelCatalog(os.path.join(d, "c2.json"))
-        prose.add(ModelSpec(name="tiny-prose", path="x",
+        prose.add(ModelSpec(name="tinyGPM", path="x",
                             domain_keywords=["write"], param_count=1,
                             config={}))
         kept = router.decompose("write python function", tok, max_subtasks=2,
                                 max_tokens=20, catalog=prose)
-        check(len(kept) == 1 and kept[0]["model"] == "tiny-prose")
+        check(len(kept) == 1 and kept[0]["model"] == "tinyGPM")
     # plan() prefers decompose() when the router offers it ...
     with tempfile.TemporaryDirectory() as d:
         pad = TaskPad(path=os.path.join(d, "taskpad.jsonl"))
@@ -1297,7 +1589,7 @@ def t_router_decompose():
                 self.called = False
             def decompose(self, prompt, tokenizer, max_subtasks=4, catalog=None):
                 self.called = True
-                return [{"model": "tiny-reason", "prompt": "p",
+                return [{"model": "tinyGPM", "prompt": "p",
                          "context_tokens": [7]}]
             def split(self, *a, **k):
                 raise AssertionError("split should not be called")
@@ -1305,14 +1597,14 @@ def t_router_decompose():
         mr = ModelRouter()
         tasks = plan("x", mr, tokenizer=object(), taskpad=pad)
         check(mr.called and len(tasks) == 1)
-        check(tasks[0].type == TaskType.REASON)
+        check(tasks[0].type == TaskType.GENERATE)
         check(tasks[0].metadata["context_tokens"] == [7])
         # ... and falls back to split() when decompose() fails
         class BrokenRouter:
             def decompose(self, prompt, tokenizer, max_subtasks=4, catalog=None):
                 raise RuntimeError("no weights")
             def split(self, prompt, tokenizer, max_subtasks=4, catalog=None):
-                return [{"model": "tiny-code", "prompt": prompt,
+                return [{"model": "tinyPython", "prompt": prompt,
                          "context_tokens": [1]}]
 
         tasks = plan("y", BrokenRouter(), tokenizer=object(), taskpad=pad)
@@ -1395,7 +1687,8 @@ def t_taskpad_executors():
 def t_router_train():
     from tinylm import Router, RouterConfig, train_router, generate_router_training_data
     from tokenizer import BPETokenizer
-    
+    random.seed(0)
+
     tok = BPETokenizer()
     corpus = ("write a python function to calculate fibonacci. " * 50 +
               "solve the math equation x^2 + 2x = 0. " * 50 +
@@ -1414,7 +1707,7 @@ def t_router_train():
     losses = []
     with contextlib.redirect_stdout(io.StringIO()):
         train_router(router, tok, examples, steps=4, lr=0.05, batch_size=4, n_negatives=16,
-                     use_c=False, progress_cb=lambda d, t, l, *a: losses.append(l))
+                     use_c=False, progress_cb=lambda d, t, l, *a, **k: losses.append(l))
     
     check(len(losses) == 4)
     check(all(math.isfinite(l) for l in losses))
@@ -1555,6 +1848,10 @@ def t_ui_smoke():
         # Training cancel button + use-selected-model checkbox exist
         check(hasattr(app, "cancel_train_btn"))
         check(hasattr(app, "use_selected_model"))
+        # Batched-compute menu controls exist
+        check(hasattr(app, "batch_size_var") and hasattr(app, "batch_steps_var"))
+        check(hasattr(app, "use_gpu_var"))
+        check(app.batch_steps_var.get() == "1")
         # Chat holds conversation only: operational message goes to logs, not chat
         app._log_unified("system", "smoke operational entry")
         check("smoke operational entry" not in app.history.get("1.0", "end"))
@@ -1627,8 +1924,9 @@ def t_ui_autoadjust():
     try:
         check(hasattr(win, "auto_adjust_cb"))
         check(win.auto_adjust_cb.isChecked() is True)
-        check(win.max_tokens_spin.minimum() == 0)
-        check(win.max_tokens_spin.value() == win.cfg["generation"]["max_tokens"] == 0)
+        # Generation settings moved to Settings tab
+        check(("generation", "max_tokens") in win._settings_entries)
+        check(("generation", "min_tokens") in win._settings_entries)
     finally:
         win.close()
         win.deleteLater()
@@ -1702,16 +2000,24 @@ def t_ui_qt_smoke():
     win = MainWindow()
     try:
         tabs = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-        check(tabs == ["Chat", "Training", "Model Info", "Admin", "Settings", "Logs"], tabs)
-        # Generation controls loaded from config (parity with Tkinter app)
-        check(win.max_tokens_spin.value() == win.cfg["generation"]["max_tokens"])
-        check(win.min_tokens_spin.value() == win.cfg["generation"]["min_tokens"])
-        check(win.top_k_spin.value() == win.cfg["generation"]["top_k"])
+        check(tabs == ["Chat", "Training", "Tasks", "Model Info", "Admin", "Settings", "Logs"], tabs)
+        # Tasks tab shows TaskPad + Scratchpad contents
+        check(hasattr(win, "task_list") and hasattr(win, "scratch_list"))
+        win.refresh_tasks_tab()
+        # Generation controls loaded from config (now in Settings tab)
+        check(("generation", "max_tokens") in win._settings_entries)
+        check(("generation", "min_tokens") in win._settings_entries)
+        check(("generation", "top_k") in win._settings_entries)
         check(("training", "grad_clip") in win._settings_entries)
         check(("training", "patience") in win._settings_entries)
         # Training cancel + use-selected-model controls exist
         check(hasattr(win, "cancel_train_btn"))
         check(hasattr(win, "use_selected_model_cb"))
+        # Batched-compute menu controls exist and mirror config defaults
+        check(hasattr(win, "batch_size_spin") and hasattr(win, "batch_steps_spin"))
+        check(hasattr(win, "use_gpu_cb"))
+        check(win.batch_steps_spin.value() == 1)
+        check(win.use_gpu_cb.isChecked() is True)
         # Chat session + bubble + thumbs feedback
         # Chat holds conversation only (user/assistant); operational logs go to Logs tab
         win.append_history("user", "hello")

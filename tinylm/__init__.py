@@ -18,6 +18,7 @@ from tinylm.serialization import (
     _dequantize_rows,
 )
 from tinylm.models_tiny import TinyLM
+from tinylm.models_linear import RWKVModel
 from tinylm.transformer import (
     layer_norm,
     fast_layer_norm,
@@ -90,6 +91,7 @@ from tinylm.training import (
 from tinylm.parallel import (
     train_parallel,
     train_multicore,
+    train_population,
     _WorkerState,
     _init_worker,
     _worker_grads_v2,
@@ -118,7 +120,7 @@ __all__ = [
     "_quantize_rows", "_dequantize_rows",
     "_MODEL_SLOTS", "_stable_hash", "_model_slot", "_ensure_vocab_size",
     "BOILERPLATE_PATTERNS", "DOMAIN_KEYWORDS_CLEAN",
-    "TinyLM",
+    "TinyLM", "RWKVModel",
     "layer_norm", "fast_layer_norm", "attention", "fast_attention",
     "feed_forward", "fast_feed_forward", "TransformerBlock",
     "RouterConfig", "Router",
@@ -136,7 +138,7 @@ __all__ = [
     "_flat_params", "_set_flat_params",
     "train", "_train_c", "_accel_available", "_flat_data",
     "TrainingStats", "apply_stats", "best_path", "load_best", "train_with_stats", "STATS_PATH", "BEST_DIR",
-    "train_parallel", "train_multicore", "_WorkerState", "_init_worker", "_worker_grads_v2",
+    "train_parallel", "train_multicore", "train_population", "_WorkerState", "_init_worker", "_worker_grads_v2",
     "fast_logits", "_sample_next_token", "generate", "generate_with_preview",
     "normalize_cap",
 ]

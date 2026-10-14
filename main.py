@@ -240,7 +240,7 @@ def cmd_router_train(args):
     print(f"Training router for {args.steps} steps...")
     start = time.time()
 
-    def progress_cb(done, total, loss, val_loss=None, lr=None):
+    def progress_cb(done, total, loss, val_loss=None, lr=None, **aa):
         if done % 50 == 0 or done == total:
             vloss = f" val_loss={val_loss:.4f}" if val_loss else ""
             print(f"  Step {done}/{total} loss={loss:.4f}{vloss} lr={lr:.6f}")
@@ -436,7 +436,7 @@ def cmd_train(args):
     if len(ids) <= model.ctx:
         raise ValueError(f"Need more than {model.ctx} tokens, got {len(ids)}")
 
-    def progress_cb(done, total, loss, val_loss=None, lr=None):
+    def progress_cb(done, total, loss, val_loss=None, lr=None, **aa):
         if done % 50 == 0 or done == total:
             vloss = f" val_loss={val_loss:.4f}" if val_loss else ""
             print(f"  Step {done}/{total} loss={loss:.4f}{vloss} lr={lr:.6f}")

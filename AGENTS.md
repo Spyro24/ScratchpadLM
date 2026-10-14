@@ -64,6 +64,7 @@ python3 main.py [--cli]             # GUI (auto toolkit) / CLI
 python3 -m tinylm                   # train-from-scratch demo
 python3 config.py tokenizer.py      # self-tests
 ./build.sh                          # rebuild C kernel after editing csrc/train_kernel.c
+python3 clean.py --dry-run          # preview artifact removal (*.so, __pycache__); --all adds checkpoints/stats
 ```
 
 ## Anti-Patterns

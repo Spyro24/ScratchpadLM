@@ -1,0 +1,1 @@
+{"prompt": "The derivative of x^2 is 2x\n\nThe integral of sin(x) is -cos(x)\n\nMatrix multiplication: (AB)_{ij} = sum_k A_{ik}B_{kj}", "subtasks": [{"model": "tiny-prose", "prompt": "The derivative of x^2 is 2x\n\nThe integral of sin(x) is -cos(x)\n\nMatrix multiplication: (AB)_{ij} = sum_k A_{ik}B_{kj}"}]}

@@ -50,6 +50,7 @@ from tinylm import (
     train_parallel,
     train_router,
 )
+from tinylm.training import _cuda_available, _accel_available
 from autotrain import RatingCollector
 from config import Config
 from model_mgmt import MODEL_CATALOG, ModelCreator, ModelLoader
@@ -83,6 +84,7 @@ class ShellMixin:
         outer.addWidget(self.tabs)
         self.tabs.addTab(self._build_chat_tab(), "Chat")
         self.tabs.addTab(self._build_training_tab(), "Training")
+        self.tabs.addTab(self._build_tasks_tab(), "Tasks")
         self.tabs.addTab(self._build_model_info_tab(), "Model Info")
         self.tabs.addTab(self._build_admin_tab(), "Admin")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
@@ -91,6 +93,39 @@ class ShellMixin:
         self.status_label = QLabel("Ready")
         sb = QStatusBar()
         sb.addWidget(self.status_label, 1)
+        
+        # Determine which kernel will be used at startup
+        use_c = self.cfg["training"].get("use_c", None)
+        advanced_features = (
+            False or  # val_ids
+            0.0 > 0 or  # val_split
+            0 > 0 or  # eval_every
+            False or  # early_stopping
+            0 > 0 or  # checkpoint_every
+            False or  # cancel_callback
+            False  # optimizer in ("apollo", "apollo_mini")
+        )
+        if use_c is None:
+            use_c = _cuda_available() and not advanced_features
+        if use_c == "cuda":
+            kernel_name = "CUDA" if _cuda_available() and not advanced_features else "Python (CUDA fallback)"
+        elif use_c == "c":
+            kernel_name = "C" if _accel_available() and not advanced_features else "Python (C fallback)"
+        elif use_c:
+            if _cuda_available() and not advanced_features:
+                kernel_name = "CUDA (auto)"
+            elif _accel_available() and not advanced_features:
+                kernel_name = "C (auto)"
+            else:
+                kernel_name = "Python (auto)"
+        else:
+            kernel_name = "Python"
+        
+        # Kernel indicator (permanent widget on the right)
+        self.kernel_indicator = QLabel(f"Kernel: {kernel_name}")
+        self.kernel_indicator.setStyleSheet("color: #888; padding-right: 8px;")
+        sb.addPermanentWidget(self.kernel_indicator)
+        
         self.setStatusBar(sb)
 
     # -- Chat tab (sidebar list | chat area | input + send) --

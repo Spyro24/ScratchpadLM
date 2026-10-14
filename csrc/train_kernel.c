@@ -33,6 +33,10 @@
      double *logit;
      int *cand;
      double *vel;      /* momentum velocity, one entry per param */
+    double *opt_m;      /* Adam/Lion first moment (optimizer 1/2), per param */
+    double *opt_v;      /* Adam second moment (optimizer 1), per param */
+    size_t opt_len;     /* length of opt_m/opt_v (== vel_len when allocated) */
+    unsigned long long opt_step; /* update count (Adam bias correction) */
      size_t xlen;
      size_t n_cand;
      size_t hidden;
@@ -58,14 +62,19 @@
          return;
      }
      
-     // Free old buffers if sizes changed
-     if (b->initialized) {
-         free(b->x); free(b->dx); free(b->h); free(b->dh);
-         free(b->logit); free(b->cand); free(b->vel);
-         b->vel = NULL;
-         b->vel_len = 0;
-     }
-     
+    // Free old buffers if sizes changed
+    if (b->initialized) {
+        free(b->x); free(b->dx); free(b->h); free(b->dh);
+        free(b->logit); free(b->cand); free(b->vel);
+        free(b->opt_m); free(b->opt_v);
+        b->vel = NULL;
+        b->opt_m = NULL;
+        b->opt_v = NULL;
+        b->vel_len = 0;
+        b->opt_len = 0;
+        b->opt_step = 0;
+    }
+
      b->xlen = (size_t)ctx * emb;
      b->n_cand = (size_t)n_negatives + 1;
      b->hidden = (size_t)hidden;
@@ -270,6 +279,23 @@ int tl_batch_loss_grads(const double *params, const int *windows,
     return rc;
 }
 
+static int tl_ensure_opt(size_t n_params) {
+    /* (Re)allocate zeroed Adam/Lion moment buffers for n_params. */
+    tl_Buffers *b = &tl_buffers;
+    if (b->opt_m && b->opt_v && b->opt_len == n_params) return 0;
+    free(b->opt_m); free(b->opt_v);
+    b->opt_m = calloc(n_params, sizeof(double));
+    b->opt_v = calloc(n_params, sizeof(double));
+    if (!b->opt_m || !b->opt_v) {
+        free(b->opt_m); free(b->opt_v);
+        b->opt_m = NULL; b->opt_v = NULL; b->opt_len = 0;
+        return -3;
+    }
+    b->opt_len = n_params;
+    b->opt_step = 0;
+    return 0;
+}
+
 /* Exported: drop momentum state (velocity) for the calling thread.
  * Called once per training run so a freshly-created model never inherits
  * velocity left over from a previous run with the same dimensions. */
@@ -278,14 +304,24 @@ void tl_reset_velocity(void) {
     if (b->initialized && b->vel) {
         memset(b->vel, 0, b->vel_len * sizeof(double));
     }
+    if (b->opt_m) {
+        memset(b->opt_m, 0, b->opt_len * sizeof(double));
+    }
+    if (b->opt_v) {
+        memset(b->opt_v, 0, b->opt_len * sizeof(double));
+    }
+    b->opt_step = 0;
 }
 
 /* Exported: one fused training step with optional gradient clipping
  * Steps on the batch-averaged gradient (matching ai.py's train()):
  *   g = grad_sum / batch                       (optionally clipped by global norm)
  *   v = momentum * v + g ; params -= lr * v    (momentum == 0 -> plain SGD)
- * Negatives are sampled internally. Returns 0 on success, see codes above. */
+ * If `negatives` is non-NULL, it must point to batch * n_negatives pre-sampled
+ * negative token IDs (flat array). Otherwise negatives are sampled internally.
+ * Returns 0 on success, see codes above. */
 int tl_train_step(double *params, const int *windows,
+                  const int *negatives,
                   int batch, int ctx, int vocab, int emb, int hidden,
                   int n_negatives, double lr, double momentum,
                   unsigned long long seed,
@@ -297,7 +333,7 @@ int tl_train_step(double *params, const int *windows,
     if (!grads) return -3;
     uint64_t rng = (uint64_t)seed ^ 0x9E3779B97F4A7C15ULL;
     if (rng == 0) rng = 0x9E3779B97F4A7C15ULL;
-    int rc = core(params, windows, NULL, batch, ctx, vocab, emb, hidden,
+    int rc = core(params, windows, negatives, batch, ctx, vocab, emb, hidden,
                   n_negatives, &rng, out_loss, grads);
     if (rc == 0) {
         *out_loss /= batch;
@@ -323,6 +359,97 @@ int tl_train_step(double *params, const int *windows,
             }
         } else {
             for (size_t i = 0; i < n_params; i++) params[i] -= lr * grads[i];
+        }
+    }
+    free(grads);
+    return rc;
+}
+/* Exported: one fused training step with selectable optimizer.
+ * Same forward/backward/averaging/clipping as tl_train_step, then:
+ *   optimizer 0: SGD with momentum (v = momentum*v + g ; p -= lr*v)
+ *   optimizer 1: AdamW with bias correction:
+ *                  m = b1*m + (1-b1)*g ; v = b2*v + (1-b2)*g^2
+ *                  p -= lr_eff * (m/(1-b1^t) / (sqrt(v/(1-b2^t)) + eps) + wd*p)
+ *   optimizer 2: Lion sign momentum (Chen et al. 2023):
+ *                  c = b1*m + (1-b1)*g ; p -= lr_eff * (sign(c) + wd*p)
+ *                  m = b2*m + (1-b2)*g
+ * lr_eff = lr * lr_scale (maps the shared base LR into family range).
+ * Matches tinylm/sched.py AdamOptimizer/LionOptimizer semantics.
+ * Returns 0 on success, see codes above. */
+int tl_train_step_opt(double *params, const int *windows,
+                      const int *negatives,
+                      int batch, int ctx, int vocab, int emb, int hidden,
+                      int n_negatives, double lr, double momentum,
+                      unsigned long long seed,
+                      double *out_loss, double max_norm,
+                      int optimizer, double beta1, double beta2, double eps,
+                      double weight_decay, double lr_scale)
+{
+    if (!out_loss) return -1;
+    if (optimizer < 0 || optimizer > 2) return -1;
+    const size_t n_params = count_params(vocab, ctx, emb, hidden);
+    double *grads = malloc(n_params * sizeof(double));
+    if (!grads) return -3;
+    uint64_t rng = (uint64_t)seed ^ 0x9E3779B97F4A7C15ULL;
+    if (rng == 0) rng = 0x9E3779B97F4A7C15ULL;
+    int rc = core(params, windows, negatives, batch, ctx, vocab, emb, hidden,
+                  n_negatives, &rng, out_loss, grads);
+    if (rc == 0) {
+        *out_loss /= batch;
+        /* average before clipping so max_norm bounds the mean gradient
+         * (the Python path clips the batch-averaged gradient) */
+        double inv_batch = 1.0 / (double)batch;
+        for (size_t i = 0; i < n_params; i++) grads[i] *= inv_batch;
+        if (max_norm > 0.0) {
+            double norm = compute_grad_norm(grads, n_params);
+            if (norm > max_norm && norm > 0.0) {
+                double scale = max_norm / norm;
+                for (size_t i = 0; i < n_params; i++) grads[i] *= scale;
+            }
+        }
+        tl_Buffers *buf = &tl_buffers;
+        if (optimizer == 0) {
+            double *vel = (buf->initialized && buf->vel && buf->vel_len == n_params)
+                        ? buf->vel : NULL;
+            if (momentum > 0.0 && vel != NULL) {
+                for (size_t i = 0; i < n_params; i++) {
+                    double v = momentum * vel[i] + grads[i];
+                    vel[i] = v;
+                    params[i] -= lr * v;
+                }
+            } else {
+                for (size_t i = 0; i < n_params; i++) params[i] -= lr * grads[i];
+            }
+        } else {
+            if (tl_ensure_opt(n_params) != 0) {
+                free(grads);
+                return -3;
+            }
+            double lr_eff = lr * lr_scale;
+            if (optimizer == 1) {
+                /* AdamW with bias correction */
+                buf->opt_step++;
+                double bc1 = 1.0 - pow(beta1, (double)buf->opt_step);
+                double bc2 = 1.0 - pow(beta2, (double)buf->opt_step);
+                for (size_t i = 0; i < n_params; i++) {
+                    double g = grads[i];
+                    double m = beta1 * buf->opt_m[i] + (1.0 - beta1) * g;
+                    double v = beta2 * buf->opt_v[i] + (1.0 - beta2) * g * g;
+                    buf->opt_m[i] = m;
+                    buf->opt_v[i] = v;
+                    double denom = sqrt(v / bc2) + eps;
+                    params[i] -= lr_eff * (m / bc1 / denom + weight_decay * params[i]);
+                }
+            } else {
+                /* Lion sign momentum */
+                for (size_t i = 0; i < n_params; i++) {
+                    double g = grads[i];
+                    double c = beta1 * buf->opt_m[i] + (1.0 - beta1) * g;
+                    double s = (c > 0.0) ? 1.0 : ((c < 0.0) ? -1.0 : 0.0);
+                    params[i] -= lr_eff * (s + weight_decay * params[i]);
+                    buf->opt_m[i] = beta2 * buf->opt_m[i] + (1.0 - beta2) * g;
+                }
+            }
         }
     }
     free(grads);

@@ -1,15 +1,26 @@
 """Training: SGD + sampled softmax with cancel support (stdlib only)."""
 import math
 import random
+import bisect
 import time
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 try:
     import accel
 except Exception:  # pragma: no cover - accel never raises, belt and braces
     accel = None
+
+try:
+    import accel_cuda
+except Exception:
+    accel_cuda = None
+
+try:
+    import accel_rwkv
+except Exception:
+    accel_rwkv = None
 
 from tinylm.autograd import Value
 from tinylm.checkpoint import (
@@ -17,7 +28,14 @@ from tinylm.checkpoint import (
 )
 from tinylm.sched import (
     LR_Scheduler, clip_grads, AutoAdjust, RollbackGuard, evaluate, EarlyStopping,
+    APOLLOOptimizer, APOLLOMiniOptimizer, AdamOptimizer, LionOptimizer,
+    MuonOptimizer,
 )
+# Import new models
+try:
+    from tinylm.models_linear import RWKVModel
+except ImportError:
+    RWKVModel = None
 
 # ---- training and generation ----------------------------------------------
 
@@ -26,8 +44,133 @@ def _accel_available():
     return accel is not None and accel.AVAILABLE
 
 
+def _cuda_available():
+    """True when the optional CUDA training kernel is loaded (see accel_cuda.py)."""
+    return accel_cuda is not None and accel_cuda._cuda_available()
+
+
+def _rwkv_available():
+    """True when the RWKV GPU kernels are loaded (see accel_rwkv.py).
+
+    Canonical GPU path for RWKVModel: full WKV forward+backward training
+    kernel (SGD+momentum) with CPU parity; CPU fallback always stays.
+    """
+    return accel_rwkv is not None and accel_rwkv._rwkv_available()
+
+
+# ---- Frequency-based negative sampling ---------------------------------------
+
+def compute_token_frequencies(ids: List[int], vocab_size: int) -> List[float]:
+    """Compute token frequency distribution from training data.
+    
+    Returns unnormalized frequencies (counts) for each token ID.
+    Uses unigram^0.75 weighting (word2vec style) for better negative sampling.
+    """
+    counts = [0.0] * vocab_size
+    for token_id in ids:
+        if 0 <= token_id < vocab_size:
+            counts[token_id] += 1.0
+    # Apply 0.75 power (word2vec style) - reduces frequency of very common tokens
+    # and gives rare tokens a better chance of being sampled
+    freqs = [c ** 0.75 if c > 0 else 0.0 for c in counts]
+    total = sum(freqs)
+    if total > 0:
+        freqs = [f / total for f in freqs]
+    return freqs
+
+
+def build_alias_table(probs: List[float]) -> Tuple[List[int], List[float]]:
+    """Build alias table for O(1) sampling from discrete distribution.
+    
+    Vose's alias method. Returns (alias, prob) arrays.
+    probs must be normalized (sum to 1).
+    """
+    n = len(probs)
+    if n == 0:
+        return [], []
+    
+    # Scale probabilities by n
+    scaled_probs = [p * n for p in probs]
+    alias = [0] * n
+    prob = [0.0] * n
+    
+    small = []
+    large = []
+    
+    for i, sp in enumerate(scaled_probs):
+        if sp < 1.0:
+            small.append(i)
+        else:
+            large.append(i)
+    
+    while small and large:
+        s = small.pop()
+        l = large.pop()
+        prob[s] = scaled_probs[s]
+        alias[s] = l
+        scaled_probs[l] = scaled_probs[l] + scaled_probs[s] - 1.0
+        if scaled_probs[l] < 1.0:
+            small.append(l)
+        else:
+            large.append(l)
+    
+    while large:
+        prob[large.pop()] = 1.0
+    while small:
+        prob[small.pop()] = 1.0
+    
+    return alias, prob
+
+
+def alias_sample(alias: List[int], prob: List[float], rng: random.Random) -> int:
+    """Sample from alias table in O(1)."""
+    n = len(alias)
+    if n == 0:
+        return 0
+    i = rng.randrange(n)
+    if rng.random() < prob[i]:
+        return i
+    return alias[i]
+
+
+def n_negatives_schedule(step: int, total_steps: int, start: int = 512, end: int = 64,
+                         schedule: str = "exponential") -> int:
+    """Adaptive n_negatives: start high for quality gradients, decay for speed.
+    
+    Args:
+        step: Current training step (0-indexed)
+        total_steps: Total number of training steps
+        start: Initial n_negatives
+        end: Final n_negatives
+        schedule: "exponential", "linear", or "cosine"
+    """
+    if total_steps <= 1:
+        return end
+    progress = step / (total_steps - 1)
+    progress = min(1.0, max(0.0, progress))
+    
+    if schedule == "exponential":
+        # Exponential decay: start * (end/start)^progress
+        return max(end, int(start * (end / start) ** progress))
+    elif schedule == "linear":
+        return max(end, int(start + (end - start) * progress))
+    elif schedule == "cosine":
+        # Cosine decay
+        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+        return max(end, int(end + (start - end) * cosine_decay))
+    else:
+        return start
+
+
 def _flat_data(model):
     return [p.data for p in model.params]
+
+
+def _aa_state_of(adjuster):
+    """Current auto-adjust state for progress callbacks (mirrors train_parallel)."""
+    return dict(aa_mult=adjuster.multiplier, aa_momentum=adjuster.momentum,
+                aa_grad_clip=adjuster.grad_clip_now(), aa_reduce=adjuster.reduce_count,
+                aa_bad=adjuster.bad_checks, aa_best=adjuster.best_loss)
 
 
 def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
@@ -40,10 +183,26 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
              cancel_callback=None, save_on_cancel_callback=None,
              gradient_accumulation: int = 1, neg_sample_seed: int = 0,
              momentum: float = 0.9, rollback_window: int = 0,
-             rollback_callback=None):
+             rollback_callback=None,
+             # New features (C kernel doesn't support, accepted for compatibility):
+             use_frequency_neg_sampling: bool = False,
+             n_negatives_start: int = None,
+             n_negatives_end: int = 64,
+             n_negatives_decay: str = "exponential",
+             use_cosine_restarts: bool = False,
+             restart_period: int = 0,
+             # Optimizer selection (C supports sgd/adam/lion; muon/apollo stay Python):
+             optimizer: str = "sgd",
+             adam_lr_scale: float = 0.5,
+             adam_betas: Tuple[float, float] = (0.9, 0.999),
+             adam_eps: float = 1e-8,
+             lion_lr_scale: float = 0.1,
+             lion_betas: Tuple[float, float] = (0.9, 0.99),
+             weight_decay: float = 0.0):
     """train() via the fused C kernel with gradient clipping support.
 
-    C kernel supports: LR per step, gradient clipping, SGD momentum.
+    C kernel supports: LR per step, gradient clipping, and SGD/AdamW/Lion
+    updates (Muon/APOLLO stay Python-only).
     Python handles: LR scheduling, validation, early stopping, checkpointing,
     automatic adjustment (plateau LR reduction, clip relaxation).
     `cancel_callback()` is checked before each step; on cancel the improved
@@ -132,11 +291,22 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
             windows.append(train_ids[i + ctx])
 
         flat_before = list(flat)
-        # C kernel with gradient clipping
-        loss, flat = accel.train_step(flat, windows, dims, n_negatives,
-                                      rate, random.randrange(1 << 62),
-                                      momentum=adjuster.momentum,
-                                      max_norm=adjuster.grad_clip_now())
+        # C kernel with gradient clipping (SGD/AdamW/Lion fused update)
+        if optimizer in ("adam", "lion"):
+            b1, b2 = (adam_betas if optimizer == "adam" else lion_betas)
+            loss, flat = accel.train_step_opt(
+                flat, windows, dims, n_negatives,
+                rate, random.randrange(1 << 62),
+                momentum=adjuster.momentum,
+                max_norm=adjuster.grad_clip_now(),
+                optimizer=optimizer, beta1=b1, beta2=b2, eps=adam_eps,
+                weight_decay=weight_decay,
+                lr_scale=adam_lr_scale if optimizer == "adam" else lion_lr_scale)
+        else:
+            loss, flat = accel.train_step(flat, windows, dims, n_negatives,
+                                          rate, random.randrange(1 << 62),
+                                          momentum=adjuster.momentum,
+                                          max_norm=adjuster.grad_clip_now())
 
         # Loss-spike rollback: discard the fused update and jump back to the
         # lowest-loss snapshot in the window. The C velocity already absorbed
@@ -158,7 +328,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
                 if rollback_callback is not None and best_loss != float('inf'):
                     rollback_callback(step + 1, loss, best_loss)
                 if progress_cb is not None:
-                    progress_cb(step + 1, steps, loss, val_loss, rate)
+                    progress_cb(step + 1, steps, loss, val_loss, rate, **_aa_state_of(adjuster))
                 continue
             rb_guard.push(loss, flat_before, None)
 
@@ -187,7 +357,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
                 if early_stopper(val_loss, model):
                     print(f"Early stopping at step {step + 1}: val_loss={val_loss:.4f} (best={early_stopper.best_score:.4f})")
                     if progress_cb is not None:
-                        progress_cb(step + 1, steps, loss, val_loss, rate)
+                        progress_cb(step + 1, steps, loss, val_loss, rate, **_aa_state_of(adjuster))
                     break
 
         # Checkpointing
@@ -204,7 +374,7 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
             save_checkpoint(ckpt, str(ckpt_file))
 
         if progress_cb is not None:
-            progress_cb(step + 1, steps, loss, val_loss, rate)
+            progress_cb(step + 1, steps, loss, val_loss, rate, **_aa_state_of(adjuster))
 
         if step % 25 == 0:
             val_str = f"  val_loss={val_loss:.4f}" if val_loss is not None else ""
@@ -248,20 +418,333 @@ def _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
         "final_loss": last_loss,
         "steps_done": steps_done,
         "rollbacks": rb_guard.rollbacks,
+        "kernel_used": "C",
     }
 
 
-def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
+def _train_cuda(model, ids, steps, lr, batch_size, n_negatives, progress_cb=None,
+             lr_scheduler: str = "linear", warmup_steps: int = 0, min_lr: float = 0.0,
+             grad_clip: float = 0.0, val_ids=None, val_split: float = 0.0, eval_every: int = 0,
+             early_stopping: bool = False, patience: int = 5, min_delta: float = 1e-4,
+             checkpoint_every: int = 0, checkpoint_dir: str = "checkpoints",
+             auto_adjust: bool = True, auto_factor: float = 0.5,
+             auto_patience: int = 10, auto_clip_relax: bool = True,
+             cancel_callback=None, save_on_cancel_callback=None,
+             gradient_accumulation: int = 1, neg_sample_seed: int = 0,
+             momentum: float = 0.9, rollback_window: int = 0,
+             rollback_callback=None,
+             # New features:
+             use_frequency_neg_sampling: bool = True,
+             n_negatives_start: int = None,
+             n_negatives_end: int = 64,
+             n_negatives_decay: str = "exponential",
+             use_cosine_restarts: bool = False,
+             restart_period: int = 0):
+    """train() via the fused CUDA kernel with gradient clipping support.
+
+    CUDA kernel supports: LR per step, gradient clipping, SGD momentum.
+    Python handles: LR scheduling, validation, early stopping, checkpointing,
+    automatic adjustment (plateau LR reduction, clip relaxation).
+    New: Frequency-based negative sampling (unigram^0.75), adaptive n_negatives decay.
+    `cancel_callback()` is checked before each step; on cancel the improved
+    weights are kept when loss improved, otherwise initial weights are restored.
+    `rollback_window` snapshots every step and restores the lowest-loss step
+    in the window when the current loss spikes above it (0 disables).
+    `rollback_callback(step, loss, best_loss)` fires on every rollback where
+    `best_loss` is the smallest loss seen so far in the run (gap = loss - best).
+    
+    Falls back to Python implementation if CUDA is not available.
+    """
+    # CUDA availability checked by caller (train()).
+    # RWKV models use their own dims + kernel (accel_rwkv); the window
+    # building, scheduling, rollback, and checkpointing below are shared.
+    ctx = model.ctx
+    vocab = len(model.C)
+    emb = len(model.C[0])
+    is_rwkv_model = RWKVModel is not None and isinstance(model, RWKVModel)
+    if is_rwkv_model:
+        hidden = model.hidden
+        n_layers = model.n_layers
+        dims = (vocab, ctx, emb, hidden)
+    else:
+        hidden = len(model.b1)
+        dims = (vocab, ctx, emb, hidden)
+    if len(ids) <= ctx:
+        raise ValueError(
+            f"Not enough training tokens ({len(ids)}) for ctx={ctx}: "
+            "need at least ctx+1 tokens"
+        )
+    starts = range(len(ids) - ctx)
+    flat = _flat_data(model)
+    params = model.params
+
+    # Fresh momentum state per run (kernel keeps velocity across steps).
+    if is_rwkv_model:
+        accel_rwkv.rwkv_reset_state()
+    else:
+        accel_cuda.cuda_reset_velocity()
+
+    # Snapshot initial weights so a cancelled run without improvement can be reverted.
+    initial_params_snapshot = [p.data for p in params]
+
+    # Setup LR scheduler
+    scheduler = LR_Scheduler(lr, steps, lr_scheduler, warmup_steps, min_lr)
+
+    # Setup early stopping
+    early_stopper = EarlyStopping(patience=patience, min_delta=min_delta) if early_stopping else None
+
+    # Setup automatic adjustment (with new cosine restarts, cyclic LR, EMA)
+    adjuster = AutoAdjust(
+        enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
+        min_delta=min_delta, warmup_ignore=warmup_steps,
+        max_grad_clip=grad_clip, momentum=momentum,
+        # New AutoAdjust features
+        use_cosine_restarts=use_cosine_restarts,
+        restart_period=restart_period,
+        ema_alpha=0.9,
+        min_lr=min_lr,
+    )
+
+    # Setup checkpoint directory
+    from pathlib import Path
+    checkpoint_path = Path(checkpoint_dir)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    # Split validation data if provided as ratio
+    if val_ids is None and val_split > 0:
+        split_idx = int(len(ids) * (1 - val_split))
+        train_ids = ids[:split_idx]
+        val_ids = ids[split_idx:]
+        if len(train_ids) <= ctx:
+            raise ValueError(
+                f"Not enough training tokens after val_split ({len(train_ids)}) "
+                f"for ctx={ctx}: need at least ctx+1 tokens"
+            )
+        starts = range(len(train_ids) - ctx)
+    else:
+        train_ids = ids
+
+    # Build frequency-based negative sampling distribution
+    neg_alias = []
+    neg_prob = []
+    neg_rng = random.Random(neg_sample_seed) if neg_sample_seed else random
+    if use_frequency_neg_sampling:
+        freq_probs = compute_token_frequencies(train_ids, vocab)
+        neg_alias, neg_prob = build_alias_table(freq_probs)
+        print(f"Built frequency-based negative sampling (vocab={vocab}, {sum(1 for f in freq_probs if f > 0)} active tokens)")
+
+    # Determine max n_negatives for CUDA buffer allocation (handles adaptive n_negatives)
+    max_n_negatives = n_negatives
+    if use_frequency_neg_sampling and n_negatives_start is not None and n_negatives_start > max_n_negatives:
+        max_n_negatives = n_negatives_start
+
+    initial_loss = None
+    best_loss = float('inf')
+    best_flat_snapshot = None
+    last_loss = None
+    val_loss = None
+    cancelled = False
+    steps_done = 0
+    rb_guard = RollbackGuard(window=rollback_window, tol=min_delta)
+
+    for step in range(steps):
+        # Check for cancellation before starting the next step.
+        if cancel_callback is not None and cancel_callback():
+            cancelled = True
+            steps_done = step
+            break
+        
+        # Adaptive n_negatives
+        current_n_negatives = n_negatives
+        if n_negatives_start is not None and n_negatives_start != n_negatives_end:
+            current_n_negatives = n_negatives_schedule(
+                step, steps, n_negatives_start, n_negatives_end, n_negatives_decay
+            )
+        
+        rate = scheduler.get_lr(step) * adjuster.multiplier
+        windows = []
+        pre_sampled_negs = [] if use_frequency_neg_sampling and neg_alias else None
+        
+        for _ in range(batch_size):
+            i = random.choice(starts)
+            windows.extend(train_ids[i:i + ctx])
+            windows.append(train_ids[i + ctx])
+            
+            # Pre-sample negatives using alias table for O(1) sampling
+            if pre_sampled_negs is not None:
+                for _ in range(current_n_negatives):
+                    pre_sampled_negs.append(alias_sample(neg_alias, neg_prob, neg_rng))
+
+        flat_before = list(flat)
+        # CUDA kernel with gradient clipping and pre-sampled negatives
+        if is_rwkv_model:
+            loss, flat = accel_rwkv.rwkv_train_step(
+                flat, windows, vocab, emb, hidden, n_layers, ctx,
+                current_n_negatives, rate, random.randrange(1 << 62),
+                momentum=adjuster.momentum,
+                max_norm=adjuster.grad_clip_now(),
+                negatives=pre_sampled_negs)
+        else:
+            loss, flat = accel_cuda.cuda_train_step(flat, windows, dims, current_n_negatives,
+                                                    rate, random.randrange(1 << 62),
+                                                    momentum=adjuster.momentum,
+                                                    max_norm=adjuster.grad_clip_now(),
+                                                    negatives=pre_sampled_negs,
+                                                    max_n_negatives=max_n_negatives)
+
+        # Loss-spike rollback
+        if rb_guard.enabled:
+            do_rb, best_entry = rb_guard.check(loss)
+            if do_rb:
+                _, best_flat, _ = best_entry
+                flat = list(best_flat)
+                for p, x in zip(params, flat):
+                    p.data = x
+                if is_rwkv_model:
+                    accel_rwkv.rwkv_reset_state()
+                else:
+                    accel_cuda.cuda_reset_velocity()
+                rb_guard.note_rollback()
+                if initial_loss is None:
+                    initial_loss = loss
+                last_loss = loss
+                steps_done = step + 1
+                print(f"step {step:5d}  rollback: loss {loss:.3f} > best {best_entry[0]:.3f} in window {rollback_window} -> restored")
+                if rollback_callback is not None and best_loss != float('inf'):
+                    rollback_callback(step + 1, loss, best_loss)
+                if progress_cb is not None:
+                    progress_cb(step + 1, steps, loss, val_loss, rate, **_aa_state_of(adjuster))
+                continue
+            rb_guard.push(loss, flat_before, None)
+
+        # In-place update of the existing Value objects
+        for p, x in zip(params, flat):
+            p.data = x
+
+        if initial_loss is None:
+            initial_loss = loss
+        if loss < best_loss:
+            best_loss = loss
+            best_flat_snapshot = list(flat)
+        last_loss = loss
+        steps_done = step + 1
+
+        # Automatic adjustment: reduce LR when loss plateaus
+        if adjuster.check(step + 1, loss):
+            rate = scheduler.get_lr(step) * adjuster.multiplier
+            print(f"step {step:5d}  auto-adjust: lr multiplier -> {adjuster.multiplier:.4f}  momentum -> {adjuster.momentum:.4f}")
+
+        # Validation evaluation
+        val_loss = None
+        if val_ids is not None and eval_every > 0 and (step + 1) % eval_every == 0:
+            val_loss = evaluate(model, val_ids, batch_size, n_negatives)
+            if early_stopper is not None:
+                if early_stopper(val_loss, model):
+                    print(f"Early stopping at step {step + 1}: val_loss={val_loss:.4f} (best={early_stopper.best_score:.4f})")
+                    if progress_cb is not None:
+                        progress_cb(step + 1, steps, loss, val_loss, rate, **_aa_state_of(adjuster))
+                    break
+
+        # Checkpointing
+        if checkpoint_every > 0 and (step + 1) % checkpoint_every == 0:
+            ckpt = Checkpoint(
+                step=step + 1,
+                model_state=_flat_params(model),
+                config=model.get_config(),
+                loss=loss,
+                val_loss=val_loss,
+                lr=rate,
+            )
+            ckpt_file = checkpoint_path / f"checkpoint_step_{step + 1}.json"
+            save_checkpoint(ckpt, str(ckpt_file))
+
+        if progress_cb is not None:
+            progress_cb(step + 1, steps, loss, val_loss, rate, **_aa_state_of(adjuster))
+
+        if step % 25 == 0:
+            val_str = f"  val_loss={val_loss:.4f}" if val_loss is not None else ""
+            print(f"step {step:5d}  loss {loss:.3f}  lr {rate:.6f}{val_str}")
+
+    # Handle cancellation: keep improved weights, else revert to initial.
+    if cancelled:
+        improved = (
+            initial_loss is not None
+            and best_loss < initial_loss
+            and best_flat_snapshot is not None
+        )
+        if improved:
+            flat = best_flat_snapshot
+            for prm, x in zip(params, flat):
+                prm.data = x
+            if save_on_cancel_callback is not None:
+                save_on_cancel_callback(model, best_loss, steps_done)
+        else:
+            for prm, x in zip(params, initial_params_snapshot):
+                prm.data = x
+            flat = _flat_data(model)
+
+    # Save final checkpoint (skip when cancelled — caller decides whether to save)
+    if checkpoint_every > 0 and not cancelled and last_loss is not None:
+        ckpt = Checkpoint(
+            step=steps_done,
+            model_state=_flat_params(model),
+            config=model.get_config(),
+            loss=last_loss,
+            val_loss=val_loss,
+            lr=scheduler.get_lr(max(0, steps_done - 1)),
+        )
+        ckpt_file = checkpoint_path / "checkpoint_final.json"
+        save_checkpoint(ckpt, str(ckpt_file))
+
+    return {
+        "cancelled": cancelled,
+        "initial_loss": initial_loss,
+        "best_loss": best_loss if best_loss != float('inf') else None,
+        "final_loss": last_loss,
+        "steps_done": steps_done,
+        "rollbacks": rb_guard.rollbacks,
+        "kernel_used": "CUDA",
+    }
+
+
+def train(model, ids, steps=2000, lr=0.1, batch_size=32, n_negatives=256,
           progress_cb=None, use_c=None,
-          lr_scheduler: str = "cosine_warmup", warmup_steps: int = 100, min_lr: float = 0.0,
-          grad_clip: float = 1.0, val_ids=None, val_split: float = 0.0, eval_every: int = 50,
-          early_stopping: bool = True, patience: int = 5, min_delta: float = 1e-4,
+          lr_scheduler: str = "cosine_warmup", warmup_steps: int = 50, min_lr: float = 1e-5,
+          grad_clip: float = 1.0, val_ids=None, val_split: float = 0.1, eval_every: int = 50,
+          early_stopping: bool = True, patience: int = 10, min_delta: float = 1e-4,
           checkpoint_every: int = 100, checkpoint_dir: str = "checkpoints",
-          auto_adjust: bool = True, auto_factor: float = 0.5,
-          auto_patience: int = 10, auto_clip_relax: bool = True,
+          auto_adjust: bool = True, auto_factor: float = 0.7,
+          auto_patience: int = 5, auto_clip_relax: bool = True,
           gradient_accumulation: int = 1, neg_sample_seed: int = 0,
-          momentum: float = 0.9, rollback_window: int = 0,
-          rollback_callback=None, cancel_callback=None, save_on_cancel_callback=None):
+          momentum: float = 0.95, rollback_window: int = 2,
+          rollback_callback=None, cancel_callback=None, save_on_cancel_callback=None,
+          # Optimizer selection:
+          optimizer: str = "apollo",  # "sgd", "apollo", "apollo_mini", "adam", "lion", "muon"
+          apollo_rank: int = 256,
+          apollo_beta1: float = 0.9,
+          apollo_beta2: float = 0.999,
+          apollo_eps: float = 1e-8,
+          weight_decay: float = 0.01,
+          apollo_proj_update_freq: int = 200,
+          norm_growth_limit: float = 1.01,
+          adam_lr_scale: float = 0.5,
+          adam_betas: Tuple[float, float] = (0.9, 0.999),
+          adam_eps: float = 1e-8,
+          lion_lr_scale: float = 0.1,
+          lion_betas: Tuple[float, float] = (0.9, 0.99),
+          muon_scale: float = 0.5,
+          muon_max_dim: int = 64,
+          muon_ns_steps: int = 5,
+          muon_beta: float = 0.95,
+          # New features (auto-enabled when auto_adjust=True):
+          use_frequency_neg_sampling: Optional[bool] = None,
+          n_negatives_start: Optional[int] = None,
+          n_negatives_end: Optional[int] = None,
+          n_negatives_decay: str = "cosine",
+          use_cosine_restarts: Optional[bool] = None,
+          restart_period: Optional[int] = None,
+          cyclic_lr: Optional[bool] = None,
+          cycle_length: Optional[int] = None):
     """Mini-batch SGD with sampled softmax and advanced training features.
 
     Each step averages the loss over `batch_size` windows. For each target, the
@@ -269,12 +752,23 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     the whole vocabulary. This cuts the output-layer cost by roughly
     vocab_size / (n_negatives + 1).
 
-    The optimizer is SGD with momentum: `v = momentum * v + g`, then
-    `p -= lr * v`, where `g` is the batch-averaged (optionally gradient-
-    clipped) gradient. `momentum=0` falls back to plain SGD. Momentum is what
-    makes the loss drop quickly - plain SGD crawls on this architecture.
+    Optimizer options:
+    - "sgd": SGD with momentum (default). `v = momentum * v + g`, `p -= lr * v`.
+    - "apollo": APOLLO optimizer - structured channel-wise gradient scaling via
+      low-rank random projections. SGD-like memory, AdamW-level performance.
+    - "apollo_mini": APOLLO-Mini - extreme memory efficiency with rank-1
+      tensor-wise scaling. SGD-level memory, outperforms AdamW.
+    - "adam": AdamW - per-parameter adaptive LR with bias correction and
+      decoupled weight decay; the most reliable loss reducer here. The shared
+      `lr` is mapped by `adam_lr_scale` (base 0.1 * 0.5 = 5e-2).
+    - "lion": Lion sign-momentum (Chen et al. 2023); 1 state/param, wants
+      ~1/10 of the base LR (`lion_lr_scale`, base 0.1 * 0.1 = 1e-2).
+    - "muon": Muon+AdamW hybrid (2025 SOTA): 2D matrices at/below
+      `muon_max_dim` get Newton-Schulz orthogonalized momentum updates
+      (scaled by `sqrt(max_dim) * muon_scale`), everything else uses AdamW.
+      Oversized matrices silently fall back to AdamW.
 
-    New features:
+    SGD features:
     - SGD with momentum (0 -> plain SGD)
     - LR scheduling: cosine_warmup, linear, constant
     - Gradient clipping by global norm
@@ -289,9 +783,31 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
       step in `rollback_window` when the current loss spikes above it
       (0 disables; config default 2). `rollback_callback(step, loss, best_loss)`
       fires on every rollback with the run's smallest loss so far.
+    - Frequency-based negative sampling (unigram^0.75, word2vec style)
+    - Adaptive n_negatives: decay from high (quality) to low (speed)
+    - Cosine annealing with warm restarts (SGDR)
+    - Cyclic learning rates
+    - EMA-smoothed loss for stable plateau detection
 
-    `progress_cb(done, total, loss, val_loss=None, lr=None)` is called after every step if given.
-    `use_c` forces the optional C kernel on/off; default: on when available.
+    APOLLO/APOLLO-Mini features:
+    - Structured gradient scaling via random projections (no SVD needed)
+    - Decoupled weight decay
+    - Norm-growth limiter (prevents early training spikes)
+    - Periodic projection matrix resampling
+
+    Adam/Lion/Muon features:
+    - True AdamW with bias correction (adam), sign momentum (lion),
+      orthogonalized momentum on small matrices + AdamW elsewhere (muon)
+
+    `progress_cb(done, total, loss, val_loss=None, lr=None, **aa_state)` is called
+    after every step if given; `aa_state` carries the live auto-adjust state
+    (aa_mult, aa_momentum, aa_grad_clip, aa_reduce, aa_bad, aa_best).
+    `use_c` selects the compute backend: "cuda" (GPU path: legacy MLP
+    kernel or RWKV WKV kernel), "c" (legacy C path, MLP only),
+    True (auto: CUDA > C > Python), False/None (Python).
+    RWKVModel runs on the GPU via accel_rwkv when the RWKV library is built
+    and the optimizer is SGD (other optimizers stay on Python); CPU fallback
+    is always kept.
     Note: C kernel supports LR scheduling and gradient clipping; Python handles validation, early stopping, checkpointing.
     `cancel_callback()` - if provided and returns True, training stops early.
       On cancel: if best loss < initial loss the improved weights are kept
@@ -300,35 +816,181 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
     Returns a dict with `cancelled`, `initial_loss`, `best_loss`,
     `final_loss`, `steps_done`, `rollbacks`.
     """
-    # Disable C kernel when advanced features are requested that C doesn't support.
-    # C kernel now supports: gradient clipping, LR per step (for scheduling).
-    # C kernel does NOT natively support: validation, early stopping, checkpointing.
-    # Cancel is handled in the C path per-step check as well, but force the
+    # Auto-enable new learning acceleration features when auto_adjust is active
+    if auto_adjust:
+        if use_frequency_neg_sampling is None:
+            use_frequency_neg_sampling = True
+        if n_negatives_start is None:
+            n_negatives_start = max(n_negatives * 2, 256)
+        if n_negatives_end is None:
+            n_negatives_end = min(n_negatives, 64)
+        if n_negatives_decay == "exponential" and n_negatives_start > n_negatives:
+            n_negatives_decay = "cosine"
+        if use_cosine_restarts is None:
+            use_cosine_restarts = True
+            restart_period = max(steps // 10, 50)
+        elif restart_period is None and use_cosine_restarts:
+            restart_period = max(steps // 10, 50)
+        if cyclic_lr is None:
+            cyclic_lr = False  # Keep off by default as it's more experimental
+
+    # Disable C/CUDA kernel when advanced features are requested that they don't support.
+    # C/CUDA kernel now supports: gradient clipping, LR per step (for scheduling).
+    # C/CUDA kernel does NOT natively support: validation, early stopping, checkpointing.
+    # Cancel is handled in the C/CUDA path per-step check as well, but force the
     # Python path when cancellation is requested so save/restore semantics match.
-    advanced_features = (
+    # APOLLO/APOLLO-Mini/Muon optimizers require Python path (C supports SGD/Adam/Lion).
+    # RWKV models skip the legacy MLP kernels and use the RWKV GPU kernel instead.
+    is_rwkv = RWKVModel is not None and isinstance(model, RWKVModel)
+    kernel_blockers = (
         val_ids is not None or
         val_split > 0 or
         eval_every > 0 or
         early_stopping or
         checkpoint_every > 0 or
-        cancel_callback is not None
+        cancel_callback is not None or
+        optimizer in ("apollo", "apollo_mini", "muon")
     )
+    advanced_features = kernel_blockers or is_rwkv
 
+    # Either CUDA kernel implements SGD only; anything else falls through
+    # to the C kernel (SGD/Adam/Lion, MLP only) or Python. This must stay in
+    # sync with csrc/train_kernel_cuda.cu and csrc/rwkv_kernel.cu.
+    cuda_ok = optimizer == "sgd" and (
+        (_cuda_available() and not is_rwkv)
+        or (is_rwkv and _rwkv_available()))
     if use_c is None:
-        use_c = _accel_available() and not advanced_features
-    if use_c:
-        # C kernel path with gradient clipping support
-        return _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
-                 lr_scheduler=lr_scheduler, warmup_steps=warmup_steps, min_lr=min_lr,
-                 grad_clip=grad_clip, val_ids=val_ids, val_split=val_split, eval_every=eval_every,
-                 early_stopping=early_stopping, patience=patience, min_delta=min_delta,
-                 checkpoint_every=checkpoint_every, checkpoint_dir=checkpoint_dir,
-                 auto_adjust=auto_adjust, auto_factor=auto_factor,
-                 auto_patience=auto_patience, auto_clip_relax=auto_clip_relax,
-                 cancel_callback=cancel_callback, save_on_cancel_callback=save_on_cancel_callback,
-                 gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed,
-                 momentum=momentum, rollback_window=rollback_window,
-                 rollback_callback=rollback_callback)
+        use_c = _cuda_available() and not advanced_features
+        if not use_c and is_rwkv and cuda_ok and not kernel_blockers:
+            use_c = True
+    if use_c == "cuda":
+        if cuda_ok:
+            result = _train_cuda(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
+                     lr_scheduler=lr_scheduler, warmup_steps=warmup_steps, min_lr=min_lr,
+                     grad_clip=grad_clip, val_ids=val_ids, val_split=val_split, eval_every=eval_every,
+                     early_stopping=early_stopping, patience=patience, min_delta=min_delta,
+                     checkpoint_every=checkpoint_every, checkpoint_dir=checkpoint_dir,
+                     auto_adjust=auto_adjust, auto_factor=auto_factor,
+                     auto_patience=auto_patience, auto_clip_relax=auto_clip_relax,
+                     cancel_callback=cancel_callback, save_on_cancel_callback=save_on_cancel_callback,
+                     gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed,
+                     momentum=momentum, rollback_window=rollback_window,
+                     rollback_callback=rollback_callback,
+                     # New features (auto-enabled when auto_adjust=True)
+                     use_frequency_neg_sampling=use_frequency_neg_sampling,
+                     n_negatives_start=n_negatives_start,
+                     n_negatives_end=n_negatives_end,
+                     n_negatives_decay=n_negatives_decay,
+                     use_cosine_restarts=use_cosine_restarts,
+                     restart_period=restart_period)
+            result["kernel_used"] = "CUDA"
+            return result
+        else:
+            print("CUDA requested but no matching kernel (missing GPU lib or non-SGD optimizer); "
+                  "falling back (C kernel supports SGD/Adam/Lion on MLP, else Python)")
+    elif use_c == "c":
+        # The C kernel implements SGD/Adam/Lion; anything else falls to Python.
+        if (_accel_available() and not advanced_features
+                and optimizer in ("sgd", "adam", "lion")):
+            result = _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
+                     lr_scheduler=lr_scheduler, warmup_steps=warmup_steps, min_lr=min_lr,
+                     grad_clip=grad_clip, val_ids=val_ids, val_split=val_split, eval_every=eval_every,
+                     early_stopping=early_stopping, patience=patience, min_delta=min_delta,
+                     checkpoint_every=checkpoint_every, checkpoint_dir=checkpoint_dir,
+                     auto_adjust=auto_adjust, auto_factor=auto_factor,
+                     auto_patience=auto_patience, auto_clip_relax=auto_clip_relax,
+                     cancel_callback=cancel_callback, save_on_cancel_callback=save_on_cancel_callback,
+                     gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed,
+                     momentum=momentum, rollback_window=rollback_window,
+                     rollback_callback=rollback_callback,
+                     # New features (auto-enabled when auto_adjust=True)
+                     use_frequency_neg_sampling=use_frequency_neg_sampling,
+                     n_negatives_start=n_negatives_start,
+                     n_negatives_end=n_negatives_end,
+                     n_negatives_decay=n_negatives_decay,
+                     use_cosine_restarts=use_cosine_restarts,
+                     optimizer=optimizer,
+                     adam_lr_scale=adam_lr_scale,
+                     adam_betas=adam_betas,
+                     adam_eps=adam_eps,
+                     lion_lr_scale=lion_lr_scale,
+                     lion_betas=lion_betas,
+                     weight_decay=weight_decay,
+                     restart_period=restart_period)
+            result["kernel_used"] = "C"
+            return result
+        else:
+            print("C kernel requested but unavailable/disabled (needs SGD/Adam/Lion, no val/early-stop/checkpoint/cancel); falling back to Python")
+    elif use_c:
+        # Legacy boolean True - auto-detect
+        if cuda_ok and not kernel_blockers:
+            result = _train_cuda(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
+                     lr_scheduler=lr_scheduler, warmup_steps=warmup_steps, min_lr=min_lr,
+                     grad_clip=grad_clip, val_ids=val_ids, val_split=val_split, eval_every=eval_every,
+                     early_stopping=early_stopping, patience=patience, min_delta=min_delta,
+                     checkpoint_every=checkpoint_every, checkpoint_dir=checkpoint_dir,
+                     auto_adjust=auto_adjust, auto_factor=auto_factor,
+                     auto_patience=auto_patience, auto_clip_relax=auto_clip_relax,
+                     cancel_callback=cancel_callback, save_on_cancel_callback=save_on_cancel_callback,
+                     gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed,
+                     momentum=momentum, rollback_window=rollback_window,
+                     rollback_callback=rollback_callback,
+                     # New features (auto-enabled when auto_adjust=True)
+                     use_frequency_neg_sampling=use_frequency_neg_sampling,
+                     n_negatives_start=n_negatives_start,
+                     n_negatives_end=n_negatives_end,
+                     n_negatives_decay=n_negatives_decay,
+                     use_cosine_restarts=use_cosine_restarts,
+                     restart_period=restart_period)
+            result["kernel_used"] = "CUDA"
+            return result
+        elif _accel_available() and not advanced_features:
+            result = _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
+                     lr_scheduler=lr_scheduler, warmup_steps=warmup_steps, min_lr=min_lr,
+                     grad_clip=grad_clip, val_ids=val_ids, val_split=val_split, eval_every=eval_every,
+                     early_stopping=early_stopping, patience=patience, min_delta=min_delta,
+                     checkpoint_every=checkpoint_every, checkpoint_dir=checkpoint_dir,
+                     auto_adjust=auto_adjust, auto_factor=auto_factor,
+                     auto_patience=auto_patience, auto_clip_relax=auto_clip_relax,
+                     cancel_callback=cancel_callback, save_on_cancel_callback=save_on_cancel_callback,
+                     gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed,
+                     momentum=momentum, rollback_window=rollback_window,
+                     rollback_callback=rollback_callback,
+                     # New features (auto-enabled when auto_adjust=True)
+                     use_frequency_neg_sampling=use_frequency_neg_sampling,
+                     n_negatives_start=n_negatives_start,
+                     n_negatives_end=n_negatives_end,
+                     n_negatives_decay=n_negatives_decay,
+                     use_cosine_restarts=use_cosine_restarts,
+                     optimizer=optimizer,
+                     adam_lr_scale=adam_lr_scale,
+                     adam_betas=adam_betas,
+                     adam_eps=adam_eps,
+                     lion_lr_scale=lion_lr_scale,
+                     lion_betas=lion_betas,
+                     weight_decay=weight_decay,
+                     restart_period=restart_period)
+            result["kernel_used"] = "C"
+            return result
+        elif _accel_available() and not advanced_features:
+            return _train_c(model, ids, steps, lr, batch_size, n_negatives, progress_cb,
+                     lr_scheduler=lr_scheduler, warmup_steps=warmup_steps, min_lr=min_lr,
+                     grad_clip=grad_clip, val_ids=val_ids, val_split=val_split, eval_every=eval_every,
+                     early_stopping=early_stopping, patience=patience, min_delta=min_delta,
+                     checkpoint_every=checkpoint_every, checkpoint_dir=checkpoint_dir,
+                     auto_adjust=auto_adjust, auto_factor=auto_factor,
+                     auto_patience=auto_patience, auto_clip_relax=auto_clip_relax,
+                     cancel_callback=cancel_callback, save_on_cancel_callback=save_on_cancel_callback,
+                     gradient_accumulation=gradient_accumulation, neg_sample_seed=neg_sample_seed,
+                     momentum=momentum, rollback_window=rollback_window,
+                     rollback_callback=rollback_callback,
+                     # New features (auto-enabled when auto_adjust=True)
+                     use_frequency_neg_sampling=use_frequency_neg_sampling,
+                     n_negatives_start=n_negatives_start,
+                     n_negatives_end=n_negatives_end,
+                     n_negatives_decay=n_negatives_decay,
+                     use_cosine_restarts=use_cosine_restarts,
+                     restart_period=restart_period)
 
     ctx = model.ctx
     if len(ids) <= ctx:
@@ -381,12 +1043,65 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
         enabled=auto_adjust, factor=auto_factor, patience=auto_patience,
         min_delta=min_delta, warmup_ignore=warmup_steps,
         max_grad_clip=grad_clip, clip_relax=auto_clip_relax, momentum=momentum,
+        # New features
+        use_cosine_restarts=use_cosine_restarts,
+        restart_period=restart_period,
+        ema_alpha=0.9,
+        min_lr=min_lr,
+        cyclic_lr=cyclic_lr,
+        cycle_length=cycle_length,
     )
 
     # Setup checkpoint directory
     from pathlib import Path
     checkpoint_path = Path(checkpoint_dir)
     checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    # Optimizer construction (Python path only; C/CUDA paths are SGD-only).
+    # All classes share the step() contract: lr refreshed per step, reads
+    # p.grad, updates p.data in place, zeroes grads.
+    opt = None
+    if optimizer == "apollo":
+        opt = APOLLOOptimizer(params, lr=lr, rank=apollo_rank, beta1=apollo_beta1,
+                              beta2=apollo_beta2, eps=apollo_eps, weight_decay=weight_decay,
+                              proj_update_freq=apollo_proj_update_freq,
+                              norm_growth_limit=norm_growth_limit, min_lr=min_lr)
+        print(f"Using APOLLO optimizer (rank={apollo_rank}, weight_decay={weight_decay})")
+    elif optimizer == "apollo_mini":
+        opt = APOLLOMiniOptimizer(params, lr=lr, beta1=apollo_beta1, beta2=apollo_beta2,
+                                  eps=apollo_eps, weight_decay=weight_decay,
+                                  proj_update_freq=apollo_proj_update_freq,
+                                  norm_growth_limit=norm_growth_limit, min_lr=min_lr)
+        print("Using APOLLO-Mini optimizer (rank=1, "
+              f"weight_decay={weight_decay})")
+    elif optimizer == "adam":
+        opt = AdamOptimizer(params, lr=lr, betas=adam_betas, eps=adam_eps,
+                            weight_decay=weight_decay, lr_scale=adam_lr_scale)
+        print(f"Using AdamW optimizer (lr_scale={adam_lr_scale}, "
+              f"weight_decay={weight_decay})")
+    elif optimizer == "lion":
+        opt = LionOptimizer(params, lr=lr, betas=lion_betas,
+                            weight_decay=weight_decay, lr_scale=lion_lr_scale)
+        print(f"Using Lion optimizer (lr_scale={lion_lr_scale}, "
+              f"weight_decay={weight_decay})")
+    elif optimizer == "muon":
+        try:
+            tensors = model.get_tensors()
+        except Exception:
+            tensors = None
+        opt = MuonOptimizer(params, tensors=tensors, lr=lr, beta=momentum,
+                            adam_betas=adam_betas, eps=adam_eps,
+                            weight_decay=weight_decay, lr_scale=adam_lr_scale,
+                            muon_scale=muon_scale, max_dim=muon_max_dim,
+                            ns_steps=muon_ns_steps)
+        n_muon = sum(r * c for r, c, _ in opt.groups)
+        print(f"Using Muon+AdamW optimizer ({len(opt.groups)} matrices, "
+              f"{n_muon} muon params / {len(params)} total)")
+    elif optimizer != "sgd":
+        raise ValueError(f"Unknown optimizer: {optimizer} "
+                         "(expected sgd/apollo/apollo_mini/adam/lion/muon)")
+    else:
+        print(f"Using SGD with momentum={momentum}")
 
     # Track initial/best loss for cancel-and-save-if-improved feature
     initial_loss = None
@@ -422,9 +1137,11 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
             if neg_idx + n_negatives <= len(neg_samples):
                 negs = neg_samples[neg_idx:neg_idx + n_negatives]
                 neg_idx += n_negatives
-                losses.append(model.sampled_loss(context, target, n_negatives, vocab, negatives=negs))
+                loss_val = model.sampled_loss(context, target, n_negatives, vocab, negatives=negs)
             else:
-                losses.append(model.sampled_loss(context, target, n_negatives, vocab))
+                loss_val = model.sampled_loss(context, target, n_negatives, vocab)
+            # Handle both (loss, new_state) tuple and bare loss return
+            losses.append(loss_val[0] if isinstance(loss_val, tuple) else loss_val)
 
         # Average losses by summing and scaling once
         loss = losses[0]
@@ -454,7 +1171,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
                 if rollback_callback is not None and best_loss != float('inf'):
                     rollback_callback(step + 1, loss.data, best_loss)
                 if progress_cb is not None:
-                    progress_cb(step + 1, steps, loss.data, val_loss, rate)
+                    progress_cb(step + 1, steps, loss.data, val_loss, rate, **_aa_state_of(adjuster))
                 continue
             rb_guard.push(loss.data, [p.data for p in params], velocity)
 
@@ -482,17 +1199,24 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
             accumulated_grads[i] += p.grad
 
         if accumulation_counter >= gradient_accumulation:
-            # Apply accumulated gradients with SGD momentum:
-            # v = momentum * v + g ; p -= lr * v (momentum == 0 -> plain SGD)
-            # `p.grad` is the gradient of the batch-AVERAGED loss, so only
-            # average across accumulation steps - dividing by batch_size again
-            # would silently shrink the effective LR by batch_size.
+            # Average across accumulation steps (p.grad holds the batch-AVERAGED
+            # loss gradient, so only average across accumulation steps here -
+            # dividing by batch_size again would silently shrink the LR).
             scale = 1.0 / gradient_accumulation
-            mom = adjuster.momentum
-            for i, p in enumerate(params):
-                velocity[i] = mom * velocity[i] + accumulated_grads[i] * scale
-                p.data -= rate * velocity[i]
-                accumulated_grads[i] = 0.0
+            if opt is not None:
+                for p, g in zip(params, accumulated_grads):
+                    p.grad = g * scale
+                opt.lr = rate
+                opt.step()
+                accumulated_grads = [0.0] * len(params)
+            else:
+                # Plain SGD with momentum:
+                # v = momentum * v + g ; p -= lr * v (momentum == 0 -> plain SGD)
+                mom = adjuster.momentum
+                for i, p in enumerate(params):
+                    velocity[i] = mom * velocity[i] + accumulated_grads[i] * scale
+                    p.data -= rate * velocity[i]
+                    accumulated_grads[i] = 0.0
             accumulation_counter = 0
 
         # Automatic adjustment: reduce LR when loss plateaus
@@ -509,7 +1233,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
                 if early_stopper(val_loss, model):
                     print(f"Early stopping at step {step + 1}: val_loss={val_loss:.4f} (best={early_stopper.best_score:.4f})")
                     if progress_cb is not None:
-                        progress_cb(step + 1, steps, loss.data, val_loss, rate)
+                        progress_cb(step + 1, steps, loss.data, val_loss, rate, **_aa_state_of(adjuster))
                     steps_done = step + 1
                     break
 
@@ -527,7 +1251,7 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
             save_checkpoint(ckpt, str(ckpt_file))
 
         if progress_cb is not None:
-            progress_cb(step + 1, steps, loss.data, val_loss, rate)
+            progress_cb(step + 1, steps, loss.data, val_loss, rate, **_aa_state_of(adjuster))
 
         if step % 25 == 0:
             val_str = f"  val_loss={val_loss:.4f}" if val_loss is not None else ""
@@ -571,4 +1295,5 @@ def train(model, ids, steps=2000, lr=0.05, batch_size=16, n_negatives=256,
         "final_loss": last_loss,
         "steps_done": steps_done,
         "rollbacks": rb_guard.rollbacks,
+        "kernel_used": "Python",
     }

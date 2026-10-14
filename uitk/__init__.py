@@ -5,6 +5,7 @@ from uitk.tab_training import TrainingTabMixin
 from uitk.tab_info import InfoTabMixin
 from uitk.tab_admin import AdminTabMixin
 from uitk.tab_settings import SettingsTabMixin
+from uitk.tab_tasks import TasksTabMixin
 from uitk.tab_logs import LogsTabMixin
 from uitk.history import HistoryMixin
 from uitk.worker import WorkerMixin

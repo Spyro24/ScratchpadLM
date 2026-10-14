@@ -118,6 +118,22 @@ class TrainingTabMixin:
         self.steps_spin.setRange(1, 1_000_000)
         self.steps_spin.setValue(self.cfg["training"]["steps"])
         controls.addWidget(self.steps_spin)
+        controls.addWidget(QLabel("Batch size:"))
+        self.batch_size_spin = QSpinBox()
+        self.batch_size_spin.setRange(1, 512)
+        self.batch_size_spin.setValue(int(self.cfg["training"]["batch_size"]))
+        self.batch_size_spin.setToolTip("Windows per batch step (bigger = more GPU work)")
+        controls.addWidget(self.batch_size_spin)
+        controls.addWidget(QLabel("Batch steps:"))
+        self.batch_steps_spin = QSpinBox()
+        self.batch_steps_spin.setRange(1, 64)
+        self.batch_steps_spin.setValue(int(self.cfg["training"].get("batch_steps", 1)))
+        self.batch_steps_spin.setToolTip("Batches computed per weight update (gradient accumulation)")
+        controls.addWidget(self.batch_steps_spin)
+        self.use_gpu_cb = QCheckBox("GPU")
+        self.use_gpu_cb.setChecked(bool(self.cfg["training"].get("use_gpu", True)))
+        self.use_gpu_cb.setToolTip("Route worker gradients through CUDA when available (auto-fallback)")
+        controls.addWidget(self.use_gpu_cb)
         self.train_btn = QPushButton("Train on Data")
         self.train_btn.clicked.connect(self.on_train)
         controls.addWidget(self.train_btn)
@@ -133,6 +149,66 @@ class TrainingTabMixin:
         controls.addWidget(self.auto_adjust_cb)
         controls.addStretch(1)
         v.addLayout(controls)
+
+        # Auto-adjust settings panel (shows current values that auto-adjust can modify)
+        self.auto_adjust_group = QGroupBox("Auto-Adjust Settings (Live)")
+        aag = QGridLayout(self.auto_adjust_group)
+        aag.setColumnStretch(1, 1)
+        
+        # LR multiplier
+        aag.addWidget(QLabel("LR Multiplier:"), 0, 0)
+        self.aa_lr_mult_label = QLabel("1.0000")
+        self.aa_lr_mult_label.setStyleSheet(f"color: {p['accent']}; font-family: monospace;")
+        aag.addWidget(self.aa_lr_mult_label, 0, 1)
+        
+        # Current momentum
+        aag.addWidget(QLabel("Momentum:"), 0, 2)
+        self.aa_momentum_label = QLabel("0.9000")
+        self.aa_momentum_label.setStyleSheet(f"color: {p['accent']}; font-family: monospace;")
+        aag.addWidget(self.aa_momentum_label, 0, 3)
+        
+        # Grad clip threshold
+        aag.addWidget(QLabel("Grad Clip:"), 1, 0)
+        self.aa_grad_clip_label = QLabel("1.0000")
+        self.aa_grad_clip_label.setStyleSheet(f"color: {p['accent']}; font-family: monospace;")
+        aag.addWidget(self.aa_grad_clip_label, 1, 1)
+        
+        # Reduce count
+        aag.addWidget(QLabel("LR Reductions:"), 1, 2)
+        self.aa_reduce_label = QLabel("0")
+        self.aa_reduce_label.setStyleSheet(f"color: {p['accent']}; font-family: monospace;")
+        aag.addWidget(self.aa_reduce_label, 1, 3)
+        
+        # Bad checks / plateau counter
+        aag.addWidget(QLabel("Plateau Steps:"), 2, 0)
+        self.aa_plateau_label = QLabel("0")
+        self.aa_plateau_label.setStyleSheet(f"color: {p['muted']}; font-family: monospace;")
+        aag.addWidget(self.aa_plateau_label, 2, 1)
+        
+        # Best loss
+        aag.addWidget(QLabel("Best Loss:"), 2, 2)
+        self.aa_best_loss_label = QLabel("—")
+        self.aa_best_loss_label.setStyleSheet(f"color: {p['accent']}; font-family: monospace;")
+        aag.addWidget(self.aa_best_loss_label, 2, 3)
+        
+        # Auto-adjust config (read-only display)
+        aag.addWidget(QLabel("Auto Factor:"), 3, 0)
+        self.aa_factor_label = QLabel(str(self.cfg["training"].get("auto_factor", 0.5)))
+        aag.addWidget(self.aa_factor_label, 3, 1)
+        
+        aag.addWidget(QLabel("Auto Patience:"), 3, 2)
+        self.aa_patience_label = QLabel(str(self.cfg["training"].get("auto_patience", 10)))
+        aag.addWidget(self.aa_patience_label, 3, 3)
+        
+        aag.addWidget(QLabel("Cosine Restarts:"), 4, 0)
+        self.aa_restart_label = QLabel("On" if self.cfg["training"].get("use_cosine_restarts", False) else "Off")
+        aag.addWidget(self.aa_restart_label, 4, 1)
+        
+        aag.addWidget(QLabel("Restart Period:"), 4, 2)
+        self.aa_restart_period_label = QLabel(str(self.cfg["training"].get("restart_period", 0)))
+        aag.addWidget(self.aa_restart_period_label, 4, 3)
+        
+        v.addWidget(self.auto_adjust_group)
 
         prow = QHBoxLayout()
         self.train_progress = QProgressBar()

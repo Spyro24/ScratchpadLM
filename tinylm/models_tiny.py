@@ -1,4 +1,10 @@
-"""TinyLM: embedding -> concat context -> tanh hidden -> softmax."""
+"""TinyLM: embedding -> concat context -> tanh hidden -> softmax.
+
+LEGACY architecture (MLP). Canonical going forward is the RWKV-style linear
+attention model in ``tinylm/models_linear.py`` (``RWKVModel``). This module is
+kept as CPU/C fallback until the old arch is removed (registry, UI, and tests
+still depend on it).
+"""
 import random
 from typing import List
 

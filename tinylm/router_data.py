@@ -8,14 +8,10 @@ from typing import Dict, List, Optional
 
 # Model name to slot mapping (fixed assignment for known models)
 _MODEL_SLOTS = {
-    "tiny-code": 0,
-    "tiny-reason": 1,
-    "tiny-prose": 2,
-    "tiny-embed": 3,
-    "tiny-sql": 4,
-    "tiny-docs": 5,
-    "tiny-shell": 6,
-    "tiny-data": 7,
+    "tinyPython": 0,
+    "tinyGPM": 1,
+    "tinyC": 2,
+    "tinyOS": 3,
 }
 
 
@@ -129,8 +125,7 @@ def decode_router_sequence(tokens: List[int], tokenizer, vocab_size: int) -> Rou
     subtasks = []
     
     # Model name mapping (must match encode)
-    model_names = ["tiny-code", "tiny-reason", "tiny-prose", "tiny-embed",
-                   "tiny-sql", "tiny-docs", "tiny-shell", "tiny-data"]
+    model_names = ["tinyPython", "tinyGPM", "tinyC", "tinyOS"]
     
     for part in parts[1:]:
         if not part:
@@ -140,7 +135,7 @@ def decode_router_sequence(tokens: List[int], tokenizer, vocab_size: int) -> Rou
             model_idx = first - MODEL_BASE
             model_name = model_names[model_idx % len(model_names)]
         else:
-            model_name = "tiny-prose"
+            model_name = "tinyGPM"
         
         sub_prompt = tokenizer.decode(part[1:]) if len(part) > 1 else prompt
         subtasks.append({"model": model_name, "prompt": sub_prompt})
@@ -229,9 +224,10 @@ def generate_router_training_data(corpus: str, tokenizer, vocab_size: int, ctx: 
     """
     if domain_keywords is None:
         domain_keywords = {
-            "tiny-code": ["code", "function", "class", "debug", "python", "javascript", "def ", "import ", "return "],
-            "tiny-reason": ["math", "calculate", "solve", "prove", "logic", "theorem", "equation"],
-            "tiny-prose": ["write", "summarize", "explain", "story", "article", "describe", "tell me"],
+            "tinyPython": ["code", "function", "class", "def ", "import ", "return ", "async ", "await ", "python", "javascript", "debug", "asyncio"],
+            "tinyGPM": ["write", "summarize", "explain", "story", "article", "describe", "tell me", "create ", "generate ", "summarize"],
+            "tinyC": ["c", "include", "stdio", "malloc", "free", "pointer", "struct", "typedef", "compile", "gcc"],
+            "tinyOS": ["os", "system", "process", "thread", "file", "directory", "shell", "bash", "command", "linux"],
         }
     
     # Split corpus into sentences/paragraphs
@@ -244,7 +240,7 @@ def generate_router_training_data(corpus: str, tokenizer, vocab_size: int, ctx: 
     for sent in sentences:
         sent_lower = sent.lower()
         # Detect domain
-        best_model = "tiny-prose"
+        best_model = "tinyGPM"
         best_score = 0
         for model, keywords in domain_keywords.items():
             score = sum(1 for kw in keywords if kw in sent_lower)

@@ -5,6 +5,7 @@ from uiqt.tab_training import TrainingTabMixin
 from uiqt.tab_info import InfoTabMixin
 from uiqt.tab_admin import AdminTabMixin
 from uiqt.tab_settings import SettingsTabMixin
+from uiqt.tab_tasks import TasksTabMixin
 from uiqt.tab_logs import LogsTabMixin
 from uiqt.chat import ChatMixin
 from uiqt.worker import WorkerMixin

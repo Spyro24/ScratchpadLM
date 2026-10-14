@@ -316,7 +316,15 @@ class TaskPad:
 # model count or naming scheme works.
 MODEL_SUFFIX_TASK_ALIASES = {
     "prose": TaskType.GENERATE,
+    "gpm": TaskType.GENERATE,
+    "tinygpm": TaskType.GENERATE,
     "data": TaskType.ANALYZE,
+    "python": TaskType.CODE,
+    "tinypython": TaskType.CODE,
+    "c": TaskType.CODE,
+    "tinyc": TaskType.CODE,
+    "os": TaskType.ANALYZE,
+    "tinyos": TaskType.ANALYZE,
 }
 
 

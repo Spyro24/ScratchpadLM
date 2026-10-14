@@ -53,9 +53,11 @@ from tinylm import (
     render_marked,
     save_model,
     sync_vocab,
+    train,
     train_parallel,
     train_router,
 )
+from tinylm.training import _cuda_available, _accel_available, _rwkv_available
 from autotrain import RatingCollector
 from config import Config
 from model_mgmt import MODEL_CATALOG, ModelCreator, ModelLoader
@@ -112,6 +114,37 @@ class TrainingActionsMixin:
         self._train_text_raw = prompt
         self.train_text.setPlainText(insert_markers(prompt))
         self.train_text.setReadOnly(True)
+        
+        # Determine which kernel will be used (before training starts)
+        training_cfg = self.cfg["training"]
+        use_c = training_cfg.get("use_c", None)
+        advanced_features = (
+            False or  # val_ids
+            0.0 > 0 or  # val_split
+            0 > 0 or  # eval_every
+            False or  # early_stopping
+            0 > 0 or  # checkpoint_every
+            False or  # cancel_callback
+            False  # optimizer in ("apollo", "apollo_mini") - we use train_parallel
+        )
+        if use_c is None:
+            use_c = _cuda_available() and not advanced_features
+        if use_c == "cuda":
+            kernel_name = "CUDA" if _cuda_available() and not advanced_features else "Python (CUDA fallback)"
+        elif use_c == "c":
+            kernel_name = "C" if _accel_available() and not advanced_features else "Python (C fallback)"
+        elif use_c:
+            if _cuda_available() and not advanced_features:
+                kernel_name = "CUDA (auto)"
+            elif _accel_available() and not advanced_features:
+                kernel_name = "C (auto)"
+            else:
+                kernel_name = "Python (auto)"
+        else:
+            kernel_name = "Python"
+        
+        self.kernel_indicator.setText(f"Kernel: {kernel_name}")
+        
         self.worker.submit("Training", self._train_job, prompt, steps,
                            self._model_name, self.auto_adjust_cb.isChecked())
         self.set_busy(True, "Training...")
@@ -158,8 +191,10 @@ class TrainingActionsMixin:
             self.worker.post("log", "Training",
                              f"Resuming '{model_name}' from best weights.")
 
-        def on_progress(done, total, loss):
-            self.worker.post("progress", "Training", (done, total, loss))
+        def on_progress(done, total, loss, val_loss=None, lr=None, **aa):
+            self.worker.post("progress", "Training", (done, total, loss, val_loss, lr,
+                             aa.get("aa_mult"), aa.get("aa_momentum"), aa.get("aa_grad_clip"),
+                             aa.get("aa_reduce"), aa.get("aa_bad"), aa.get("aa_best")))
 
         # Rollback callback: report (step, spiked loss, run-best loss) to the
         # main thread so the training monitor logs it and the tab shows the gap.
@@ -180,10 +215,23 @@ class TrainingActionsMixin:
             save_model(model, MODEL_PATH)
             self.worker.post("log", "system", f"Training cancelled at step {step}. Loss improved ({loss:.3f}), model saved.")
 
-        result = train_parallel(
-            self.model, ids, steps=steps, lr=training_cfg["lr"],
-            batch_size=training_cfg["batch_size"], n_negatives=training_cfg["n_negatives"],
-            workers=training_cfg["workers"], progress_cb=on_progress,
+        is_rwkv = type(self.model).__name__ == "RWKVModel"
+        if is_rwkv:
+            # RWKV trains single-process via train(): GPU WKV kernel when the
+            # RWKV lib is built and the optimizer is SGD (CPU fallback stays).
+            # The parallel/C kernels remain legacy-MLP only.
+            self.worker.post("log", "Training",
+                             "RWKVModel detected: using single-process train() "
+                             "(GPU WKV kernel when available, else CPU).")
+        train_fn = train if is_rwkv else train_parallel
+        batch_size = self.batch_size_spin.value()
+        train_kw = dict(
+            lr=training_cfg["lr"],
+            batch_size=batch_size, n_negatives=training_cfg["n_negatives"],
+            progress_cb=on_progress,
+            lr_scheduler=training_cfg.get("lr_scheduler", "cosine_warmup"),
+            warmup_steps=training_cfg.get("warmup_steps", 100),
+            min_lr=training_cfg.get("min_lr", 0.0),
             momentum=training_cfg.get("momentum", 0.9),
             grad_clip=training_cfg.get("grad_clip", 0.0),
             rollback_window=training_cfg.get("rollback_window", 2),
@@ -192,8 +240,24 @@ class TrainingActionsMixin:
             auto_factor=training_cfg.get("auto_factor", 0.5),
             auto_patience=training_cfg.get("auto_patience", 10),
             auto_clip_relax=training_cfg.get("auto_clip_relax", True),
+            # New AutoAdjust features
+            use_cosine_restarts=training_cfg.get("use_cosine_restarts", False),
+            restart_period=training_cfg.get("restart_period", 0),
+            cyclic_lr=training_cfg.get("cyclic_lr", False),
+            cycle_length=training_cfg.get("cycle_length", 0),
+            use_frequency_neg_sampling=training_cfg.get("use_frequency_neg_sampling", False),
+            n_negatives_start=training_cfg.get("n_negatives_start"),
+            n_negatives_end=training_cfg.get("n_negatives_end", 64),
+            n_negatives_decay=training_cfg.get("n_negatives_decay", "exponential"),
+            optimizer=training_cfg.get("optimizer", "sgd"),
             cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel,
         )
+        if not is_rwkv:
+            train_kw["workers"] = training_cfg["workers"]
+            # Batched compute + GPU routing are parallel-path only.
+            train_kw["batch_steps"] = self.batch_steps_spin.value()
+            train_kw["use_gpu"] = self.use_gpu_cb.isChecked()
+        result = train_fn(self.model, ids, steps=steps, **train_kw)
         stats_info = apply_stats(model_name, self.model, result)
         result = {**result, "stats_improved": stats_info["improved"],
                   "stats_reverted": stats_info["reverted"],
@@ -239,7 +303,7 @@ class TrainingActionsMixin:
             self.worker.post("log", "Training Router",
                              "Resuming 'router' from best weights.")
 
-        def on_progress(done, total, loss, val_loss=None, lr=None):
+        def on_progress(done, total, loss, val_loss=None, lr=None, **aa):
             self.worker.post("progress", "Router Training", (done, total, loss))
 
         # Cancel callback checks the flag

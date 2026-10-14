@@ -43,9 +43,16 @@ class TrainingActionsMixin:
             steps = int(self.steps_var.get())
             if steps < 1:
                 raise ValueError
+            batch_size = int(self.batch_size_var.get())
+            if batch_size < 1:
+                raise ValueError
+            batch_steps = int(self.batch_steps_var.get())
+            if batch_steps < 1:
+                raise ValueError
         except ValueError:
-            messagebox.showwarning("Invalid input", "Training steps must be a positive whole number.")
+            messagebox.showwarning("Invalid input", "Steps, batch size and batch steps must be positive whole numbers.")
             return
+        use_gpu = bool(self.use_gpu_var.get())
         self._cancel_training = False
         self.cancel_train_btn.configure(state="normal")
         self.train_btn.configure(state="disabled")
@@ -63,7 +70,8 @@ class TrainingActionsMixin:
         self._train_text_raw = prompt
         self._show_marked_training_text(insert_markers(prompt))
         self._run_in_background("Training", self._train_job, prompt, steps,
-                                self.model_var.get(), self.auto_adjust_var.get())
+                                self.model_var.get(), self.auto_adjust_var.get(),
+                                batch_size, batch_steps, use_gpu)
 
     def _show_marked_training_text(self, marked):
         """Display marked training text with yellow marker tags, input locked."""
@@ -91,7 +99,8 @@ class TrainingActionsMixin:
             self.train_text.insert("1.0", raw)
             del self._train_text_raw
 
-    def _train_job(self, prompt, steps, model_name, auto_adjust):
+    def _train_job(self, prompt, steps, model_name, auto_adjust,
+                     batch_size=None, batch_steps=1, use_gpu=True):
         # Use config for tokenizer and training settings
         tokenizer_cfg = self.cfg["tokenizer"]
         training_cfg = self.cfg["training"]
@@ -123,7 +132,7 @@ class TrainingActionsMixin:
                             f"Resuming '{model_name}' from best weights."))
 
         # Progress callback: thread-safe, only puts messages on the queue
-        def on_progress(done, total, loss):
+        def on_progress(done, total, loss, val_loss=None, lr=None, **aa):
             self.queue.put(("progress", "Training", (done, total, loss)))
 
         # Rollback callback: report (step, spiked loss, run-best loss) to the
@@ -146,8 +155,12 @@ class TrainingActionsMixin:
             self.queue.put(("log", "system", f"Training cancelled at step {step}. Loss improved ({loss:.3f}), model saved."))
 
         result = train_parallel(self.model, ids, steps=steps, lr=training_cfg["lr"],
-                       batch_size=training_cfg["batch_size"], n_negatives=training_cfg["n_negatives"],
+                       batch_size=batch_size or training_cfg["batch_size"],
+                       n_negatives=training_cfg["n_negatives"],
                        workers=training_cfg["workers"], progress_cb=on_progress,
+                       lr_scheduler=training_cfg.get("lr_scheduler", "cosine_warmup"),
+                       warmup_steps=training_cfg.get("warmup_steps", 100),
+                       min_lr=training_cfg.get("min_lr", 0.0),
                        momentum=training_cfg.get("momentum", 0.9),
                        grad_clip=training_cfg.get("grad_clip", 0.0),
                        rollback_window=training_cfg.get("rollback_window", 2),
@@ -156,6 +169,16 @@ class TrainingActionsMixin:
                        auto_factor=training_cfg.get("auto_factor", 0.5),
                        auto_patience=training_cfg.get("auto_patience", 10),
                        auto_clip_relax=training_cfg.get("auto_clip_relax", True),
+                       use_cosine_restarts=training_cfg.get("use_cosine_restarts", False),
+                       restart_period=training_cfg.get("restart_period", 0),
+                       cyclic_lr=training_cfg.get("cyclic_lr", False),
+                       cycle_length=training_cfg.get("cycle_length", 0),
+                       use_frequency_neg_sampling=training_cfg.get("use_frequency_neg_sampling", False),
+                       n_negatives_start=training_cfg.get("n_negatives_start"),
+                       n_negatives_end=training_cfg.get("n_negatives_end", 64),
+                       n_negatives_decay=training_cfg.get("n_negatives_decay", "exponential"),
+                       optimizer=training_cfg.get("optimizer", "sgd"),
+                       batch_steps=batch_steps, use_gpu=use_gpu,
                        cancel_callback=cancel_check, save_on_cancel_callback=save_on_cancel)
         stats_info = apply_stats(model_name, self.model, result)
         result = {**result, "stats_improved": stats_info["improved"],
@@ -216,7 +239,7 @@ class TrainingActionsMixin:
             return
         
         # Progress callback
-        def on_progress(done, total, loss, val_loss=None, lr=None):
+        def on_progress(done, total, loss, val_loss=None, lr=None, **aa):
             self.queue.put(("progress", "Router Training", (done, total, loss)))
         
         # Cancel callback checks the flag

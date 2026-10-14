@@ -132,6 +132,9 @@ class ResultMixin:
                 self.set_busy(False, "Training cancelled")
             else:
                 info = result if isinstance(result, dict) else {}
+                # Update kernel indicator with actual kernel used
+                kernel_used = info.get("kernel_used", "Unknown")
+                self.kernel_indicator.setText(f"Kernel: {kernel_used}")
                 # Training logs only go to training tab / unified logs, not chat
                 if info.get("stats_reverted"):
                     self._log_train(

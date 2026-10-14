@@ -78,10 +78,37 @@ class WorkerMixin:
         for kind, label, payload in self.worker.drain():
             if kind == "progress":
                 if label in ("Training", "Router Training"):
-                    done, total, loss = payload
+                    # payload can be: (done, total, loss) or (done, total, loss, val_loss, lr, aa_mult, aa_momentum, aa_grad_clip, aa_reduce, aa_bad, aa_best)
+                    if len(payload) >= 5:
+                        done, total, loss, val_loss, lr = payload[:5]
+                        aa_mult = payload[5] if len(payload) > 5 else None
+                        aa_momentum = payload[6] if len(payload) > 6 else None
+                        aa_grad_clip = payload[7] if len(payload) > 7 else None
+                        aa_reduce = payload[8] if len(payload) > 8 else None
+                        aa_bad = payload[9] if len(payload) > 9 else None
+                        aa_best = payload[10] if len(payload) > 10 else None
+                    else:
+                        done, total, loss = payload[:3]
+                        val_loss = lr = aa_mult = aa_momentum = aa_grad_clip = aa_reduce = aa_bad = aa_best = None
                     self.train_progress.setMaximum(max(total, 1))
                     self.train_progress.setValue(done)
                     self.progress_label.setText(f"Step {done}/{total}  loss {loss:.3f}")
+                    # Update auto-adjust live display if widgets exist
+                    if hasattr(self, 'aa_lr_mult_label'):
+                        if aa_mult is not None:
+                            self.aa_lr_mult_label.setText(f"{aa_mult:.4f}")
+                        if aa_momentum is not None:
+                            self.aa_momentum_label.setText(f"{aa_momentum:.4f}")
+                        if aa_grad_clip is not None:
+                            self.aa_grad_clip_label.setText(f"{aa_grad_clip:.4f}")
+                        if aa_reduce is not None:
+                            self.aa_reduce_label.setText(str(aa_reduce))
+                        if aa_bad is not None:
+                            self.aa_plateau_label.setText(str(aa_bad))
+                        if isinstance(aa_best, (int, float)) and math.isfinite(aa_best):
+                            self.aa_best_loss_label.setText(f"{aa_best:.4f}")
+                        elif aa_best is not None:
+                            self.aa_best_loss_label.setText("—")
             elif kind == "rollback":
                 self._handle_rollback(label, payload)
             elif kind == "log":
@@ -132,7 +159,7 @@ class WorkerMixin:
         self.busy = busy
         state = not busy
         for w in (
-            self.train_btn, self.train_router_btn, self.send_btn, self.preview_btn,
+            self.train_btn, self.train_router_btn, self.send_btn,
             self.create_btn, self.delete_btn, self.new_chat_btn, self.refresh_models_btn,
             self.refresh_catalog_btn, self.model_combo,
         ):

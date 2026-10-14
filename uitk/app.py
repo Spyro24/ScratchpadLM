@@ -20,6 +20,7 @@ from uitk.tab_chat import ChatTabMixin
 from uitk.tab_info import InfoTabMixin
 from uitk.tab_logs import LogsTabMixin
 from uitk.tab_settings import SettingsTabMixin
+from uitk.tab_tasks import TasksTabMixin
 from uitk.tab_training import TrainingTabMixin
 from uitk.worker import WorkerMixin
 
@@ -32,6 +33,7 @@ class App(
     InfoTabMixin,
     AdminTabMixin,
     SettingsTabMixin,
+    TasksTabMixin,
     LogsTabMixin,
     HistoryMixin,
     WorkerMixin,

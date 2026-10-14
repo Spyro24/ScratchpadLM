@@ -73,6 +73,12 @@ from uiqt.widgets import MONO, MessageBubble, AssistantBubble
 
 
 class SettingsActionsMixin:
+    def _browse_dir(self, line_edit):
+        """Open directory browser for a line edit."""
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text())
+        if dir_path:
+            line_edit.setText(dir_path)
+
     def _on_theme_change(self, theme: str):
         """Handle theme change from combobox."""
         if theme != self.current_theme:
@@ -197,28 +203,60 @@ class SettingsActionsMixin:
     def on_save_config(self):
         """Validate Settings entries and save to config.yaml (same rules as Tk)."""
         new_data = self.cfg.to_dict()
-        for (section, key), (edit, cast) in self._settings_entries.items():
-            raw = edit.text().strip()
+        for (section, key), (widget, _) in self._settings_entries.items():
             try:
-                if cast == str and key in ("stop_token_ids", "stop_strings"):
-                    # Special handling for comma-separated lists
-                    if key == "stop_token_ids":
-                        value = [int(x.strip()) for x in raw.split(",") if x.strip()]
+                # Extract value based on widget type
+                if isinstance(widget, QSpinBox):
+                    value = widget.value()
+                    # Special handling for optional fields where 0 means "auto/None"
+                    if key in ("n_negatives_start", "workers", "restart_period", "cycle_length") and value == 0:
+                        value = None
+                elif isinstance(widget, QDoubleSpinBox):
+                    value = widget.value()
+                elif isinstance(widget, QComboBox):
+                    value = widget.currentText()
+                elif isinstance(widget, QCheckBox):
+                    value = widget.isChecked()
+                elif isinstance(widget, QLineEdit):
+                    raw = widget.text().strip()
+                    if key in ("stop_token_ids", "stop_strings"):
+                        if key == "stop_token_ids":
+                            value = [int(x.strip()) for x in raw.split(",") if x.strip()]
+                        else:
+                            value = [x.strip() for x in raw.split(",") if x.strip()]
                     else:
-                        value = [x.strip() for x in raw.split(",") if x.strip()]
+                        # Try to infer type from existing config
+                        current_val = new_data[section][key]
+                        if isinstance(current_val, int) and not isinstance(current_val, bool):
+                            value = int(raw)
+                        elif isinstance(current_val, float):
+                            value = float(raw)
+                        elif isinstance(current_val, bool):
+                            value = raw.lower() in ("true", "1", "yes", "on")
+                        else:
+                            value = raw
+                elif isinstance(widget, QWidget):
+                    # Check if it's a wrapper with a line edit (for dir browser)
+                    layout = widget.layout()
+                    if layout:
+                        line_edit = layout.itemAt(0).widget()
+                        if isinstance(line_edit, QLineEdit):
+                            value = line_edit.text().strip()
+                        else:
+                            value = ""
+                    else:
+                        continue
                 else:
-                    value = cast(raw)
+                    continue
+                    
+                # Special handling for None values
+                if key in ("n_negatives_start", "workers") and hasattr(widget, 'value') and widget.value() == 0:
+                    value = None
+                    
             except ValueError:
-                self.show_warning("Invalid value", f"{section}.{key}: '{raw}' is not a valid {cast.__name__}.")
+                self.show_warning("Invalid value", f"{section}.{key}: failed to parse value.")
                 return
-            ZERO_OK = {"top_k", "warmup_steps", "eval_every", "checkpoint_every", "min_tokens", "rollback_window"}
-            if isinstance(value, int) and not isinstance(value, bool):
-                if key in ZERO_OK and value < 0:
-                    self.show_warning("Invalid value", f"{section}.{key} must be >= 0.")
-                    return
-                if key not in ZERO_OK and value < 1:
-                    self.show_warning("Invalid value", f"{section}.{key} must be a positive whole number.")
-                    return
+                
             new_data[section][key] = value
 
         gen = new_data["generation"]

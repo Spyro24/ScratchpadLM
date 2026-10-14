@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tokenizer import BPETokenizer
 from tinylm import TinyLM, Router, RouterConfig, SpecializedLM, SpecializedConfig
+from tinylm.models_linear import RWKVModel
 
 
 # =============================================================================
@@ -253,7 +254,9 @@ def get_tokenizer() -> Any:
 
 # Register built-in model factories (run on import)
 register_model("TinyLM", lambda **kw: TinyLM(**kw),
-               description="TinyLM base architecture", domain="general")
+               description="TinyLM base architecture (legacy MLP; RWKVModel is canonical)", domain="general")
+register_model("RWKVModel", lambda **kw: RWKVModel(**kw),
+               description="RWKV-style linear attention (canonical arch)", domain="general")
 register_model("Router", lambda **kw: Router(RouterConfig(**kw)),
                description="Router model (2-layer transformer)", domain="routing", param_count=300000)
 register_model("SpecializedLM", lambda **kw: SpecializedLM(SpecializedConfig(**kw)),

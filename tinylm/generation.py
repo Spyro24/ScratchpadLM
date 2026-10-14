@@ -182,6 +182,9 @@ def generate(model, tok, prompt, max_tokens=None, min_tokens=0, temperature=0.8,
     
     ids = tok.encode(prompt) or [0]
     model_fast_logits = getattr(model, 'fast_logits', None)
+    # Optional GPU path: a model may expose gpu_fast_logits(window) which
+    # raises on unavailability; always fall back to CPU logits.
+    model_gpu_logits = getattr(model, 'gpu_fast_logits', None)
     
     # Merge stop-token IDs + structural marker names for O(1) lookup
     stop_tokens = _resolve_stop_tokens(model, stop_token_ids, stop_markers)
@@ -201,10 +204,17 @@ def generate(model, tok, prompt, max_tokens=None, min_tokens=0, temperature=0.8,
     while max_tokens is None or count < max_tokens:
         window = ids[-model.ctx:]
         window = [0] * (model.ctx - len(window)) + window
-        if model_fast_logits is not None:
-            logits = model_fast_logits(window)
-        else:
-            logits = fast_logits(model, window)
+        logits = None
+        if model_gpu_logits is not None:
+            try:
+                logits = model_gpu_logits(window)
+            except Exception:
+                logits = None
+        if logits is None:
+            if model_fast_logits is not None:
+                logits = model_fast_logits(window)
+            else:
+                logits = fast_logits(model, window)
         next_id, should_stop = _sample_next_token(logits, temperature, top_k, top_p, 
                                                    repetition_penalty, ids, stop_tokens)
         ids.append(next_id)
@@ -267,6 +277,9 @@ def generate_with_preview(model, tok, prompt, max_tokens=None, min_tokens=0, tem
     
     ids = tok.encode(prompt) or [0]
     model_fast_logits = getattr(model, 'fast_logits', None)
+    # Optional GPU path: a model may expose gpu_fast_logits(window) which
+    # raises on unavailability; always fall back to CPU logits.
+    model_gpu_logits = getattr(model, 'gpu_fast_logits', None)
     
     # Merge stop-token IDs + structural marker names for O(1) lookup
     stop_tokens = _resolve_stop_tokens(model, stop_token_ids, stop_markers)
@@ -293,10 +306,17 @@ def generate_with_preview(model, tok, prompt, max_tokens=None, min_tokens=0, tem
     while max_tokens is None or count < max_tokens:
         window = ids[-model.ctx:]
         window = [0] * (model.ctx - len(window)) + window
-        if model_fast_logits is not None:
-            logits = model_fast_logits(window)
-        else:
-            logits = fast_logits(model, window)
+        logits = None
+        if model_gpu_logits is not None:
+            try:
+                logits = model_gpu_logits(window)
+            except Exception:
+                logits = None
+        if logits is None:
+            if model_fast_logits is not None:
+                logits = model_fast_logits(window)
+            else:
+                logits = fast_logits(model, window)
         next_id, should_stop = _sample_next_token(logits, temperature, top_k, top_p, 
                                                    repetition_penalty, ids, stop_tokens)
         ids.append(next_id)

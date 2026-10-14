@@ -46,6 +46,7 @@ class ShellMixin:
         # Create scrollable tabs for tabs with lots of content
         chat_tab = self._create_scrollable_tab(self.notebook, "Chat")
         training_tab = self._create_scrollable_tab(self.notebook, "Training")
+        tasks_tab = self._create_scrollable_tab(self.notebook, "Tasks")
         info_tab = self._create_scrollable_tab(self.notebook, "Model Info")
         admin_tab = self._create_scrollable_tab(self.notebook, "Admin")
         settings_tab = self._create_scrollable_tab(self.notebook, "Settings")
@@ -53,6 +54,7 @@ class ShellMixin:
 
         self._build_chat_tab(chat_tab)
         self._build_training_tab(training_tab)
+        self._build_tasks_tab(tasks_tab)
         self._build_model_info_tab(info_tab)
         self._build_admin_tab(admin_tab)
         self._build_settings_tab(settings_tab)

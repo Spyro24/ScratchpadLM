@@ -1,0 +1,1 @@
+{"prompt": "import os; os.listdir(\"/home\")", "subtasks": [{"model": "tinyOS", "prompt": "import os; os.listdir(\"/home\")"}]}

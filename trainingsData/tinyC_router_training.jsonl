@@ -1,0 +1,1 @@
+{"prompt": "#include <stdio.h> int main() { return 0; }", "subtasks": [{"model": "tinyC", "prompt": "#include <stdio.h> int main() { return 0; }"}]}

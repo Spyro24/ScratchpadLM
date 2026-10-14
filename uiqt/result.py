@@ -166,7 +166,16 @@ class ResultMixin:
                 self.progress_label.setText(f"Cancelled ({info.get('steps_done', 0)} steps)")
                 self.set_busy(False, "Router training cancelled")
             else:
-                self._log_train(f"Router training done: {steps} steps")
+                info = result if isinstance(result, dict) else {}
+                if info.get("stats_reverted"):
+                    self._log_train(
+                        f"Router training done: {steps} steps, no improvement "
+                        f"(best stays {info.get('stats_best')}) - reverted, model file kept"
+                    )
+                    self.log_unified("system", "Router training done without improvement - reverted to best weights.")
+                else:
+                    self._log_train(f"Router training done: {steps} steps")
+                    self.log_unified("system", f"Router training done: {steps} steps")
                 self.train_progress.setMaximum(max(steps, 1))
                 self.train_progress.setValue(steps)
                 self.progress_label.setText(f"Done ({steps} steps)")

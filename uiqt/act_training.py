@@ -128,6 +128,12 @@ class TrainingActionsMixin:
         tokenizer_cfg = self.cfg["tokenizer"]
         training_cfg = self.cfg["training"]
 
+        # Load the persisted best weights BEFORE extending/syncing: afterwards
+        # the model is bigger than the snapshot and the counts won't match.
+        if load_best(model_name, self.model):
+            self.worker.post("log", "Training",
+                             f"Resuming '{model_name}' from best weights.")
+
         self.tok.extend(
             prompt,
             vocab_size=tokenizer_cfg["vocab_size"],
@@ -227,6 +233,12 @@ class TrainingActionsMixin:
         if not examples:
             raise ValueError("No valid training examples")
 
+        # Warm start from the persisted best router weights so routing training
+        # continues from the best known point.
+        if load_best("router", self.router):
+            self.worker.post("log", "Training Router",
+                             "Resuming 'router' from best weights.")
+
         def on_progress(done, total, loss, val_loss=None, lr=None):
             self.worker.post("progress", "Router Training", (done, total, loss))
 
@@ -244,9 +256,12 @@ class TrainingActionsMixin:
             progress_cb=on_progress,
             cancel_callback=cancel_check,
         )
-        # Save the trained router unless the run was cancelled without improvement
-        # (train() restores initial weights in that case).
-        if not (isinstance(result, dict) and result.get("cancelled")):
+        # Save only on improvement over the stored best; regression reverts.
+        stats_info = apply_stats("router", self.router, result)
+        result = {**result, "stats_improved": stats_info["improved"],
+                  "stats_reverted": stats_info["reverted"],
+                  "stats_best": stats_info["best_loss"]}
+        if not stats_info["reverted"] and not (isinstance(result, dict) and result.get("cancelled")):
             save_model(self.router, "router.tlm")
         return steps, result
 

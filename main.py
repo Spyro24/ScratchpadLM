@@ -185,7 +185,8 @@ def run_cli(argv=None):
 
 def cmd_router_train(args):
     """Train router model on corpus."""
-    from tinylm import Router, RouterConfig, train_router, generate_router_training_data
+    from tinylm import (Router, RouterConfig, train_router, generate_router_training_data,
+                        TrainingStats, apply_stats, load_best)
     from tokenizer import BPETokenizer
     import time
 
@@ -221,6 +222,18 @@ def cmd_router_train(args):
         d_ff=512
     )
     router = Router(config, seed=42)
+
+    # Warm start from the persisted best router weights (guarded: only when
+    # the config matches and the param count agrees).
+    warmed = False
+    try:
+        warmed = load_best("router", router)
+    except Exception:
+        warmed = False
+    store = TrainingStats()
+    prev = store.best_loss("router")
+    if prev is not None:
+        print(f"Previous best loss for 'router': {prev:.4f}")
     print(f"Router model: {router.count_params():,} params" if hasattr(router, 'count_params') else "Router model created")
 
     # Train
@@ -232,17 +245,21 @@ def cmd_router_train(args):
             vloss = f" val_loss={val_loss:.4f}" if val_loss else ""
             print(f"  Step {done}/{total} loss={loss:.4f}{vloss} lr={lr:.6f}")
 
-    train_router(router, tokenizer, examples,
+    info = train_router(router, tokenizer, examples,
                  steps=args.steps, lr=args.lr, batch_size=args.batch_size,
                  n_negatives=args.n_negatives, progress_cb=progress_cb)
 
     elapsed = time.time() - start
     print(f"Training completed in {elapsed:.1f}s")
 
-    # Save
-    from tinylm import save_model
-    save_model(router, args.output)
-    print(f"Router saved to {args.output}")
+    info = apply_stats("router", router, info, stats=store)
+    if info["reverted"]:
+        print(f"No improvement over best ({info['prev_best']}) - weights reverted; "
+              f"{args.output} kept")
+    else:
+        from tinylm import save_model
+        save_model(router, args.output)
+        print(f"Router saved to {args.output}")
 
 
 def cmd_model(args):

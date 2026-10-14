@@ -185,7 +185,8 @@ def train_router(router, tokenizer, training_examples: List[RouterTrainingExampl
         **train_kwargs: Additional arguments passed to train()
     
     Returns:
-        The trained router model (modified in place)
+        The train() result dict with the trained router under `model` key
+        (best/last loss, cancelled, steps_done, rollbacks, initial_loss).
     """
     # Create flat token sequence from examples
     vocab_size = len(router.C)
@@ -198,10 +199,10 @@ def train_router(router, tokenizer, training_examples: List[RouterTrainingExampl
     # Train using the standard train function
     # The router's sampled_loss method is compatible with train()
     from tinylm.training import train
-    train(router, ids, steps=steps, lr=lr, batch_size=batch_size,
-          n_negatives=n_negatives, progress_cb=progress_cb, **train_kwargs)
-    
-    return router
+    info = train(router, ids, steps=steps, lr=lr, batch_size=batch_size,
+                 n_negatives=n_negatives, progress_cb=progress_cb, **train_kwargs)
+    info["model"] = router
+    return info
 
 
 def generate_router_training_data(corpus: str, tokenizer, vocab_size: int, ctx: int,

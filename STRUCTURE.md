@@ -11,7 +11,7 @@
 | `tinylm/models_tiny.py` + `transformer.py` | `TinyLM`; `TransformerBlock`, `layer_norm`, `attention`, `feed_forward` (+ fast variants) |
 | `tinylm/router.py` + `runtime.py` | `RouterConfig`, `Router` (mean-pooled window, catalog-only model names; `split`/`route`/`route_multi`/`decompose`); `ModelRuntime` (lazy-load, TTL, cap-free marker-stop generation) |
 | `tinylm/specialized.py` | `SpecializedLM`, `SpecializedConfig`, presets factory (≤100K params) |
-| `tinylm/router_data.py` + `data_clean.py` | `RouterTrainingExample`, `train_router`, training-data corpus utils; `clean_training_data`, `classify_by_domain`, structural markers (`[EOL]`/`[EOS]`/`[EOT]` + yellow render, `mark_and_encode` entry) |
+| `tinylm/router_data.py` + `data_clean.py` | `RouterTrainingExample`, `train_router` (returns result dict with `model`), training-data corpus utils; `clean_training_data`, `classify_by_domain`, structural markers (`[EOL]`/`[EOS]`/`[EOT]` + yellow render, `mark_and_encode` entry) |
 | `tinylm/sched.py` + `checkpoint.py` | `LR_Scheduler`, `clip_grads`, `AutoAdjust`, `evaluate`, `EarlyStopping`; `Checkpoint`, save/load/resume, `_flat_params` |
 | `tinylm/training.py` + `parallel.py` | `train`, `_train_c`; `train_parallel`, `train_multicore`, `_WorkerState` |
 | `tinylm/stats.py` | `TrainingStats`, `train_with_stats` (monotonic best loss + best snapshots) |

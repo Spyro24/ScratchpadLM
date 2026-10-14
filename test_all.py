@@ -1174,13 +1174,22 @@ def t_stats_apply():
         saved = load_model(best_path("n", best_dir))
         check(all(p.data == q.data
                   for p, q in zip(model.params, saved.params)))
-        # Warm start refuses missing snapshots and foreign architectures
-        from tinylm import load_best
+        # Warm start refuses missing snapshots and foreign architectures;
+        # a SMALLER snapshot (vocab grew since saving) loads its shared prefix
+        from tinylm import load_best, sync_vocab
         check(load_best("missing", model, best_dir=best_dir) is False)
         other = tiny_model(vocab=len(tok.vocab), ctx=6, emb=8, hidden=24)
-        flat_before = [p.data for p in other.params]
-        check(load_best("n", other, best_dir=best_dir) is False)
-        check([p.data for p in other.params] == flat_before)
+        # Smaller snapshot loads its shared prefix (extra rows keep their values)
+        check(load_best("n", other, best_dir=best_dir) is True)
+        prefix_len = len(model.params)
+        check([p.data for p in other.params[:prefix_len]] ==
+              [p.data for p in model.params])
+        prefix = [p.data for p in model.params]
+        grown = tiny_model(vocab=len(tok.vocab), ctx=6, emb=8, hidden=16)
+        sync_vocab(grown, len(tok.vocab) + 7)
+        check(len(grown.params) > len(model.params))
+        check(load_best("n", grown, best_dir=best_dir) is True)
+        check([p.data for p in grown.params][:len(prefix)] == prefix)
 
 
 @test("router: output depends on the full context window")

@@ -78,7 +78,9 @@ def load_best(name: str, model, best_dir: str = BEST_DIR) -> bool:
 
     Returns True when loaded. Refuses when no snapshot exists or the
     parameter count differs (renamed/recreated model) so foreign weights
-    never clobber the model.
+    never clobber the model. When the snapshot is smaller (vocab grew since
+    it was saved), the shared prefix is copied and the extra rows keep their
+    current values, so warm start still works across vocab growth.
     """
     from tinylm.serialization import load_model
 
@@ -89,6 +91,10 @@ def load_best(name: str, model, best_dir: str = BEST_DIR) -> bool:
         best_model = load_model(str(target))
     except Exception:
         return False
+    if len(best_model.params) < len(model.params):
+        for p, q in zip(model.params, best_model.params):
+            p.data = q.data
+        return True
     if len(best_model.params) != len(model.params):
         return False
     for p, q in zip(model.params, best_model.params):
@@ -111,6 +117,16 @@ def apply_stats(name: str, model, result: Dict[str, Any], stats=None,
     store = stats if stats is not None else TrainingStats(stats_path)
     prev_best = store.best_loss(name)
     target = best_path(name, best_dir)
+
+    if not isinstance(result, dict):
+        # Callers that hand back a model (train_router) have no result record;
+        # skip best/snapshot handling instead of failing.
+        return {
+            "improved": False,
+            "reverted": False,
+            "prev_best": prev_best,
+            "best_loss": prev_best,
+        }
 
     new_best = result.get("best_loss")
     improved = (

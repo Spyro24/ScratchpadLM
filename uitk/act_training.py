@@ -95,7 +95,13 @@ class TrainingActionsMixin:
         # Use config for tokenizer and training settings
         tokenizer_cfg = self.cfg["tokenizer"]
         training_cfg = self.cfg["training"]
-        
+
+        # Load the persisted best weights BEFORE extending/syncing: afterwards
+        # the model is bigger than the snapshot and the counts won't match.
+        if load_best(model_name, self.model):
+            self.queue.put(("log", "Training",
+                            f"Resuming '{model_name}' from best weights."))
+
         self.tok.extend(prompt, vocab_size=tokenizer_cfg["vocab_size"], min_frequency=tokenizer_cfg["min_frequency"])
         self.tok.save(TOKENIZER_PATH)
         sync_vocab(self.model, len(self.tok.vocab))
@@ -189,7 +195,7 @@ class TrainingActionsMixin:
 
     def _train_router_job(self, steps):
         """Background job to train the Router."""
-        from tinylm import train_router, generate_router_training_data
+        from tinylm import train_router, generate_router_training_data, apply_stats
         from tokenizer import BPETokenizer
         
         # Load training data
@@ -227,8 +233,11 @@ class TrainingActionsMixin:
                     progress_cb=on_progress,
                     cancel_callback=cancel_check)
 
-        # Save the trained router unless the run was cancelled without improvement
-        # (train() restores initial weights in that case).
-        if not (isinstance(result, dict) and result.get("cancelled")):
+        # Save only on improvement over the stored best; regression reverts.
+        stats_info = apply_stats("router", self.router, result)
+        result = {**result, "stats_improved": stats_info["improved"],
+                  "stats_reverted": stats_info["reverted"],
+                  "stats_best": stats_info["best_loss"]}
+        if not stats_info["reverted"] and not (isinstance(result, dict) and result.get("cancelled")):
             save_model(self.router, "router.tlm")
         return steps, result

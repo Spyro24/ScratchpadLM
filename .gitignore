@@ -10,3 +10,5 @@ models/
 checkpoints/
 training_stats.json
 best_models/
+autotrain_config.json
+feedback.jsonl
